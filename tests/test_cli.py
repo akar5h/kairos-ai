@@ -73,3 +73,18 @@ def test_analyze_requires_exactly_one_source(tmp_path: Any) -> None:
     result = CliRunner().invoke(cli, ["analyze", "--context", str(ctx)])
     assert result.exit_code != 0
     assert "exactly one source" in result.output
+
+
+def test_cli_configures_logging_from_settings(tmp_path: Any, monkeypatch: Any) -> None:
+    # The CLI group wires structured logging from settings before the subcommand runs.
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr("kairos.cli.setup_logging", lambda **kw: calls.append(kw))
+    monkeypatch.setattr("kairos.cli.settings.log_level", "DEBUG")
+    monkeypatch.setattr("kairos.cli.settings.log_format", "console")
+
+    ctx = tmp_path / "ctx.yaml"
+    ctx.write_text(_CONTEXT_YAML)
+    # Even the source-guard error path runs the group callback first.
+    CliRunner().invoke(cli, ["analyze", "--context", str(ctx)])
+
+    assert calls == [{"level": "DEBUG", "json_output": False}]

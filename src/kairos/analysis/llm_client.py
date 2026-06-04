@@ -22,7 +22,7 @@ import secrets
 import time
 
 import openai
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, SecretStr, ValidationError
 
 from kairos.log import get_logger
 
@@ -75,6 +75,9 @@ class LLMClient:
         if not resolved_key:
             msg = f"{DEFAULT_API_KEY_ENV} env var not set, or pass api_key=... to LLMClient()."
             raise ValueError(msg)
+        # Hold the credential as a SecretStr so it never leaks via repr/logs;
+        # unwrap only when handing it to the OpenAI client below.
+        self._api_key = SecretStr(resolved_key)
 
         self.model: str = model or os.environ.get(DEFAULT_MODEL_ENV) or DEFAULT_MODEL
         resolved_url = base_url or os.environ.get(DEFAULT_BASE_URL_ENV) or DEFAULT_BASE_URL
@@ -84,7 +87,7 @@ class LLMClient:
         self._temperature = temperature
         self._openai_module = openai
         self._client = openai.OpenAI(
-            api_key=resolved_key,
+            api_key=self._api_key.get_secret_value(),
             base_url=resolved_url,
             timeout=timeout_s,
         )
