@@ -7,8 +7,10 @@ through ``KairosEngine.analyze`` unchanged.
 
 from kairos.normalization.agents.base import AgentTranscriptNormalizer
 from kairos.normalization.agents.claude_code import ClaudeCodeNormalizer
+from kairos.normalization.agents.codex import CodexNormalizer
 
 __all__ = [
     "AgentTranscriptNormalizer",
     "ClaudeCodeNormalizer",
+    "CodexNormalizer",
 ]
