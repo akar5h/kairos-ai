@@ -1,0 +1,17 @@
+{
+  "id": "prt_002",
+  "type": "tool",
+  "tool": "read",
+  "callID": "t1",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/p.py"
+    },
+    "output": "def parse(): ...",
+    "time": {
+      "start": 2500,
+      "end": 2700
+    }
+  }
+}
