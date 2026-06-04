@@ -33,5 +33,9 @@ class KairosSettings(BaseSettings):
     semantic_timeout_s: float = 60.0
     semantic_openrouter_api_key: SecretStr | None = None
 
+    # Detection thresholds (engine half)
+    redundant_jaccard_threshold: float = 0.60
+    loop_min_repeats: int = 3
+
 
 settings = KairosSettings()

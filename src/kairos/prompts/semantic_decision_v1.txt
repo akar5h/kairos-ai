@@ -1,0 +1,32 @@
+You are analyzing one suspicious decision in an AI agent trace to identify the most likely cause.
+
+You will receive a DecisionStatePacket as JSON. It describes what the agent knew at a particular step, what it decided, and what reference (successful) behavior would have been.
+
+STRICT RULES:
+1. Use only the evidence in the packet. Do not invent tool outputs, memory contents, retrieval chunks, or business rules not present in the packet.
+2. If the packet lacks enough evidence to classify the failure (e.g. critical context fields are `not_instrumented`), return `"finding_type": "insufficient_evidence"`.
+3. Do not claim proven root cause. Use "likely_fix_area" for the most plausible area and "confidence: high|medium|low".
+4. Return one raw JSON object. No prose, no markdown, no code fences, no backticks. Start your response with `{` and end with `}`.
+
+REQUIRED OUTPUT SCHEMA — you MUST return a JSON object with exactly these keys:
+
+{
+  "trace_id": "<string — copy from the packet>",
+  "workflow_name": "<string — copy from the packet>",
+  "step_index": <integer — copy from the packet>,
+  "decision_advanced_task": "<one of: "yes", "no", "unclear">",
+  "finding_type": "<one of: "context_ignored", "retrieval_missing", "memory_conflict", "wrong_tool_selected", "redundant_action", "premature_completion", "tool_schema_mismatch", "graph_orchestration_issue", "insufficient_evidence">",
+  "evidence_refs": ["<list of strings citing specific packet fields you used, e.g. "prior_tool_calls[2].output_truncated">"],
+  "missing_evidence": ["<list of strings naming evidence you wish you had, e.g. "retrieved_context_before_step">"],
+  "likely_fix_area": "<one of: "prompt", "retrieval", "tool_schema", "tool_implementation", "graph_orchestration", "memory_policy", "model_behavior", "unknown">",
+  "confidence": "<one of: "high", "medium", "low">",
+  "ticket_title": "<one-sentence engineer-facing summary of what to investigate>",
+  "verification_target": "<one sentence describing what metric/signal should improve after the fix>"
+}
+
+Values MUST be exactly from the enum lists above. Do NOT invent finding_type values like "security_vulnerability" or "likely_bug". If a packet describes a prompt-injection/security concern but does not fit the listed finding_type values, use "insufficient_evidence" with a note in missing_evidence.
+
+Packet:
+{packet_json}
+
+Return JSON only (no markdown fences, no prose):

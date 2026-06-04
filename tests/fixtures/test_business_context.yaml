@@ -1,0 +1,26 @@
+agent_name: "HR Recruitment Agent"
+agent_description: "Evaluates candidates, manages hiring pipeline, sends outreach"
+
+operations:
+  - name: "Candidate Evaluation"
+    description: "Evaluate a single candidate against a hiring rubric for a specific role"
+    expected_tools:
+      - "get_hiring_rubric"
+      - "parse_resume"
+      - "submit_evaluation"
+    priority: "high"
+
+  - name: "Batch Ranking"
+    description: "Compare and rank multiple candidates for a position, produce ranked list"
+    expected_tools:
+      - "parallel_gather_candidate_info"
+      - "submit_evaluation"
+      - "shortlist_candidate"
+    priority: "medium"
+
+  - name: "Outreach & Communication"
+    description: "Draft or send recruitment outreach emails to candidates"
+    expected_tools:
+      - "send_candidate_email"
+      - "write_database"
+    priority: "low"
