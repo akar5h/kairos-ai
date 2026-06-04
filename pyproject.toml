@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools>=75.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kairos-ai"
+version = "0.1.0"
+description = "Kairos AI — agent tracing SDK + on-demand failure-clustering engine. One IR, one path, no fallbacks."
+requires-python = ">=3.13"
+license = "MIT"
+authors = [
+    { name = "Akarsh Gajbhiye" },
+]
+readme = "README.md"
+
+# Tracing half (ported from kairos@live-sdk). Engine-half deps are added in M1.3.
+dependencies = [
+    "pydantic>=2.10",
+    "pydantic-settings>=2.6",
+    "structlog>=25.1",
+    "opentelemetry-api>=1.28",
+    "opentelemetry-sdk>=1.28",
+]
+
+[project.optional-dependencies]
+phoenix = [
+    # Phoenix HTTP client for PhoenixReader (queries spans by trace_id).
+    "arize-phoenix-client>=2.0",
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+    "mypy>=1.13",
+]
+
+[project.scripts]
+kairos = "kairos.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # bugbear
+    "A",   # builtins shadowing
+    "SIM", # simplify
+    "TCH", # type-checking imports
+    "S",   # bandit (security)
+    "T20", # no print
+]
+ignore = [
+    "S101",  # assert in tests
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "T20"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+mypy_path = "src"
+packages = ["kairos"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: marks tests that hit real external services",
+]
