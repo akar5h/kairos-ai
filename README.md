@@ -4,8 +4,10 @@ Agent tracing SDK + on-demand failure-clustering engine. **One IR
 (`TraceEnvelope`), one path, no fallbacks.** Collection is always-on
 (OTel → Phoenix); analysis is pull-based via `KairosEngine.analyze`.
 
-> Status: Phase 1 (SDK + engine) complete; Phase 2 (agent transcript adapters)
-> landed. See `CLAUDE.md` for layout and hard rules.
+> Status: Phase 1 (SDK + engine) and Phase 2 (agent transcript adapters)
+> complete; Phase 3 hardening (end-to-end across all adapters, scalability
+> review, security pass) done. See `CLAUDE.md` for layout and hard rules,
+> `docs/phase3-review.md` for the public-readiness review.
 
 ## Install
 
@@ -104,6 +106,9 @@ ruff check src/ tests/ --fix && ruff format src/ tests/
 mypy src/
 pytest -x --tb=short --cov=kairos --cov-report=term-missing
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the pre-commit gate, and the
+non-negotiable hard rules.
 
 ## License
 
