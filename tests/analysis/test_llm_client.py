@@ -218,6 +218,25 @@ class TestLLMClientInit:
         # api_key was passed into the underlying OpenAI() constructor.
         assert fake_openai.call_args.kwargs["api_key"] == "explicit-key"
 
+    def test_api_key_held_as_secret_and_not_leaked(
+        self,
+        fake_openai: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from pydantic import SecretStr
+
+        monkeypatch.setenv("OPENROUTER_API_KEY", "super-secret-key")
+        from kairos.analysis.llm_client import LLMClient
+
+        client = LLMClient()
+        # The credential is stored as a SecretStr, so repr/str never expose it.
+        assert isinstance(client._api_key, SecretStr)
+        assert "super-secret-key" not in repr(client._api_key)
+        assert "super-secret-key" not in str(client._api_key)
+        # The real value still reaches the OpenAI client unchanged.
+        assert client._api_key.get_secret_value() == "super-secret-key"
+        assert fake_openai.call_args.kwargs["api_key"] == "super-secret-key"
+
     def test_default_model_is_claude_sonnet_4_5(
         self,
         fake_openai: MagicMock,

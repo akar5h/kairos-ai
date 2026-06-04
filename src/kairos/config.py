@@ -4,10 +4,13 @@ Uses pydantic-settings for type-safe config with .env file support.
 
 Usage:
     from kairos.config import settings
-    print(settings.log_level)
+    setup_logging(level=settings.log_level, json_output=settings.log_format == "json")
+
+Only values something actually reads live here (one config class, per
+CLAUDE.md). The OpenRouter API key is resolved in ``analysis.llm_client`` and
+held there as a ``SecretStr``, at the single point it is used.
 """
 
-from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,18 +25,11 @@ class KairosSettings(BaseSettings):
         extra="ignore",
     )
 
-    # Logging
+    # Logging — consumed by the CLI via kairos.log.setup_logging.
     log_level: str = "INFO"
     log_format: str = "json"  # "json" or "console"
 
-    # Semantic recovery
-    semantic_provider: str = "openrouter"
-    semantic_model: str = "microsoft/phi-4-mini-instruct"
-    semantic_temperature: float = 0.0
-    semantic_timeout_s: float = 60.0
-    semantic_openrouter_api_key: SecretStr | None = None
-
-    # Detection thresholds (engine half)
+    # Detection thresholds — consumed by detection.runner.
     redundant_jaccard_threshold: float = 0.60
     loop_min_repeats: int = 3
 

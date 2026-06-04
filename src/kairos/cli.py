@@ -20,8 +20,9 @@ from typing import TYPE_CHECKING, Any
 import click
 from pydantic import BaseModel
 
+from kairos.config import settings
 from kairos.engine.pipeline import KairosEngine
-from kairos.log import get_logger
+from kairos.log import get_logger, setup_logging
 from kairos.readers.phoenix import PhoenixReader
 from kairos.store.json_store import JSONStore
 from kairos.taxonomy.business_context import BusinessContext
@@ -76,6 +77,7 @@ def _load_from_dir(directory: Path) -> list[TraceEnvelope]:
 @click.group()
 def cli() -> None:
     """Kairos AI — agent tracing + on-demand failure analysis."""
+    setup_logging(level=settings.log_level, json_output=settings.log_format == "json")
 
 
 @cli.command()

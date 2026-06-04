@@ -223,6 +223,7 @@ class PhoenixReader:
         client: Any | None = None,
         endpoint: str | None = None,
         project: str = _DEFAULT_PROJECT,
+        span_limit: int = _DEFAULT_LIMIT,
     ) -> None:
         if client is not None:
             self._client = client
@@ -232,15 +233,27 @@ class PhoenixReader:
                 raise RuntimeError(msg)
             self._client = Client(base_url=endpoint) if endpoint else Client()
         self._project = project
+        self._span_limit = span_limit
 
     def fetch_envelope(self, trace_id: str) -> TraceEnvelope:
         """Fetch all spans for ``trace_id`` from Phoenix, return a TraceEnvelope."""
-        spans = self._client.spans.get_spans(
-            project_identifier=self._project,
-            trace_ids=[trace_id],
-            limit=_DEFAULT_LIMIT,
+        spans = list(
+            self._client.spans.get_spans(
+                project_identifier=self._project,
+                trace_ids=[trace_id],
+                limit=self._span_limit,
+            )
         )
-        envelope = spans_to_envelope(list(spans))
+        # Fail loud rather than analyze a silently truncated trace: at the
+        # limit we cannot tell "exactly N spans" from "more than N, clipped".
+        if len(spans) >= self._span_limit:
+            msg = (
+                f"trace {trace_id} returned {len(spans)} spans, hitting the Phoenix "
+                f"fetch limit of {self._span_limit}; the trace may be truncated. "
+                "Pass PhoenixReader(span_limit=...) with a higher limit to capture it."
+            )
+            raise RuntimeError(msg)
+        envelope = spans_to_envelope(spans)
         logger.info(
             "phoenix_reader.fetched",
             trace_id=trace_id,
