@@ -1,0 +1,18 @@
+{
+  "id": "prt_003",
+  "type": "tool",
+  "tool": "edit",
+  "callID": "t2",
+  "state": {
+    "status": "error",
+    "input": {
+      "filePath": "/p.py",
+      "oldString": "a"
+    },
+    "error": "oldString not found",
+    "time": {
+      "start": 3000,
+      "end": 3100
+    }
+  }
+}
