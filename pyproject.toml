@@ -13,13 +13,24 @@ authors = [
 ]
 readme = "README.md"
 
-# Tracing half (ported from kairos@live-sdk). Engine-half deps are added in M1.3.
 dependencies = [
+    # Data modeling & config
     "pydantic>=2.10",
     "pydantic-settings>=2.6",
+    # Structured logging
     "structlog>=25.1",
+    # Tracing half (OpenTelemetry / OpenLLMetry spans -> IR)
     "opentelemetry-api>=1.28",
     "opentelemetry-sdk>=1.28",
+    # Engine half: reference-cohort distances
+    "numpy>=2.1",
+    # LLM semantic-decision client (OpenRouter via the OpenAI SDK)
+    "openai>=1.0",
+    # Business-context taxonomy (YAML)
+    "pyyaml>=6.0",
+    # CLI
+    "click>=8.0",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +44,7 @@ dev = [
     "pytest-cov>=6.0",
     "ruff>=0.8",
     "mypy>=1.13",
+    "types-PyYAML>=6.0",
 ]
 
 [project.scripts]
@@ -40,6 +52,9 @@ kairos = "kairos.cli:cli"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+kairos = ["prompts/*.txt"]
 
 [tool.ruff]
 target-version = "py313"
@@ -79,4 +94,5 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "integration: marks tests that hit real external services",
+    "real_llm: marks tests that hit a real LLM provider (requires OPENROUTER_API_KEY)",
 ]
