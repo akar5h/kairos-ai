@@ -9,10 +9,12 @@ from kairos.normalization.agents.base import AgentTranscriptNormalizer
 from kairos.normalization.agents.claude_code import ClaudeCodeNormalizer
 from kairos.normalization.agents.codex import CodexNormalizer
 from kairos.normalization.agents.opencode import OpenCodeNormalizer
+from kairos.normalization.agents.paperclip import PaperclipNormalizer
 
 __all__ = [
     "AgentTranscriptNormalizer",
     "ClaudeCodeNormalizer",
     "CodexNormalizer",
     "OpenCodeNormalizer",
+    "PaperclipNormalizer",
 ]

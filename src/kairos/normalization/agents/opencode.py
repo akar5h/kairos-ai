@@ -51,9 +51,7 @@ def _ms_ts(value: Any) -> datetime | None:
 
 
 def _text_parts(parts: list[Any]) -> str | None:
-    out = [
-        str(p["text"]) for p in parts if isinstance(p, dict) and p.get("type") == "text" and p.get("text")
-    ]
+    out = [str(p["text"]) for p in parts if isinstance(p, dict) and p.get("type") == "text" and p.get("text")]
     return "\n".join(out) if out else None
 
 
@@ -192,9 +190,11 @@ class OpenCodeNormalizer(AgentTranscriptNormalizer):
         for msg_file in sorted(msg_dir.glob("*.json")):
             message = json.loads(msg_file.read_text(encoding="utf-8"))
             part_dir = part_root / msg_file.stem
-            parts = [
-                json.loads(p.read_text(encoding="utf-8")) for p in sorted(part_dir.glob("*.json"))
-            ] if part_dir.is_dir() else []
+            parts = (
+                [json.loads(p.read_text(encoding="utf-8")) for p in sorted(part_dir.glob("*.json"))]
+                if part_dir.is_dir()
+                else []
+            )
             message["parts"] = parts
             records.append(message)
         return records
