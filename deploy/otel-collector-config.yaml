@@ -18,6 +18,11 @@ exporters:
     endpoint: jaeger:4317
     tls:
       insecure: true
+  # Phoenix (ELv2, opt-in profile) — HTTP OTLP protobuf at phoenix:6006/v1/traces.
+  # Active when the phoenix service is in the compose stack.
+  otlphttp/phoenix:
+    endpoint: http://phoenix:6006
+    encoding: proto
   debug:
     verbosity: normal
 
@@ -26,7 +31,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlp/jaeger, debug]
+      exporters: [otlp/jaeger, otlphttp/phoenix, debug]
   telemetry:
     logs:
       level: info
