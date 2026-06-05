@@ -24,6 +24,8 @@ Phoenix span dict shape (from arize-phoenix-client v2.x):
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest  # noqa: TC002
@@ -320,3 +322,34 @@ def test_phoenix_reader_endpoint_constructs_default_client(monkeypatch: pytest.M
     reader = PhoenixReader(endpoint="http://localhost:6006")
     reader.fetch_envelope("anything")
     assert captured["base_url"] == "http://localhost:6006"
+
+
+# ───────── real Claude Code trace → full fetch_envelope round-trip ─────────
+
+
+def test_fetch_envelope_round_trips_real_claude_code_trace() -> None:
+    """XER-73 Phase A proof: a real `claude` 2.1.161 one-shot Read-tool run's
+    native OTel spans round-trip through the full PhoenixReader path to a valid
+    TraceEnvelope with both an LLM event and a tool event.
+
+    Drives the same code path the live Phoenix reader uses (client.get_spans →
+    spans_to_envelope) over the captured fixture, so it exercises the
+    claude_code.* dialect mapping end to end without a live Phoenix server."""
+    spans = json.loads((Path(__file__).parent / "fixtures" / "claude_code_trace.json").read_text())
+    trace_id = spans[0]["context"]["trace_id"]
+    client = _FakePhoenixClient({trace_id: spans})
+    reader = PhoenixReader(client=client, project="default")  # type: ignore[arg-type]
+
+    env = reader.fetch_envelope(trace_id)
+
+    assert env.is_valid is True
+    assert env.validation_warnings == []
+    # interaction root → TraceStart/TraceEnd; two LLM calls + one tool call.
+    assert [s.step_type for s in env.steps] == [StepType.LLM, StepType.TOOL_CALL, StepType.LLM]
+    assert env.terminal_status is TerminalStatus.COMPLETED
+    tool_steps = [s for s in env.steps if s.step_type is StepType.TOOL_CALL]
+    assert len(tool_steps) == 1
+    assert tool_steps[0].tool_name == "Read"
+    llm_steps = [s for s in env.steps if s.step_type is StepType.LLM]
+    assert all(s.llm_model == "claude-opus-4-8[1m]" for s in llm_steps)
+    assert env.user_input is not None and "hello.txt" in env.user_input

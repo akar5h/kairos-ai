@@ -218,17 +218,24 @@ def classify_span(span: ReadableSpan) -> SpanKind:
     """Classify a span by its attributes / name.
 
     Order of precedence (first match wins):
-        1. ``task``      — host-marked trace boundary (Kairos)
+        1. ``task``      — host-marked trace boundary (Kairos) or Claude Code
+                           interaction root (``span.type == "interaction"``)
         2. OpenInference ``openinference.span.kind`` (LLM/TOOL/RETRIEVER/EMBEDDING)
-        3. ``llm``       — has ``gen_ai.system`` (OpenLLMetry)
-        4. ``tool``      — gen_ai/traceloop tool signals or ``tool.*`` name
+        3. ``llm``       — has ``gen_ai.system`` (OpenLLMetry / Claude Code)
+        4. ``tool``      — gen_ai/traceloop tool signals, ``tool.*`` name, or
+                           Claude Code ``span.type == "tool"``
         5. ``retrieval`` — db.system, embedding op, or traceloop retrieval
         6. ``other``
     """
     name = getattr(span, "name", "") or ""
     attrs = _attrs(span)
 
-    if name == "kairos.task" or attrs.get("kairos.span.kind") == "task":
+    # Claude Code (tracer ``com.anthropic.claude_code.tracing``) marks the
+    # per-interaction trace root with ``span.type == "interaction"``; it is the
+    # task boundary. Its ``tool.execution`` / ``tool.blocked_on_user`` sub-phase
+    # spans carry a more specific ``span.type`` and stay "other" — only the
+    # ``span.type == "tool"`` span (which carries ``tool_name``) is the call.
+    if name == "kairos.task" or attrs.get("kairos.span.kind") == "task" or attrs.get("span.type") == "interaction":
         return "task"
 
     # OpenInference (Phoenix dialect).
@@ -248,6 +255,7 @@ def classify_span(span: ReadableSpan) -> SpanKind:
         or attrs.get("gen_ai.tool.name")
         or attrs.get("traceloop.entity.name") == "tool"
         or name.startswith("tool.")
+        or attrs.get("span.type") == "tool"
     ):
         return "tool"
 
@@ -439,8 +447,9 @@ def span_to_llm_call(span: ReadableSpan, *, step_index: int) -> LLMCall | None:
 
 
 def _resolve_tool_name(span: ReadableSpan, attrs: dict[str, Any]) -> str | None:
-    # OpenInference tool.name first, then OTel-genai gen_ai.tool.name, then span name prefix.
-    name = attrs.get("tool.name") or attrs.get("gen_ai.tool.name")
+    # OpenInference tool.name, then OTel-genai gen_ai.tool.name, then Claude
+    # Code tool_name, then span name prefix.
+    name = attrs.get("tool.name") or attrs.get("gen_ai.tool.name") or attrs.get("tool_name")
     if isinstance(name, str) and name:
         return name
     span_name = getattr(span, "name", "") or ""
@@ -618,13 +627,20 @@ def span_to_trace_start(span: ReadableSpan, *, step_index: int = 0) -> TraceStar
 
     user_input = attrs.get("kairos.user_input")
     if not isinstance(user_input, str) or not user_input:
-        # Fallback: first input message in either dialect.
+        # Fallback: first input message in either dialect, then the Claude Code
+        # interaction root's ``user_prompt`` (redacted unless
+        # OTEL_LOG_USER_PROMPTS=1, but still a usable intent marker).
         oi_first = attrs.get("llm.input_messages.0.message.content")
+        prompt_zero = attrs.get("gen_ai.prompt.0.content")
+        cc_prompt = attrs.get("user_prompt")
         if isinstance(oi_first, str) and oi_first:
             user_input = oi_first
+        elif isinstance(prompt_zero, str) and prompt_zero:
+            user_input = prompt_zero
+        elif isinstance(cc_prompt, str) and cc_prompt:
+            user_input = cc_prompt
         else:
-            prompt_zero = attrs.get("gen_ai.prompt.0.content")
-            user_input = prompt_zero if isinstance(prompt_zero, str) and prompt_zero else None
+            user_input = None
 
     system_prompt_raw = attrs.get("kairos.system_prompt")
     system_prompt = system_prompt_raw if isinstance(system_prompt_raw, str) else None

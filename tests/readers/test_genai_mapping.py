@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -27,6 +28,7 @@ from kairos.readers.genai_mapping import (
     span_to_trace_end,
     span_to_trace_start,
 )
+from kairos.readers.phoenix import _phoenix_dict_to_span
 
 # ───────────────────────── Fake ReadableSpan ─────────────────────────
 
@@ -881,3 +883,65 @@ def test_trace_start_user_input_falls_back_to_openinference_first_message() -> N
     )
     ts = span_to_trace_start(span, step_index=0)
     assert ts.user_input == "evaluate this resume"
+
+
+# ──────────────── Claude Code (claude_code.*) dialect ────────────────
+#
+# Real spans captured from `claude` 2.1.161 (tracer
+# com.anthropic.claude_code.tracing) emitting native OTel for a one-shot
+# Read-tool run (XER-73 Phase A). PII (user/org/account/session ids,
+# email) was scrubbed before committing; the span shape/attributes are
+# otherwise verbatim. See tests/readers/fixtures/claude_code_trace.json.
+
+_CC_TRACE: list[dict[str, Any]] = json.loads(
+    (Path(__file__).parent / "fixtures" / "claude_code_trace.json").read_text()
+)
+
+
+def _cc_span(name: str) -> Any:
+    """Return the first fixture span with ``name`` as a ReadableSpan adapter."""
+    raw = next(s for s in _CC_TRACE if s["name"] == name)
+    return _phoenix_dict_to_span(raw)
+
+
+def test_classify_claude_code_interaction_is_task() -> None:
+    # The interaction root (span.type == "interaction") is the trace boundary.
+    assert classify_span(_cc_span("claude_code.interaction")) == "task"
+
+
+def test_classify_claude_code_llm_request_is_llm() -> None:
+    # Already classified via gen_ai.system — confirm the dialect doesn't regress it.
+    assert classify_span(_cc_span("claude_code.llm_request")) == "llm"
+
+
+def test_classify_claude_code_tool_is_tool() -> None:
+    # The gap this change closes: span.type == "tool" with tool_name, no
+    # gen_ai.tool.name and name not "tool."-prefixed.
+    assert classify_span(_cc_span("claude_code.tool")) == "tool"
+
+
+def test_classify_claude_code_tool_execution_stays_other() -> None:
+    # Internal sub-phase span (span.type == "tool.execution"); must NOT become a
+    # second ToolCall for the one logical tool call.
+    assert classify_span(_cc_span("claude_code.tool.execution")) == "other"
+
+
+def test_classify_claude_code_tool_blocked_on_user_stays_other() -> None:
+    # Permission-wait sub-phase (span.type == "tool.blocked_on_user").
+    assert classify_span(_cc_span("claude_code.tool.blocked_on_user")) == "other"
+
+
+def test_span_to_tool_call_extracts_claude_code_tool_name() -> None:
+    raw = next(s for s in _CC_TRACE if s["name"] == "claude_code.tool")
+    call = span_to_tool_call(_phoenix_dict_to_span(raw), step_index=1)
+    assert isinstance(call, ToolCall)
+    assert call.name == "Read"
+    # No tool_call.id attr in the dialect → falls back to the span_id.
+    assert call.tool_call_id == raw["context"]["span_id"]
+
+
+def test_span_to_trace_start_uses_claude_code_user_prompt() -> None:
+    ts = span_to_trace_start(_cc_span("claude_code.interaction"), step_index=0)
+    # OTEL_LOG_USER_PROMPTS=1 was set during capture, so the real prompt landed.
+    assert ts.user_input is not None
+    assert "hello.txt" in ts.user_input
