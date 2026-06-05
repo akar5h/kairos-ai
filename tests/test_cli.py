@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from click.testing import CliRunner
@@ -65,12 +66,85 @@ def test_analyze_offline_dir_emits_analysis_result_json(tmp_path: Any) -> None:
     assert any(w["operation_name"] == "place_order" for w in payload["workflows"])
 
 
+_CLAUDE_CODE_FIXTURE = Path(__file__).parent / "fixtures" / "agents" / "claude_code_session.jsonl"
+
+_TRANSCRIPT_CONTEXT_YAML = """
+agent_name: claude_code
+agent_description: Coding agent that inspects and edits a repository.
+operations:
+  - name: inspect_repo
+    description: List repository contents and read files to answer a question.
+    expected_tools: [Bash, Read]
+    priority: high
+"""
+
+
+def test_analyze_transcript_backfill_emits_analysis_result_json(tmp_path: Any) -> None:
+    # Offline backfill: a raw Claude Code session transcript (one past run) →
+    # IR → AnalysisResult, no LLM spend.
+    ctx = tmp_path / "ctx.yaml"
+    ctx.write_text(_TRANSCRIPT_CONTEXT_YAML)
+    out = tmp_path / "result.json"
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "analyze",
+            "--transcript",
+            str(_CLAUDE_CODE_FIXTURE),
+            "--agent",
+            "claude_code",
+            "--context",
+            str(ctx),
+            "--output",
+            str(out),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(out.read_text())
+    assert payload["evidence_coverage"]["total_traces"] == 1
+    assert payload["llm_used"] is False
+    assert any(w["operation_name"] == "inspect_repo" for w in payload["workflows"])
+
+
+def test_analyze_transcript_requires_agent(tmp_path: Any) -> None:
+    ctx = tmp_path / "ctx.yaml"
+    ctx.write_text(_TRANSCRIPT_CONTEXT_YAML)
+
+    # --transcript without --agent → usage error.
+    result = CliRunner().invoke(cli, ["analyze", "--transcript", str(_CLAUDE_CODE_FIXTURE), "--context", str(ctx)])
+    assert result.exit_code != 0
+    assert "--transcript requires --agent" in result.output
+
+
 def test_analyze_requires_exactly_one_source(tmp_path: Any) -> None:
     ctx = tmp_path / "ctx.yaml"
     ctx.write_text(_CONTEXT_YAML)
 
     # Neither source → usage error.
     result = CliRunner().invoke(cli, ["analyze", "--context", str(ctx)])
+    assert result.exit_code != 0
+    assert "exactly one source" in result.output
+
+    # Two sources → usage error (explicit, no fallback chain).
+    traces_dir = tmp_path / "traces"
+    traces_dir.mkdir()
+    _seed_offline_trace(traces_dir)
+    result = CliRunner().invoke(
+        cli,
+        [
+            "analyze",
+            "--normalized-dir",
+            str(traces_dir),
+            "--transcript",
+            str(_CLAUDE_CODE_FIXTURE),
+            "--agent",
+            "claude_code",
+            "--context",
+            str(ctx),
+        ],
+    )
     assert result.exit_code != 0
     assert "exactly one source" in result.output
 

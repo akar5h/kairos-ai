@@ -2,10 +2,13 @@
 
     kairos analyze --phoenix <id> [<id> ...] --context ctx.yaml
     kairos analyze --normalized-dir <dir> --context ctx.yaml
+    kairos analyze --transcript <file.jsonl> --agent claude_code --context ctx.yaml
 
-The source is explicit at the call site — exactly one of ``--phoenix`` or
-``--normalized-dir``. No try-A-then-B fallback. Output is the AnalysisResult
-serialized as JSON.
+The source is explicit at the call site — exactly one of ``--phoenix``,
+``--normalized-dir``, or ``--transcript``. No try-A-then-B fallback. Live
+(Phoenix) is the primary path; ``--transcript`` is the offline backfill for
+non-instrumentable / historical runs. Output is the AnalysisResult serialized
+as JSON.
 """
 
 from __future__ import annotations
@@ -23,14 +26,27 @@ from pydantic import BaseModel
 from kairos.config import settings
 from kairos.engine.pipeline import KairosEngine
 from kairos.log import get_logger, setup_logging
+from kairos.normalization.agents.claude_code import ClaudeCodeNormalizer
+from kairos.normalization.agents.codex import CodexNormalizer
+from kairos.normalization.agents.paperclip import PaperclipNormalizer
 from kairos.readers.phoenix import PhoenixReader
 from kairos.store.json_store import JSONStore
 from kairos.taxonomy.business_context import BusinessContext
 
 if TYPE_CHECKING:
     from kairos.models.trace import TraceEnvelope
+    from kairos.normalization.agents.base import AgentTranscriptNormalizer
 
 logger = get_logger(__name__)
+
+# Offline-backfill adapters keyed by --agent. Each reads a single JSONL
+# transcript via ``normalize_jsonl``. OpenCode's multi-file session storage is
+# not a single JSONL, so it is driven via its Python API, not this CLI.
+_TRANSCRIPT_ADAPTERS: dict[str, type[AgentTranscriptNormalizer]] = {
+    "claude_code": ClaudeCodeNormalizer,
+    "codex": CodexNormalizer,
+    "paperclip": PaperclipNormalizer,
+}
 
 
 def _to_jsonable(obj: Any) -> Any:
@@ -62,6 +78,11 @@ def _load_from_phoenix(trace_ids: tuple[str, ...], endpoint: str) -> list[TraceE
     return [reader.fetch_envelope(tid) for tid in trace_ids]
 
 
+def _load_from_transcript(path: Path, agent_kind: str) -> list[TraceEnvelope]:
+    adapter = _TRANSCRIPT_ADAPTERS[agent_kind]()
+    return [adapter.normalize_jsonl(path)]
+
+
 def _load_from_dir(directory: Path) -> list[TraceEnvelope]:
     store = JSONStore(directory)
     envelopes: list[TraceEnvelope] = []
@@ -89,6 +110,18 @@ def cli() -> None:
     help="Directory of normalized IR JSON files — offline source.",
 )
 @click.option(
+    "--transcript",
+    "transcript_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Raw agent transcript JSONL — offline backfill source (use with --agent).",
+)
+@click.option(
+    "--agent",
+    "agent_kind",
+    type=click.Choice(sorted(_TRANSCRIPT_ADAPTERS)),
+    help="Transcript adapter for --transcript.",
+)
+@click.option(
     "--context",
     "context_path",
     required=True,
@@ -105,18 +138,27 @@ def cli() -> None:
 def analyze(
     phoenix_ids: tuple[str, ...],
     normalized_dir: Path | None,
+    transcript_path: Path | None,
+    agent_kind: str | None,
     context_path: Path,
     phoenix_endpoint: str,
     output_path: Path | None,
 ) -> None:
     """Produce an AnalysisResult from a live (Phoenix) or offline source."""
-    if bool(phoenix_ids) == bool(normalized_dir):
-        msg = "specify exactly one source: --phoenix <ids> OR --normalized-dir <dir>"
+    sources = [bool(phoenix_ids), normalized_dir is not None, transcript_path is not None]
+    if sum(sources) != 1:
+        msg = "specify exactly one source: --phoenix <ids> OR --normalized-dir <dir> OR --transcript <file>"
+        raise click.UsageError(msg)
+    if transcript_path is not None and agent_kind is None:
+        msg = "--transcript requires --agent to select the adapter"
         raise click.UsageError(msg)
 
     context = BusinessContext.from_yaml(context_path)
     if phoenix_ids:
         envelopes = _load_from_phoenix(phoenix_ids, phoenix_endpoint)
+    elif transcript_path is not None:
+        assert agent_kind is not None  # noqa: S101 — guaranteed by the --agent check above
+        envelopes = _load_from_transcript(transcript_path, agent_kind)
     else:
         assert normalized_dir is not None  # noqa: S101 — guaranteed by the exactly-one-source check
         envelopes = _load_from_dir(normalized_dir)

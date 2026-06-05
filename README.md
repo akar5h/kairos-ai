@@ -36,9 +36,20 @@ Python 3.13.
 ## CLI
 
 ```bash
-kairos analyze --phoenix <trace_ids>
+# Live (primary): pull a Xero trace from Phoenix on demand, analyze it.
+kairos analyze --phoenix <trace_ids> --context <business_context.yaml>
+
+# Offline backfill: a raw agent transcript (historical / non-instrumentable run).
+kairos analyze --transcript <session.jsonl> --agent claude_code --context <business_context.yaml>
+
+# Offline: a directory of already-normalized IR JSON files.
 kairos analyze --normalized-dir <dir> --context <business_context.yaml>
 ```
+
+Sources are mutually exclusive — pick exactly one, no fallback chain. Analysis
+is pull-based and **never spends LLM credits per run**: the CLI skips the
+semantic decision pass (`llm_used: false`); pass an `LLMClient` to
+`KairosEngine.analyze` in-process if you want it.
 
 ## Wiring an ongoing agent session (Phase 2)
 
@@ -58,25 +69,37 @@ The adapters (`kairos.normalization.agents`):
 Each adapter captures everything the transcript exposes — every model turn,
 every tool call with full args + result, errors, and timing.
 
-### Example: analyze a Claude Code session
+### Offline backfill: analyze one past Claude Code session
 
-```python
-from kairos.normalization.agents import ClaudeCodeNormalizer
-from kairos.store.json_store import JSONStore
-
-# 1. Normalize the live session transcript → IR.
-adapter = ClaudeCodeNormalizer()
-sessions = ClaudeCodeNormalizer.discover_sessions()      # ~/.claude/projects/**/*.jsonl
-envelope = adapter.normalize_jsonl(sessions[-1])
-
-# 2. Persist the IR where `kairos analyze` reads it.
-JSONStore("traces/").save(envelope)
-```
+The transcript adapters are the **offline backfill** path — for historical runs
+and engines we can't instrument live. One command normalizes the raw transcript
+and analyzes it (no intermediate store, no LLM spend):
 
 ```bash
-# 3. Analyze (offline source) against a business context.
-kairos analyze --normalized-dir traces/ --context business_context.yaml
+kairos analyze \
+  --transcript ~/.claude/projects/<proj>/<session>.jsonl \
+  --agent claude_code \
+  --context business_context.yaml
 ```
+
+`--agent` selects the adapter: `claude_code`, `codex`, or `paperclip` (each
+reads a single JSONL transcript). Discover Claude Code sessions with
+`ClaudeCodeNormalizer.discover_sessions()`.
+
+OpenCode stores a session across many files rather than one JSONL, so it is
+driven via its Python API instead of `--transcript`:
+
+```python
+from kairos.normalization.agents import OpenCodeNormalizer
+from kairos.engine import KairosEngine
+from kairos.taxonomy.business_context import BusinessContext
+
+envelope = OpenCodeNormalizer().normalize_session(OpenCodeNormalizer.discover_sessions()[-1])
+result = KairosEngine().analyze([envelope], BusinessContext.from_yaml("business_context.yaml"))
+```
+
+To stage many transcripts for one analysis run, normalize each to a
+`JSONStore` directory and point `--normalized-dir` at it.
 
 ### Business context without hand-YAML (Paperclip agents)
 
