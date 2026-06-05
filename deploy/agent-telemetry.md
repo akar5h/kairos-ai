@@ -21,6 +21,12 @@ that emits trace spans (`claude_code.llm_request` with `gen_ai.*` semconv attrs,
 by env. No central model-gateway exists for these agents (the SDK talks directly
 to `api.anthropic.com`), so emit is per-engine, enabled purely by env.
 
+> **Two flags gate emission (XER-73):** CC only emits trace spans when
+> `isTelemetryEnabled && isEnhancedTelemetryBeta` — i.e. **both**
+> `CLAUDE_CODE_ENABLE_TELEMETRY=1` **and** `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1`.
+> The enable flag alone emits zero spans. `OTEL_LOG_USER_PROMPTS=1` additionally
+> attaches un-redacted prompt content (Kairos wants it; privacy-sensitive).
+
 ## Delivery mechanism — adapter-side env injection (NOT `adapterConfig.env`)
 
 > **Verified defect (XER-69):** API-set `adapterConfig.env` does **not** reach a
@@ -41,6 +47,8 @@ place. Tracked for the platform/board in XER-76.
 | Key | Value | Notes |
 | --- | --- | --- |
 | `CLAUDE_CODE_ENABLE_TELEMETRY` | `1` | turns the native tracer on |
+| `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA` | `1` | **required** — emission gate is `enable && beta`; enable alone = zero spans |
+| `OTEL_LOG_USER_PROMPTS` | `1` | un-redacted prompt content on spans (privacy-sensitive) |
 | `OTEL_TRACES_EXPORTER` | `otlp` | traces over OTLP |
 | `OTEL_METRICS_EXPORTER` | `none` | traces-only; the default deploy has no metrics pipeline |
 | `OTEL_LOGS_EXPORTER` | `none` | traces-only |
@@ -80,7 +88,10 @@ fields; per-run ids come from the run context already in scope. Insert after
 ```js
 // XER-69 live OTel emit — claude_local owns the telemetry env (adapterConfig.env
 // is dropped by the string-only env filter, so it cannot deliver this).
+// Both flags required: CC emits only when enable && enhanced-beta (XER-73).
 env.CLAUDE_CODE_ENABLE_TELEMETRY = "1";
+env.CLAUDE_CODE_ENHANCED_TELEMETRY_BETA = "1";
+env.OTEL_LOG_USER_PROMPTS = "1";
 env.OTEL_TRACES_EXPORTER = "otlp";
 env.OTEL_METRICS_EXPORTER = "none";
 env.OTEL_LOGS_EXPORTER = "none";
@@ -119,6 +130,11 @@ backpressure.** No `kairos` import on the agent hot path (grep-gated — see
 3. Jaeger (`http://localhost:16686`) shows service `paperclip-claude-<key>` with
    spans `claude_code.llm_request` / `claude_code.tool` carrying `paperclip.*`
    resource attributes.
+4. **Phoenix-server round-trip** (XER-73 carryover — not yet exercised live):
+   `docker compose -f deploy/docker-compose.yml --profile phoenix up -d`, point a
+   one-shot replay at the Phoenix OTLP hop, then `PhoenixReader.fetch_envelope`
+   the trace → valid `TraceEnvelope`. Confirms the literal HTTP/gRPC server hop,
+   not just the captured-span reader path.
 
 Backend-equivalent check (no agent run, proves ingest + provenance round-trip):
 

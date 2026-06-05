@@ -33,6 +33,7 @@ def test_env_example_enables_traces_only_otlp_emit() -> None:
     # Native tracer on + OTLP traces to the deploy backend.
     assert {
         "CLAUDE_CODE_ENABLE_TELEMETRY",
+        "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
         "OTEL_TRACES_EXPORTER",
         "OTEL_EXPORTER_OTLP_ENDPOINT",
         "OTEL_EXPORTER_OTLP_PROTOCOL",
@@ -40,6 +41,9 @@ def test_env_example_enables_traces_only_otlp_emit() -> None:
     } <= keys
     text = _ENV_EXAMPLE.read_text()
     assert "CLAUDE_CODE_ENABLE_TELEMETRY=1" in text
+    # Emission gate is `enable && enhanced-beta` — the enable flag alone emits
+    # zero spans (XER-73). Both must be wired or the patch is a no-op.
+    assert "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1" in text
     assert "OTEL_TRACES_EXPORTER=otlp" in text
     # Traces only: metrics/logs exporters explicitly off (deploy has a traces
     # pipeline only).
