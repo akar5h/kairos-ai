@@ -1,0 +1,42 @@
+# Kairos OTLP backend — always-on collection layer (XER-67, Phase 0).
+#
+# Default stack is 100% Apache-2.0 (zero ELv2): OTel Collector ingests OTLP and
+# exports to a Jaeger store + raw-trace UI. Agents emit OTLP to the collector on
+# :4317 (gRPC) / :4318 (HTTP). Export is async/non-blocking on the agent side.
+#
+#   docker compose -f deploy/docker-compose.yml up -d            # default (Apache-2.0)
+#   docker compose -f deploy/docker-compose.yml --profile phoenix up -d   # + Phoenix (ELv2, opt-in)
+#
+# Phoenix is an OPT-IN extra (Elastic License 2.0, separate process). It is the
+# backend Kairos's PhoenixReader currently reads from; the default deploy ships
+# none of it. See deploy/README.md.
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC  (agents emit here)
+      - "4318:4318"   # OTLP HTTP  (agents emit here)
+    depends_on:
+      - jaeger
+    restart: unless-stopped
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Jaeger raw-trace UI
+    restart: unless-stopped
+
+  # Opt-in (Elastic License 2.0). Not part of the default Apache-2.0 deploy.
+  # OTLP gRPC on host :4319 to avoid clashing with the collector; UI on :6006.
+  phoenix:
+    image: arizephoenix/phoenix:version-7.9.0
+    profiles: ["phoenix"]
+    ports:
+      - "6006:6006"     # Phoenix UI
+      - "4319:4317"     # Phoenix OTLP gRPC
+    restart: unless-stopped
