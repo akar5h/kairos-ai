@@ -32,6 +32,11 @@ from kairos.normalization.agents.paperclip import PaperclipNormalizer
 from kairos.readers.phoenix import PhoenixReader
 from kairos.store.json_store import JSONStore
 from kairos.taxonomy.business_context import BusinessContext
+from kairos.views.analysis_view import (
+    DEFAULT_PHOENIX_BASE_URL,
+    DEFAULT_PHOENIX_PROJECT,
+    build_analysis_view,
+)
 
 if TYPE_CHECKING:
     from kairos.models.trace import TraceEnvelope
@@ -95,6 +100,31 @@ def _load_from_dir(directory: Path) -> list[TraceEnvelope]:
     return envelopes
 
 
+def _resolve_envelopes(
+    phoenix_ids: tuple[str, ...],
+    normalized_dir: Path | None,
+    transcript_path: Path | None,
+    agent_kind: str | None,
+    phoenix_endpoint: str,
+) -> list[TraceEnvelope]:
+    """Load envelopes from exactly one explicit source. No fallback chain."""
+    sources = [bool(phoenix_ids), normalized_dir is not None, transcript_path is not None]
+    if sum(sources) != 1:
+        msg = "specify exactly one source: --phoenix <ids> OR --normalized-dir <dir> OR --transcript <file>"
+        raise click.UsageError(msg)
+    if transcript_path is not None and agent_kind is None:
+        msg = "--transcript requires --agent to select the adapter"
+        raise click.UsageError(msg)
+
+    if phoenix_ids:
+        return _load_from_phoenix(phoenix_ids, phoenix_endpoint)
+    if transcript_path is not None:
+        assert agent_kind is not None  # noqa: S101 — guaranteed by the --agent check above
+        return _load_from_transcript(transcript_path, agent_kind)
+    assert normalized_dir is not None  # noqa: S101 — guaranteed by the exactly-one-source check
+    return _load_from_dir(normalized_dir)
+
+
 @click.group()
 def cli() -> None:
     """Kairos AI — agent tracing + on-demand failure analysis."""
@@ -145,23 +175,8 @@ def analyze(
     output_path: Path | None,
 ) -> None:
     """Produce an AnalysisResult from a live (Phoenix) or offline source."""
-    sources = [bool(phoenix_ids), normalized_dir is not None, transcript_path is not None]
-    if sum(sources) != 1:
-        msg = "specify exactly one source: --phoenix <ids> OR --normalized-dir <dir> OR --transcript <file>"
-        raise click.UsageError(msg)
-    if transcript_path is not None and agent_kind is None:
-        msg = "--transcript requires --agent to select the adapter"
-        raise click.UsageError(msg)
-
     context = BusinessContext.from_yaml(context_path)
-    if phoenix_ids:
-        envelopes = _load_from_phoenix(phoenix_ids, phoenix_endpoint)
-    elif transcript_path is not None:
-        assert agent_kind is not None  # noqa: S101 — guaranteed by the --agent check above
-        envelopes = _load_from_transcript(transcript_path, agent_kind)
-    else:
-        assert normalized_dir is not None  # noqa: S101 — guaranteed by the exactly-one-source check
-        envelopes = _load_from_dir(normalized_dir)
+    envelopes = _resolve_envelopes(phoenix_ids, normalized_dir, transcript_path, agent_kind, phoenix_endpoint)
 
     result = KairosEngine().analyze(envelopes, context)
     payload = json.dumps(_to_jsonable(result), indent=2)
@@ -169,5 +184,81 @@ def analyze(
     if output_path is not None:
         output_path.write_text(payload)
         logger.info("cli.analyze.written", output=str(output_path), traces=len(envelopes))
+    else:
+        click.echo(payload)
+
+
+@cli.command()
+@click.option("--phoenix", "phoenix_ids", multiple=True, help="Phoenix trace id(s) — live source.")
+@click.option(
+    "--normalized-dir",
+    "normalized_dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Directory of normalized IR JSON files — offline source.",
+)
+@click.option(
+    "--transcript",
+    "transcript_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Raw agent transcript JSONL — offline backfill source (use with --agent).",
+)
+@click.option(
+    "--agent",
+    "agent_kind",
+    type=click.Choice(sorted(_TRANSCRIPT_ADAPTERS)),
+    help="Transcript adapter for --transcript.",
+)
+@click.option(
+    "--context",
+    "context_path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Business-context YAML.",
+)
+@click.option("--phoenix-endpoint", default="http://localhost:6006", show_default=True)
+@click.option(
+    "--phoenix-base-url",
+    default=DEFAULT_PHOENIX_BASE_URL,
+    show_default=True,
+    help="Phoenix UI base URL used to build trace deep-links.",
+)
+@click.option(
+    "--phoenix-project",
+    default=DEFAULT_PHOENIX_PROJECT,
+    show_default=True,
+    help="Phoenix project for deep-links.",
+)
+@click.option(
+    "--output",
+    "output_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Write AnalysisView JSON here (default: stdout).",
+)
+def view(
+    phoenix_ids: tuple[str, ...],
+    normalized_dir: Path | None,
+    transcript_path: Path | None,
+    agent_kind: str | None,
+    context_path: Path,
+    phoenix_endpoint: str,
+    phoenix_base_url: str,
+    phoenix_project: str,
+    output_path: Path | None,
+) -> None:
+    """Emit the Paperclip-native view payload (cohort/divergence/correctness).
+
+    Same sources as ``analyze``; output is the ``AnalysisView`` JSON the
+    Paperclip-native UI renders, with a Phoenix deep-link on every finding row.
+    """
+    context = BusinessContext.from_yaml(context_path)
+    envelopes = _resolve_envelopes(phoenix_ids, normalized_dir, transcript_path, agent_kind, phoenix_endpoint)
+
+    result = KairosEngine().analyze(envelopes, context)
+    analysis_view = build_analysis_view(result, phoenix_base_url=phoenix_base_url, phoenix_project=phoenix_project)
+    payload = analysis_view.model_dump_json(indent=2)
+
+    if output_path is not None:
+        output_path.write_text(payload)
+        logger.info("cli.view.written", output=str(output_path), traces=len(envelopes))
     else:
         click.echo(payload)
