@@ -21,11 +21,22 @@ that emits trace spans (`claude_code.llm_request` with `gen_ai.*` semconv attrs,
 by env. No central model-gateway exists for these agents (the SDK talks directly
 to `api.anthropic.com`), so emit is per-engine, enabled purely by env.
 
-## Wiring (per agent)
+## Delivery mechanism — adapter-side env injection (NOT `adapterConfig.env`)
 
-Set the keys from [`paperclip-agent-otel.env.example`](paperclip-agent-otel.env.example)
-into each agent's `adapterConfig.env` (Paperclip server-side). The `claude_local`
-adapter merges `adapterConfig.env` into the spawned `claude` process env.
+> **Verified defect (XER-69):** API-set `adapterConfig.env` does **not** reach a
+> `claude_local` agent's process. The API stores env values as `{type:"plain",
+> value}` binding objects; the adapter's env merge
+> (`adapter-utils … rewriteWorkspaceCwdEnvVarsForExecution`) filters to
+> `typeof === "string"` only, and the server's `toPlainEnvValue` resolver runs
+> only in secret tooling — never the spawn path. So binding-object env is
+> silently dropped. Confirmed empirically: a configured agent's process carries
+> no `OTEL_*` vars and emits zero spans.
+
+Therefore the telemetry env block below must be injected **by the `claude_local`
+adapter** (`adapter-claude-local/dist/server/execute.js`, where the spawn `env`
+is built and `env.PAPERCLIP_RUN_ID` is set), not via `adapterConfig.env`. The
+adapter owns the full block — static constants + per-run provenance — in one
+place. Tracked for the platform/board in XER-76.
 
 | Key | Value | Notes |
 | --- | --- | --- |
@@ -47,40 +58,51 @@ metadata: `run_id`, `issue`, `company_id`, `agent_id`, `project_id`. The live
 path mirrors them as `paperclip.*` OTel **resource** attributes so a backend span
 carries the same provenance as the offline envelope:
 
-| run_context key | live resource attribute | when set |
+All are set by the adapter on the spawn `env` (see below); static keys are
+constants/agent fields, per-run keys come from the run context.
+
+| run_context key | live resource attribute | source |
 | --- | --- | --- |
-| `company_id` | `paperclip.company_id` | static (adapterConfig.env) |
-| `agent_id` | `paperclip.agent_id` | static (adapterConfig.env) |
-| `run_id` | `paperclip.run_id` | **dynamic — adapter, per run** |
-| `issue` | `paperclip.issue` | **dynamic — adapter, per run** |
-| `project_id` | `paperclip.project_id` | **dynamic — adapter, per run** |
+| `company_id` | `paperclip.company_id` | `agent.companyId` (static) |
+| `agent_id` | `paperclip.agent_id` | `agent.id` (static) |
+| `run_id` | `paperclip.run_id` | `runId` (per run) |
+| `issue` | `paperclip.issue` | `wakeTaskId` (per run) |
+| `project_id` | `paperclip.project_id` | `agent.projectId` (per run) |
 
-### Static vs dynamic — why dynamic needs an adapter change
+### The adapter sets the whole block (static + dynamic)
 
-`adapterConfig.env` values are assigned **literally** (`env[key] = value`, no
-interpolation), and Claude Code parses `OTEL_RESOURCE_ATTRIBUTES` with the
-standard OTel `EnvDetector` (no `${VAR}` expansion). So per-run ids cannot be
-injected by config alone.
-
-The `claude_local` adapter already computes `runId` and the wake `taskId` at
-launch (`adapter-claude-local/dist/server/execute.js`, where `env.PAPERCLIP_RUN_ID`
-is set). The one-line enhancement is to **append** the dynamic ids to
-`OTEL_RESOURCE_ATTRIBUTES` there, e.g.:
+Because `adapterConfig.env` is inert for `claude_local` (above), the adapter must
+set every key directly on the spawn `env`. Static keys are constants / agent
+fields; per-run ids come from the run context already in scope. Insert after
+`env.PAPERCLIP_RUN_ID = runId;` and `wakeTaskId` resolution in
+`adapter-claude-local/dist/server/execute.js`:
 
 ```js
-// after env.PAPERCLIP_RUN_ID = runId; and wakeTaskId resolution:
-const prov = [
+// XER-69 live OTel emit — claude_local owns the telemetry env (adapterConfig.env
+// is dropped by the string-only env filter, so it cannot deliver this).
+env.CLAUDE_CODE_ENABLE_TELEMETRY = "1";
+env.OTEL_TRACES_EXPORTER = "otlp";
+env.OTEL_METRICS_EXPORTER = "none";
+env.OTEL_LOGS_EXPORTER = "none";
+env.OTEL_EXPORTER_OTLP_PROTOCOL = "http/protobuf";
+env.OTEL_EXPORTER_OTLP_ENDPOINT = env.OTEL_EXPORTER_OTLP_ENDPOINT || "http://localhost:4318";
+env.OTEL_RESOURCE_ATTRIBUTES = [
+  `service.name=paperclip-claude-${agent.urlKey ?? agent.id}`,
+  `paperclip.company_id=${agent.companyId}`,
+  `paperclip.agent_id=${agent.id}`,
   `paperclip.run_id=${runId}`,
   wakeTaskId ? `paperclip.issue=${wakeTaskId}` : null,
   agent.projectId ? `paperclip.project_id=${agent.projectId}` : null,
 ].filter(Boolean).join(",");
-env.OTEL_RESOURCE_ATTRIBUTES = [env.OTEL_RESOURCE_ATTRIBUTES, prov]
-  .filter(Boolean).join(",");
 ```
 
-This is a Paperclip-repo change (cross-repo from kairos-ai) — tracked for CTO
-decision on XER-69. Static provenance + telemetry
-wiring above is independent and ships now.
+This is a Paperclip-repo change (cross-repo from kairos-ai). Alternative durable
+fix: make the server resolve `adapterConfig.env` bindings to strings before spawn
+(apply `toPlainEnvValue` in the run path) — then `adapterConfig.env` works
+generally and the env example below applies as written. Tracked in XER-76
+(platform/board). Claude Code parses `OTEL_RESOURCE_ATTRIBUTES` with the standard
+OTel `EnvDetector` (literal, no `${VAR}` expansion), which is why the per-run ids
+must be interpolated in JS as above rather than via a config template.
 
 ## Non-blocking (by construction)
 
