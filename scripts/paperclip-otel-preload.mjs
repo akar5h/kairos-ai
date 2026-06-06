@@ -51,14 +51,38 @@ child_process.execFile = function patchedExecFile(file, ...rest) {
     const opts = rest[optsIdx];
     if (!opts.env) opts.env = { ...process.env };
 
-    if (!opts.env.TRACEPARENT) {
-      const ctx = span.spanContext();
-      const flags = ctx.traceFlags.toString(16).padStart(2, '0');
-      opts.env.TRACEPARENT = `00-${ctx.traceId}-${ctx.spanId}-${flags}`;
-      const tracestate = ctx.traceState?.serialize() ?? '';
-      if (tracestate) opts.env.TRACESTATE = tracestate;
-    }
+    // Always overwrite — parent-process env may carry a stale TRACEPARENT
+    const ctx = span.spanContext();
+    const flags = ctx.traceFlags.toString(16).padStart(2, '0');
+    opts.env.TRACEPARENT = `00-${ctx.traceId}-${ctx.spanId}-${flags}`;
+    const tracestate = ctx.traceState?.serialize() ?? '';
+    if (tracestate) opts.env.TRACESTATE = tracestate;
   }
 
   return _originalExecFile(file, ...rest);
+};
+
+// Propagate W3C trace context into child_process.spawn subprocesses
+const _originalSpawn = child_process.spawn;
+child_process.spawn = function patchedSpawn(command, ...rest) {
+  const span = api.trace.getActiveSpan();
+  if (span && span.isRecording()) {
+    // rest = [?args[], ?options{}]
+    let optsIdx = rest.findIndex(a => a !== null && typeof a === 'object' && !Array.isArray(a));
+    if (optsIdx === -1) {
+      optsIdx = rest.length;
+      rest.push({});
+    }
+    const opts = rest[optsIdx];
+    if (!opts.env) opts.env = { ...process.env };
+
+    // Always overwrite — parent-process env may carry a stale TRACEPARENT
+    const ctx = span.spanContext();
+    const flags = ctx.traceFlags.toString(16).padStart(2, '0');
+    opts.env.TRACEPARENT = `00-${ctx.traceId}-${ctx.spanId}-${flags}`;
+    const tracestate = ctx.traceState?.serialize() ?? '';
+    if (tracestate) opts.env.TRACESTATE = tracestate;
+  }
+
+  return _originalSpawn(command, ...rest);
 };
