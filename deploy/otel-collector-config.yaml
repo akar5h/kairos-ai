@@ -46,12 +46,11 @@ exporters:
     endpoint: jaeger:4317
     tls:
       insecure: true
-  # Phoenix (ELv2, opt-in profile) — gRPC OTLP at phoenix:4317.
+  # Phoenix (ELv2, opt-in profile) — HTTP OTLP at phoenix:6006.
   # Active when the phoenix service is in the compose stack.
-  otlp/phoenix:
-    endpoint: phoenix:4317
-    tls:
-      insecure: true
+  # v7.9.0 does not bind gRPC (4317); HTTP OTLP on 6006 is the only listener.
+  otlphttp/phoenix:
+    endpoint: http://phoenix:6006
   debug:
     verbosity: normal
 
@@ -60,7 +59,7 @@ service:
     traces:
       receivers: [otlp]
       processors: [transform/openinference, batch]
-      exporters: [otlp/jaeger, otlp/phoenix, debug]
+      exporters: [otlp/jaeger, otlphttp/phoenix, debug]
   telemetry:
     logs:
       level: info
