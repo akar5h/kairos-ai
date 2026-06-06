@@ -12,6 +12,34 @@ receivers:
 processors:
   batch: {}
 
+  # OpenInference enrichment — runs before batch so tokens/kind/status/IO render in Phoenix.
+  # R1: map CC span.type / gen_ai.system → openinference.span.kind
+  # R2: copy gen_ai.usage.* → llm.token_count.* and llm.model_name (OI format Phoenix reads)
+  # R3: promote UNSET status → OK (CC never calls setStatus(OK) on success per OTel spec)
+  # R4: copy input.value/output.value → llm.input_messages/llm.output_messages (LLM spans only)
+  transform/openinference:
+    trace_statements:
+      - context: span
+        statements:
+          # R1 — kind classification (most-specific first; later statements win on conflict)
+          - set(attributes["openinference.span.kind"], "LLM") where attributes["gen_ai.system"] != nil
+          - set(attributes["openinference.span.kind"], "LLM") where IsMatch(name, ".*llm_request.*") and attributes["openinference.span.kind"] == nil
+          - set(attributes["openinference.span.kind"], "TOOL") where attributes["span.type"] == "tool"
+          - set(attributes["openinference.span.kind"], "CHAIN") where attributes["span.type"] == "interaction"
+          # R2 — OI token keys (Phoenix aggregates these; it ignores gen_ai.usage.* without span kind)
+          - set(attributes["llm.token_count.prompt"], attributes["gen_ai.usage.input_tokens"]) where attributes["gen_ai.usage.input_tokens"] != nil
+          - set(attributes["llm.token_count.completion"], attributes["gen_ai.usage.output_tokens"]) where attributes["gen_ai.usage.output_tokens"] != nil
+          - set(attributes["llm.token_count.total"], attributes["gen_ai.usage.total_tokens"]) where attributes["gen_ai.usage.total_tokens"] != nil
+          - set(attributes["llm.model_name"], attributes["gen_ai.request.model"]) where attributes["gen_ai.request.model"] != nil
+          # R3 — CC never sets OK on success; promote UNSET so Phoenix shows status correctly
+          - set(status.code, STATUS_CODE_OK) where status.code == STATUS_CODE_UNSET
+          # R4 — OI message arrays for Phoenix Input/Output columns (LLM spans only;
+          #      tool spans use input.value for args, not prompt content)
+          - set(attributes["llm.input_messages.0.message.role"], "user") where attributes["openinference.span.kind"] == "LLM" and attributes["input.value"] != nil
+          - set(attributes["llm.input_messages.0.message.content"], attributes["input.value"]) where attributes["openinference.span.kind"] == "LLM" and attributes["input.value"] != nil
+          - set(attributes["llm.output_messages.0.message.role"], "assistant") where attributes["openinference.span.kind"] == "LLM" and attributes["output.value"] != nil
+          - set(attributes["llm.output_messages.0.message.content"], attributes["output.value"]) where attributes["openinference.span.kind"] == "LLM" and attributes["output.value"] != nil
+
 exporters:
   # Apache-2.0 trace store + raw-trace UI.
   otlp/jaeger:
@@ -30,7 +58,7 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [batch]
+      processors: [transform/openinference, batch]
       exporters: [otlp/jaeger, otlphttp/phoenix, debug]
   telemetry:
     logs:
