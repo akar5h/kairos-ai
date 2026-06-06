@@ -17,11 +17,11 @@ try {
     propagator: new CompositePropagator({
       propagators: [new W3CTraceContextPropagator()],
     }),
-    instrumentations: [
+    instrumentations: process.env.PAPERCLIP_OTEL_HTTP_SPANS === "1" ? [
       new HttpInstrumentation(),
       new ExpressInstrumentation(),
       new PgInstrumentation(),
-    ],
+    ] : [],
   });
 
   sdk.start();
