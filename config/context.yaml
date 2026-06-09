@@ -103,14 +103,14 @@ operations:
     priority: "high"
 
   - name: "Codebase Research"
-    description: "Read-only exploration — answering questions, mapping structure, finding symbols"
+    description: "Read-only exploration — answering questions, mapping structure, finding symbols. Distinctive tool is Read (file reading). Bash/Grep/Glob are supporting tools."
     expected_tools:
       - "Read"
       - "Grep"
       - "Glob"
       - "Bash"
     required_side_effect_tools:
-      - "Bash"
+      - "Read"
     priority: "medium"
 
   - name: "Paperclip Coordination"
