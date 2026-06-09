@@ -164,8 +164,7 @@ def test_phoenix_and_offline_sources_produce_analysis_result(tmp_path: Any) -> N
     result = KairosEngine().analyze([phoenix_env, offline_env], _context())
 
     assert isinstance(result, AnalysisResult)
-    assert result.evidence_coverage.total_traces == 2
-    assert result.llm_used is False
+    assert isinstance(result.reliability, dict)
 
     place_order = next(w for w in result.workflows if w.operation_name == "place_order")
     assert place_order.full_trace_count + place_order.attempted_trace_count == 2

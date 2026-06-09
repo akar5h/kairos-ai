@@ -6,16 +6,8 @@ import json
 
 import pytest
 
-from kairos.analysis.evidence_coverage import EvidenceCoverage
 from kairos.analysis.outcome_metric import WorkflowOutcomeSummary
 from kairos.analysis.reference_behavior import ReferenceCohort, ReferenceConfidence
-from kairos.analysis.semantic_decision import (
-    Confidence,
-    DecisionAdvanced,
-    FindingType,
-    FixArea,
-    SemanticDecisionFinding,
-)
 from kairos.analysis.workflow_divergence import DivergenceFinding
 from kairos.detection.models import Finding
 from kairos.engine.pipeline import AnalysisResult, UnmappedActivity, WorkflowSummary
@@ -95,19 +87,6 @@ def _sample_result() -> AnalysisResult:
         affected_step_indices=[4, 5, 6],
         estimated_token_waste=1200,
     )
-    semantic = SemanticDecisionFinding(
-        trace_id="sem-1",
-        workflow_name="Screening",
-        step_index=7,
-        decision_advanced_task=DecisionAdvanced.NO,
-        finding_type=FindingType.CONTEXT_IGNORED,
-        evidence_refs=["span:1"],
-        missing_evidence=["candidate_resume"],
-        likely_fix_area=FixArea.PROMPT,
-        confidence=Confidence.HIGH,
-        ticket_title="Agent ignored screening criteria",
-        verification_target="re-run with explicit criteria",
-    )
     workflow = WorkflowSummary(
         operation_name="Screening",
         full_trace_count=6,
@@ -116,7 +95,6 @@ def _sample_result() -> AnalysisResult:
         reference=ref,
         deterministic_findings=[finding],
         divergences=[divergence],
-        semantic_findings=[semantic],
         top_pattern_names=["redundant_execution"],
     )
     return AnalysisResult(
@@ -126,14 +104,7 @@ def _sample_result() -> AnalysisResult:
             sample_trace_ids=["unm-1", "unm-2"],
             top_tools=["search", "fetch"],
         ),
-        evidence_coverage=EvidenceCoverage(
-            total_traces=12,
-            valid_traces=11,
-            invalid_traces=1,
-            required_field_counts={"trace_id": 12},
-            context_field_counts={"tool_version": 4},
-        ),
-        llm_used=True,
+        reliability={"terminal_status_rate": 0.92, "tool_sequence_rate": 0.88},
     )
 
 
@@ -141,8 +112,8 @@ class TestBuildAnalysisView:
     def test_returns_analysis_view(self) -> None:
         view = build_analysis_view(_sample_result())
         assert isinstance(view, AnalysisView)
-        assert view.llm_used is True
         assert len(view.workflows) == 1
+        assert isinstance(view.reliability, dict)
 
     def test_cohort_view(self) -> None:
         wf = build_analysis_view(_sample_result()).workflows[0]
@@ -168,13 +139,6 @@ class TestBuildAnalysisView:
         assert len(corr.deterministic_findings) == 1
         assert corr.deterministic_findings[0].phoenix_url == "http://localhost:6006/projects/default/traces/det-1"
         assert corr.deterministic_findings[0].estimated_token_waste == 1200
-        assert len(corr.semantic_findings) == 1
-        sem = corr.semantic_findings[0]
-        assert sem.finding_type == "context_ignored"
-        assert sem.decision_advanced_task == "no"
-        assert sem.likely_fix_area == "prompt"
-        assert sem.confidence == "high"
-        assert sem.phoenix_url.endswith("/traces/sem-1")
 
     def test_unmapped_sample_links(self) -> None:
         view = build_analysis_view(_sample_result())
@@ -182,10 +146,10 @@ class TestBuildAnalysisView:
         assert [t.trace_id for t in view.unmapped.sample_traces] == ["unm-1", "unm-2"]
         assert view.unmapped.sample_traces[0].phoenix_url.endswith("/traces/unm-1")
 
-    def test_evidence_coverage_passthrough(self) -> None:
+    def test_reliability_passthrough(self) -> None:
         view = build_analysis_view(_sample_result())
-        assert view.evidence_coverage.total_traces == 12
-        assert view.evidence_coverage.required_field_counts == {"trace_id": 12}
+        assert view.reliability["terminal_status_rate"] == pytest.approx(0.92)
+        assert view.reliability["tool_sequence_rate"] == pytest.approx(0.88)
 
     def test_custom_project_in_links(self) -> None:
         view = build_analysis_view(_sample_result(), phoenix_project="xero")
@@ -197,17 +161,13 @@ class TestBuildAnalysisView:
         payload = view.model_dump_json()
         parsed = json.loads(payload)
         assert parsed["workflows"][0]["cohort"]["confidence"] == "medium"
-        assert (
-            parsed["workflows"][0]["correctness"]["semantic_findings"][0]["ticket_title"]
-            == "Agent ignored screening criteria"
-        )
+        assert parsed["workflows"][0]["correctness"]["outcome_rate"] == 0.75
 
     def test_empty_result(self) -> None:
         empty = AnalysisResult(
             workflows=[],
             unmapped=UnmappedActivity(trace_count=0, sample_trace_ids=[], top_tools=[]),
-            evidence_coverage=EvidenceCoverage(total_traces=0, valid_traces=0, invalid_traces=0),
-            llm_used=False,
+            reliability={},
         )
         view = build_analysis_view(empty)
         assert view.workflows == []

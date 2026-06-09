@@ -27,9 +27,7 @@ from pydantic import BaseModel
 _Linker = Callable[[str], str]
 
 if TYPE_CHECKING:
-    from kairos.analysis.evidence_coverage import EvidenceCoverage
     from kairos.analysis.reference_behavior import ReferenceCohort
-    from kairos.analysis.semantic_decision import SemanticDecisionFinding
     from kairos.analysis.workflow_divergence import DivergenceFinding
     from kairos.detection.models import Finding
     from kairos.engine.pipeline import AnalysisResult, UnmappedActivity, WorkflowSummary
@@ -117,22 +115,6 @@ class FindingRow(BaseModel):
     estimated_token_waste: int
 
 
-class SemanticFindingRow(BaseModel):
-    """A semantic (LLM) decision finding on one trace, with deep-link."""
-
-    trace_id: str
-    phoenix_url: str
-    step_index: int
-    finding_type: str
-    decision_advanced_task: str
-    likely_fix_area: str
-    confidence: str
-    ticket_title: str
-    verification_target: str
-    evidence_refs: list[str]
-    missing_evidence: list[str]
-
-
 class CorrectnessView(BaseModel):
     """Outcome rate + all findings for one workflow."""
 
@@ -143,7 +125,6 @@ class CorrectnessView(BaseModel):
     passed_count: int
     pending_reason: str | None
     deterministic_findings: list[FindingRow]
-    semantic_findings: list[SemanticFindingRow]
 
 
 class WorkflowView(BaseModel):
@@ -164,16 +145,6 @@ class UnmappedView(BaseModel):
     sample_traces: list[TraceLink]
 
 
-class EvidenceCoverageView(BaseModel):
-    """Per-population evidence-field coverage counts (passthrough)."""
-
-    total_traces: int
-    valid_traces: int
-    invalid_traces: int
-    required_field_counts: dict[str, int]
-    context_field_counts: dict[str, int]
-
-
 class AnalysisView(BaseModel):
     """Top-level Paperclip-native view payload built from an ``AnalysisResult``.
 
@@ -183,10 +154,9 @@ class AnalysisView(BaseModel):
 
     phoenix_base_url: str
     phoenix_project: str
-    llm_used: bool
     workflows: list[WorkflowView]
     unmapped: UnmappedView
-    evidence_coverage: EvidenceCoverageView
+    reliability: dict[str, float]
 
 
 # ───────────────────────── Builder ─────────────────────────
@@ -210,10 +180,9 @@ def build_analysis_view(
     return AnalysisView(
         phoenix_base_url=phoenix_base_url,
         phoenix_project=phoenix_project,
-        llm_used=result.llm_used,
         workflows=[_workflow_view(w, _link) for w in result.workflows],
         unmapped=_unmapped_view(result.unmapped, _link),
-        evidence_coverage=_evidence_view(result.evidence_coverage),
+        reliability=result.reliability,
     )
 
 
@@ -265,7 +234,6 @@ def _correctness_view(summary: WorkflowSummary, link: _Linker) -> CorrectnessVie
         passed_count=outcome.passed_count,
         pending_reason=outcome.pending_reason,
         deterministic_findings=[_finding_row(f, link) for f in summary.deterministic_findings],
-        semantic_findings=[_semantic_row(f, link) for f in summary.semantic_findings],
     )
 
 
@@ -282,22 +250,6 @@ def _finding_row(finding: Finding, link: _Linker) -> FindingRow:
     )
 
 
-def _semantic_row(finding: SemanticDecisionFinding, link: _Linker) -> SemanticFindingRow:
-    return SemanticFindingRow(
-        trace_id=finding.trace_id,
-        phoenix_url=link(finding.trace_id),
-        step_index=finding.step_index,
-        finding_type=finding.finding_type.value,
-        decision_advanced_task=finding.decision_advanced_task.value,
-        likely_fix_area=finding.likely_fix_area.value,
-        confidence=finding.confidence.value,
-        ticket_title=finding.ticket_title,
-        verification_target=finding.verification_target,
-        evidence_refs=list(finding.evidence_refs),
-        missing_evidence=list(finding.missing_evidence),
-    )
-
-
 def _unmapped_view(unmapped: UnmappedActivity, link: _Linker) -> UnmappedView:
     return UnmappedView(
         trace_count=unmapped.trace_count,
@@ -306,11 +258,3 @@ def _unmapped_view(unmapped: UnmappedActivity, link: _Linker) -> UnmappedView:
     )
 
 
-def _evidence_view(coverage: EvidenceCoverage) -> EvidenceCoverageView:
-    return EvidenceCoverageView(
-        total_traces=coverage.total_traces,
-        valid_traces=coverage.valid_traces,
-        invalid_traces=coverage.invalid_traces,
-        required_field_counts=dict(coverage.required_field_counts),
-        context_field_counts=dict(coverage.context_field_counts),
-    )

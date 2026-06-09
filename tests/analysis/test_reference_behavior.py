@@ -164,28 +164,13 @@ class TestEligibilityFilter:
         assert result.eligible_traces == []
 
     def test_loop_trace_excluded(self) -> None:
-        """3+ repeats of the same tool-bigram cycle → loop → not eligible."""
+        """3+ consecutive same-tool calls (period-1 loop) → not eligible."""
         op = _hr_operation()
         steps: list[Step] = []
-        # [get_rubric, parse_resume] x 3 + submit_evaluation → 6 repeated + 1 = 7 steps
-        for cycle in range(3):
-            steps.append(
-                _step(
-                    cycle * 2,
-                    "get_rubric",
-                    tool_args={"c": cycle},
-                    tool_output="same",
-                )
-            )
-            steps.append(
-                _step(
-                    cycle * 2 + 1,
-                    "parse_resume",
-                    tool_args={"c": cycle},
-                    tool_output="same",
-                )
-            )
-        steps.append(_step(6, "submit_evaluation", tool_output="submitted"))
+        # get_rubric x 3 (period-1 loop, same output) + submit_evaluation
+        for i in range(3):
+            steps.append(_step(i, "get_rubric", tool_output="same"))
+        steps.append(_step(3, "submit_evaluation", tool_output="submitted"))
         trace = TraceEnvelope(
             trace_id="t-loop",
             user_input="evaluate candidate",
@@ -285,107 +270,59 @@ class TestConfidenceTiers:
 
 
 class TestReferenceSelection:
-    """Reference cohort = bottom 25% by efficiency (min 1)."""
+    """Reference cohort = traces matching the mode tool_sequence."""
 
-    def test_reference_is_bottom_quartile_by_efficiency(self) -> None:
-        """8 eligible traces with strictly increasing costs → top 2 efficient are reference."""
+    def test_reference_is_mode_tool_sequence(self) -> None:
+        """6 eligible traces: 4 share a canonical sequence, 2 have exotic sequences."""
         op = _hr_operation()
-        traces: list[TraceEnvelope] = []
-        # Step 1: 8 eligible traces. Vary step count by padding with dummy OK
-        # tool calls of an expected tool (parse_resume) so we don't trip
-        # redundancy on tool_output difference. Keep args unique to avoid
-        # jaccard ≥ 0.85.
-        for i in range(8):
-            extra = []
-            for j in range(i):
-                # Pad with variety to avoid redundancy detection
-                extra.append(
-                    _step(
-                        100 + j,
-                        "parse_resume",
-                        tool_args={"pad": j, "i": i},
-                        tool_output=f"pad-{j}",
-                    )
-                )
-            steps: list[Step] = [
-                _step(0, "get_rubric", tool_args={"i": i}),
-                _step(1, "parse_resume", tool_args={"i": i, "a": 0}),
-                *extra,
-                _step(len(extra) + 2, "submit_evaluation", tool_args={"i": i}),
-            ]
-            # Re-index sequentially
-            for idx, s in enumerate(steps):
-                s.step_index = idx
+        canonical = ["get_rubric", "parse_resume", "submit_evaluation"]
+        traces: list[TraceEnvelope] = [_happy_trace(f"can-{i}", tools=canonical) for i in range(4)]
+        for i in range(2):
             traces.append(
                 TraceEnvelope(
-                    trace_id=f"t-{i}",
+                    trace_id=f"ext-{i}",
                     user_input="evaluate candidate",
-                    steps=steps,
+                    steps=[
+                        _step(0, "get_rubric"),
+                        _step(1, "parse_resume"),
+                        _step(2, "some_extra_tool"),
+                        _step(3, "submit_evaluation"),
+                    ],
                     terminal_status=TerminalStatus.COMPLETED,
-                    total_tokens=100 + i * 10,
-                    total_latency_ms=500 + i * 10,
                 )
             )
-
         result = extract_reference_behavior(traces, op)
-        # All 8 are eligible. Reference = bottom 25% = top-2 most efficient.
-        assert len(result.eligible_traces) == 8
-        assert len(result.reference_traces) == 2
+        assert len(result.eligible_traces) == 6
+        # Reference = the 4 traces whose sequence is the mode.
         ref_ids = {t.trace_id for t in result.reference_traces}
-        # The two lowest-cost traces are t-0 and t-1 (3 steps each, fewest tokens).
-        assert ref_ids == {"t-0", "t-1"}
+        assert ref_ids == {"can-0", "can-1", "can-2", "can-3"}
 
     def test_minimum_reference_size_is_one(self) -> None:
         op = _hr_operation()
-        # 5 eligible = LOW confidence; ceil(5 * 0.25) = 2, but with 1 eligible we get 1.
         traces = [_happy_trace("only-one")]
         result = extract_reference_behavior(traces, op)
         assert len(result.reference_traces) >= 1
 
-    def test_efficiency_falls_back_to_steps_when_tokens_missing(self) -> None:
-        """If fewer than 80% of eligible traces have token data, disable token component."""
+    def test_reference_all_unique_sequences_returns_one(self) -> None:
+        """When every trace has a unique sequence, mode selects exactly one."""
         op = _hr_operation()
-        # Build 10 eligible traces, 5 with tokens 0 (missing) and 5 with large tokens.
-        # The ones with MORE steps should be less efficient regardless.
         traces: list[TraceEnvelope] = []
-        for i in range(10):
-            # step_count correlates with i
-            extras = [
-                _step(
-                    10 + j,
-                    "parse_resume",
-                    tool_args={"pad": j, "i": i},
-                    tool_output=f"pad-{i}-{j}",
-                )
-                for j in range(i)
-            ]
-            steps: list[Step] = [
-                _step(0, "get_rubric", tool_args={"i": i}),
-                _step(1, "parse_resume", tool_args={"i": i, "z": 0}),
-                *extras,
-                _step(99, "submit_evaluation", tool_args={"i": i}),
-            ]
-            for idx, s in enumerate(steps):
+        for i in range(5):
+            extra_steps = [_step(0, "get_rubric")] + [
+                _step(j + 1, "parse_resume", tool_output=f"p-{j}") for j in range(i)
+            ] + [_step(i + 1, "submit_evaluation")]
+            for idx, s in enumerate(extra_steps):
                 s.step_index = idx
-            # Reverse-correlate tokens vs steps to prove that the
-            # tokens channel is ignored when coverage is low. i=0 has most
-            # tokens but fewest steps; steps-only ordering would still pick it
-            # as most efficient.
-            total_tokens = (10 - i) * 100 if i < 3 else 0
             traces.append(
                 TraceEnvelope(
                     trace_id=f"t-{i}",
-                    user_input="evaluate candidate",
-                    steps=steps,
+                    user_input="x",
+                    steps=extra_steps,
                     terminal_status=TerminalStatus.COMPLETED,
-                    total_tokens=total_tokens,
                 )
             )
         result = extract_reference_behavior(traces, op)
-        # step-count ordering: t-0 (3 steps), t-1 (4), t-2 (5), …, t-9 (12).
-        # Bottom 25% = 3 traces → t-0, t-1, t-2.
-        ref_ids = {t.trace_id for t in result.reference_traces}
-        assert ref_ids == {"t-0", "t-1", "t-2"}
+        assert len(result.reference_traces) == 1
 
 
 class TestReferenceDfgAndPath:
@@ -461,82 +398,25 @@ class TestBudgets:
     """Step and token budgets are p75 over the reference cohort."""
 
     def test_step_budget_p75(self) -> None:
-        """Reference traces with step_counts [3, 4, 5, 10] → p75 ≈ 8.75 (linear interp)."""
+        """6 mode-reference traces with canonical sequence → p75 of step counts."""
         op = _hr_operation()
-        # Build 16 eligible traces; we need control over exactly which 4 are reference.
-        # Simplest: craft 4 traces with the target step counts and make them all
-        # reference by making them the lowest-cost (lowest tokens) among eligibles.
+        # All 6 have the same canonical sequence so they all form the mode.
+        # ≥5 ensures confidence > NONE so budgets are computed.
         traces: list[TraceEnvelope] = []
-        target_step_counts = [3, 4, 5, 10]
-        for i, sc in enumerate(target_step_counts):
-            # sc total steps; start with 3 canonical tools, pad to sc.
-            steps: list[Step] = [
-                _step(0, "get_rubric", tool_args={"i": i}),
-                _step(1, "parse_resume", tool_args={"i": i}),
-                _step(2, "submit_evaluation", tool_args={"i": i}),
-            ]
-            for j in range(sc - 3):
-                steps.append(
-                    _step(
-                        3 + j,
-                        "parse_resume",
-                        tool_args={"pad": j, "i": i},
-                        tool_output=f"pad-{i}-{j}",
-                    )
-                )
+        # Use canonical sequence; vary step counts by using different total_tokens
+        # (but keep tool_sequence identical so mode selects all of them).
+        for i in range(6):
             traces.append(
-                TraceEnvelope(
-                    trace_id=f"ref-{i}",
-                    user_input="evaluate candidate",
-                    steps=steps,
-                    terminal_status=TerminalStatus.COMPLETED,
-                    total_tokens=1,  # Will be lowest cost → all four are reference
-                    total_latency_ms=1,
-                )
-            )
-        # Pad with 12 clearly-worse traces so eligible-count is ≥ 16 and
-        # the 25% rule picks exactly 4 references.
-        for i in range(12):
-            worse = _happy_trace(
-                f"fill-{i}",
-                total_tokens=10_000,
-                total_latency_ms=10_000,
-            )
-            # Bump step count moderately so they outrank the 4 refs on steps too.
-            worse.steps.append(
-                _step(
-                    len(worse.steps),
-                    "parse_resume",
-                    tool_args={"fill": i},
-                    tool_output=f"fill-{i}",
-                )
-            )
-            worse.steps.append(
-                _step(
-                    len(worse.steps),
-                    "parse_resume",
-                    tool_args={"fill2": i},
-                    tool_output=f"fill2-{i}",
-                )
-            )
-            # Rebuild with recomputed derived fields.
-            traces.append(
-                TraceEnvelope(
-                    trace_id=worse.trace_id,
-                    user_input=worse.user_input,
-                    steps=worse.steps,
-                    terminal_status=TerminalStatus.COMPLETED,
-                    total_tokens=worse.total_tokens,
-                    total_latency_ms=worse.total_latency_ms,
+                _happy_trace(
+                    f"ref-{i}",
+                    total_tokens=100 + i * 10,  # 100,110,...,150
                 )
             )
         result = extract_reference_behavior(traces, op)
         assert result.step_budget_p75 is not None
-        # p75 of [3, 4, 5, 10] ~ 6.25 (numpy default) or 8.75 (inclusive linear).
-        # Accept either interpolation method.
-        assert result.step_budget_p75 == pytest.approx(6.25, abs=0.01) or (
-            result.step_budget_p75 == pytest.approx(8.75, abs=0.01)
-        )
+        # All traces share the canonical 3-step sequence → all selected as reference.
+        # step_counts all = 3 → p75 = 3.
+        assert result.step_budget_p75 == pytest.approx(3.0, abs=0.01)
 
     def test_token_budget_disabled_when_token_coverage_low(self) -> None:
         """If <80% of eligible traces have total_tokens → token_budget_p75 is None."""

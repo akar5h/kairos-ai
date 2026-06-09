@@ -20,20 +20,12 @@ Expected surface:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch  # noqa: F401 — MagicMock used in llm_client test
 
 import pytest
 
-from kairos.analysis.evidence_coverage import EvidenceCoverage, compute_evidence_coverage
 from kairos.analysis.outcome_metric import WorkflowOutcomeSummary
 from kairos.analysis.reference_behavior import ReferenceCohort, ReferenceConfidence
-from kairos.analysis.semantic_decision import (
-    Confidence,
-    DecisionAdvanced,
-    FindingType,
-    FixArea,
-    SemanticDecisionFinding,
-)
 from kairos.analysis.workflow_divergence import DivergenceFinding
 from kairos.analysis.workflow_membership import MembershipKind, WorkflowMembership
 from kairos.detection.models import Finding
@@ -140,21 +132,6 @@ def _multi_op_context() -> BusinessContext:
         operations=[_hr_op(), _other_op()],
     )
 
-
-def _ok_finding(trace_id: str, step_index: int = 1) -> SemanticDecisionFinding:
-    return SemanticDecisionFinding(
-        trace_id=trace_id,
-        workflow_name="Candidate Screening",
-        step_index=step_index,
-        decision_advanced_task=DecisionAdvanced.NO,
-        finding_type=FindingType.CONTEXT_IGNORED,
-        evidence_refs=["step_1.tool_output"],
-        missing_evidence=[],
-        likely_fix_area=FixArea.PROMPT,
-        confidence=Confidence.MEDIUM,
-        ticket_title="Agent ignored retrieved rubric",
-        verification_target="Retry with prompt nudge.",
-    )
 
 
 # ── TESTS ─────────────────────────────────────────────────────────────
@@ -405,24 +382,17 @@ class TestRecallBasedMapping:
 class TestPipelineIntegration:
     """End-to-end shape of Week1Result and component wiring."""
 
-    def test_calls_compute_evidence_coverage_once_globally(self) -> None:
+    def test_preflight_check_returns_reliability_dict(self) -> None:
         ctx = _hr_context()
         traces = [
             _trace("t-a", ["get_rubric", "parse_resume", "submit_evaluation"]),
             _trace("t-b", ["unknown_tool"]),  # unmapped
             _trace("t-c", ["get_rubric", "parse_resume", "submit_evaluation"]),
         ]
-        with patch(
-            "kairos.engine.pipeline.compute_evidence_coverage",
-            wraps=compute_evidence_coverage,
-        ) as mock_cov:
-            result = run_week1_pipeline(traces, ctx, llm_client=None)
-        # Called exactly once over all envelopes
-        assert mock_cov.call_count == 1
-        called_with = mock_cov.call_args.args[0]
-        assert len(called_with) == len(traces)
-        assert isinstance(result.evidence_coverage, EvidenceCoverage)
-        assert result.evidence_coverage.total_traces == len(traces)
+        result = run_week1_pipeline(traces, ctx, llm_client=None)
+        assert isinstance(result.reliability, dict)
+        assert "terminal_status_rate" in result.reliability
+        assert "tool_sequence_rate" in result.reliability
 
     def test_workflow_summary_contains_outcome_reference_findings_divergences(self) -> None:
         ctx = _hr_context()
@@ -440,7 +410,6 @@ class TestPipelineIntegration:
         assert isinstance(ws.divergences, list)
         for d in ws.divergences:
             assert isinstance(d, DivergenceFinding)
-        assert isinstance(ws.semantic_findings, list)
         assert isinstance(ws.top_pattern_names, list)
 
     def test_detector_wiring_uses_workflow_median_steps(self) -> None:
@@ -529,15 +498,14 @@ class TestPipelineIntegration:
 
 
 class TestNoLLMPath:
-    """When llm_client is None, the semantic pass is skipped entirely."""
+    """llm_client parameter is accepted but ignored (semantic pass removed)."""
 
-    def test_llm_client_none_skips_semantic_pass(self) -> None:
+    def test_llm_client_ignored_result_is_deterministic(self) -> None:
         ctx = _hr_context()
         traces = [_trace(f"t-{i}", ["get_rubric", "parse_resume", "submit_evaluation"]) for i in range(3)]
         result = run_week1_pipeline(traces, ctx, llm_client=None)
-        assert result.llm_used is False
-        for ws in result.workflows:
-            assert ws.semantic_findings == []
+        assert isinstance(result, Week1Result)
+        assert isinstance(result.reliability, dict)
 
     def test_llm_client_none_still_produces_full_result(self) -> None:
         ctx = _hr_context()
@@ -552,63 +520,14 @@ class TestNoLLMPath:
         assert isinstance(ws.deterministic_findings, list)
         assert isinstance(ws.divergences, list)
 
-    def test_llm_used_true_when_client_provided_and_any_findings(self) -> None:
+    def test_llm_client_arg_is_accepted_and_ignored(self) -> None:
         ctx = _hr_context()
-        # Build enough traces and at least one looping trace so deterministic
-        # findings exist → semantic pass has packets to send.
-        clean_traces = [_trace(f"clean-{i}", ["get_rubric", "parse_resume", "submit_evaluation"]) for i in range(5)]
-        # A looping trace should produce at least one finding. Include
-        # submit_evaluation so the trace passes the distinctive-tool gate
-        # and maps to the HR workflow.
-        loop_steps: list[Step] = []
-        for cycle in range(4):
-            loop_steps.append(
-                _step(
-                    cycle * 2,
-                    "get_rubric",
-                    tool_args={"cycle": cycle},
-                    tool_output="stuck",
-                )
-            )
-            loop_steps.append(
-                _step(
-                    cycle * 2 + 1,
-                    "parse_resume",
-                    tool_args={"cycle": cycle},
-                    tool_output="stuck",
-                )
-            )
-        loop_steps.append(
-            _step(
-                len(loop_steps),
-                "submit_evaluation",
-                tool_args={"final": True},
-                tool_output="submitted",
-            )
-        )
-        looper = TraceEnvelope(
-            trace_id="looper",
-            user_input="evaluate candidate",
-            steps=loop_steps,
-            terminal_status=TerminalStatus.COMPLETED,
-        )
-        traces = [*clean_traces, looper]
-
+        traces = [_trace(f"t-{i}", ["get_rubric", "parse_resume", "submit_evaluation"]) for i in range(3)]
         client = MagicMock()
-        client.generate.return_value = _ok_finding("looper")
-
-        # Patch analyze_flagged_traces to deterministically return one finding,
-        # avoids dependency on the actual LLM client wiring.
-        with patch(
-            "kairos.engine.pipeline.analyze_flagged_traces",
-            return_value=[_ok_finding("looper")],
-        ):
-            result = run_week1_pipeline(traces, ctx, llm_client=client)
-
-        # At least one workflow should have semantic findings.
-        any_semantic = any(len(ws.semantic_findings) > 0 for ws in result.workflows)
-        assert any_semantic
-        assert result.llm_used is True
+        result = run_week1_pipeline(traces, ctx, llm_client=client)
+        # Semantic pass is removed; llm_client is silently ignored.
+        assert isinstance(result, Week1Result)
+        assert len(result.workflows) == 1
 
 
 class TestDeterminism:
@@ -623,7 +542,6 @@ class TestDeterminism:
         result_a = run_week1_pipeline(traces, ctx, llm_client=None)
         result_b = run_week1_pipeline(traces, ctx, llm_client=None)
 
-        assert result_a.llm_used == result_b.llm_used
         assert result_a.unmapped.trace_count == result_b.unmapped.trace_count
         assert result_a.unmapped.sample_trace_ids == result_b.unmapped.sample_trace_ids
         assert result_a.unmapped.top_tools == result_b.unmapped.top_tools
@@ -647,9 +565,7 @@ class TestEmptyInput:
         # Workflow may exist with mapped_trace_count==0, OR be omitted; either
         # way the unmapped count is zero.
         assert result.unmapped.trace_count == 0
-        assert isinstance(result.evidence_coverage, EvidenceCoverage)
-        assert result.evidence_coverage.total_traces == 0
-        assert result.llm_used is False
+        assert isinstance(result.reliability, dict)
         for ws in result.workflows:
             assert ws.mapped_trace_count == 0
 
@@ -1017,7 +933,6 @@ class TestWorkflowSummaryShape:
             reference=ref,
             deterministic_findings=[],
             divergences=[],
-            semantic_findings=[],
         )
         assert ws.full_trace_count == 3
         assert ws.attempted_trace_count == 2
@@ -1049,7 +964,6 @@ class TestWorkflowSummaryShape:
             reference=ref,
             deterministic_findings=[],
             divergences=[],
-            semantic_findings=[],
         )
         assert ws.mapped_trace_count == 7
         assert ws.mapped_trace_count == ws.full_trace_count + ws.attempted_trace_count

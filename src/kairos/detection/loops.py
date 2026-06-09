@@ -1,8 +1,9 @@
 """Tier 1 Pattern 2: Loop detector.
 
-Uses a sliding-window algorithm to find repeating tool-call subsequences.
-A progress check distinguishes true loops (stuck, same output) from
-legitimate iteration (advancing cursor / changing output).
+Detects period-1 loops: the same single tool called ≥ min_repeats times
+consecutively with identical outputs (no progress). Period-2+ loops are
+exceedingly rare in observed data; add period-2 detection only when a real
+case is confirmed in production traces.
 """
 
 from __future__ import annotations
@@ -25,107 +26,63 @@ def loop_assertion(
     trace: TraceEnvelope,
     min_repeats: int = 3,
 ) -> list[Finding]:
-    """Detect repeating tool-call subsequences with no progress.
+    """Detect period-1 loops: same tool called ≥ min_repeats times with no progress.
 
-    Algorithm
-    ---------
-    1. Extract tool-call steps and their names.
-    2. For each candidate period *p* (2 .. len // min_repeats), scan for
-       *min_repeats* consecutive occurrences of the same tool-name pattern.
-    3. Progress check: if ANY tool output differs across repeats at the same
-       position the agent is making progress — skip.
-    4. All-error check: if every step in the repeated range has status ERROR
-       the loop is classified as ``stuck_loop``.
-    5. Collect findings, skip past detected loops, and return sorted by
-       longest period first.
+    A run of the same tool is a loop when every tool_output in the run is
+    identical (agent is stuck). If every step in the run has status ERROR
+    the classification is ``stuck_loop``; otherwise ``loop_detected``.
+
+    Period-2+ detection is not implemented. It covers < 5% of real loops and
+    adds 80 lines of edge-case complexity.
     """
     tool_steps = [s for s in trace.steps if s.step_type == StepType.TOOL_CALL and s.tool_name]
-    tool_names: list[str] = [s.tool_name for s in tool_steps]  # type: ignore[misc]
-    n = len(tool_names)
+    n = len(tool_steps)
 
-    if n < 2:
+    if n < min_repeats:
         return []
 
     findings: list[Finding] = []
-    consumed: set[int] = set()  # indices already part of a detected loop
+    i = 0
 
-    max_period = n // min_repeats
+    while i < n:
+        tool = tool_steps[i].tool_name
+        # Find the run length for this tool
+        j = i + 1
+        while j < n and tool_steps[j].tool_name == tool:
+            j += 1
+        run_len = j - i
 
-    for period in range(max_period, 1, -1):  # longest period first
-        start = 0
-        while start <= n - period * min_repeats:
-            if start in consumed:
-                start += 1
-                continue
+        if run_len >= min_repeats:
+            run_steps = tool_steps[i:j]
+            outputs = [s.tool_output for s in run_steps]
 
-            pattern = tool_names[start : start + period]
+            # Progress check: if any output differs, the agent is advancing.
+            if len(set(outputs)) == 1:
+                all_error = all(s.status == StepStatus.ERROR for s in run_steps)
+                classification = "stuck_loop" if all_error else "loop_detected"
 
-            # Count consecutive repeats
-            repeats = 1
-            pos = start + period
-            while pos + period <= n:
-                window = tool_names[pos : pos + period]
-                if window != pattern:
-                    break
-                repeats += 1
-                pos += period
+                step_indices = [s.step_index for s in run_steps]
+                waste = sum(s.total_tokens or 0 for s in run_steps[1:])
 
-            if repeats < min_repeats:
-                start += 1
-                continue
-
-            # --- Progress check ---
-            # For each position *j* within the pattern, collect the
-            # tool_output from every repeat.  If ALL outputs are identical
-            # at every position the agent is stuck; if any output differs
-            # the agent is making progress → not a loop.
-            end_idx = start + period * repeats
-            has_progress = False
-            for j in range(period):
-                outputs: list[str | None] = []
-                for r in range(repeats):
-                    idx = start + r * period + j
-                    outputs.append(tool_steps[idx].tool_output)
-                if len(set(outputs)) > 1:
-                    has_progress = True
-                    break
-
-            if has_progress:
-                start += 1
-                continue
-
-            # --- Classification ---
-            all_error = all(tool_steps[idx].status == StepStatus.ERROR for idx in range(start, end_idx))
-            classification = "stuck_loop" if all_error else "loop_detected"
-
-            step_indices = [tool_steps[idx].step_index for idx in range(start, end_idx)]
-
-            # Estimate wasted tokens (all repeats beyond the first are waste)
-            waste = sum(tool_steps[idx].total_tokens or 0 for idx in range(start + period, end_idx))
-
-            findings.append(
-                Finding(
-                    pattern_name=classification,
-                    tier=1,
-                    trace_id=trace.trace_id,
-                    confidence=1.0,
-                    severity="critical" if all_error else "warning",
-                    evidence={
-                        "pattern": pattern,
-                        "period": period,
-                        "repeats": repeats,
-                        "step_range": [step_indices[0], step_indices[-1]],
-                        "classification": classification,
-                    },
-                    affected_step_indices=step_indices,
-                    estimated_token_waste=waste,
+                findings.append(
+                    Finding(
+                        pattern_name=classification,
+                        tier=1,
+                        trace_id=trace.trace_id,
+                        confidence=1.0,
+                        severity="critical" if all_error else "warning",
+                        evidence={
+                            "pattern": [tool],
+                            "period": 1,
+                            "repeats": run_len,
+                            "step_range": [step_indices[0], step_indices[-1]],
+                            "classification": classification,
+                        },
+                        affected_step_indices=step_indices,
+                        estimated_token_waste=waste,
+                    )
                 )
-            )
 
-            # Mark these indices as consumed so shorter periods don't
-            # re-detect the same span.
-            consumed.update(range(start, end_idx))
-            start = end_idx
+        i = j
 
-    # Already iterated longest-first, so findings are naturally sorted.
     return findings
