@@ -8,20 +8,24 @@ JSON-serializable shapes and the Phoenix deep-link builder.
 """
 
 from kairos.views.analysis_view import (
+    AnalysisSummary,
     AnalysisView,
     CohortView,
     CorrectnessView,
     DivergenceRow,
+    METRIC_DESCRIPTIONS,
     WorkflowView,
     build_analysis_view,
     phoenix_trace_url,
 )
 
 __all__ = [
+    "AnalysisSummary",
     "AnalysisView",
     "CohortView",
     "CorrectnessView",
     "DivergenceRow",
+    "METRIC_DESCRIPTIONS",
     "WorkflowView",
     "build_analysis_view",
     "phoenix_trace_url",

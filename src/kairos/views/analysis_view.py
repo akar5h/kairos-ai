@@ -12,6 +12,14 @@ JSON-serializable ``AnalysisView`` whose finding rows each carry a Phoenix
 deep-link for drill-down. Rendering those views (React/HTML) is the Paperclip
 frontend's job (XER-78) — none of that lives here, honoring Kairos's "No UI"
 rule: this is data, not UI.
+
+XER-169 additions:
+  - Workflows with zero traces are filtered from the view.
+  - ``WorkflowView`` carries ``show_reference_sections``, ``finding_count``,
+    and ``max_severity`` so the frontend can hide null sections and surface
+    severity prominently without re-deriving them.
+  - ``AnalysisView`` carries a top-level ``summary`` hero card and a static
+    ``metric_descriptions`` dict (plain-English tooltips for every metric label).
 """
 
 from __future__ import annotations
@@ -63,6 +71,65 @@ def phoenix_trace_url(
         project=quote(project, safe=""),
         trace_id=quote(trace_id, safe=""),
     )
+
+
+# ───────────────────────── Static metric descriptions ─────────────────────────
+
+METRIC_DESCRIPTIONS: dict[str, str] = {
+    "confidence": (
+        "How many clean, completed sessions we have to define 'normal' behavior. "
+        "High = 50+, Medium = 20–49, Low = 5–19, None = fewer than 5."
+    ),
+    "eligible_trace_count": (
+        "Sessions that completed without errors and are used to build the reference behavior model."
+    ),
+    "reference_trace_count": (
+        "The subset of eligible sessions that match the most common tool sequence — "
+        "the 'gold standard' path for this workflow."
+    ),
+    "full_trace_count": "Sessions where every expected tool ran successfully.",
+    "attempted_trace_count": (
+        "Sessions where the workflow was started but at least one expected tool was missing or failed."
+    ),
+    "step_budget_p75": (
+        "75th-percentile step count from reference sessions. "
+        "Sessions above this are using more steps than 75% of healthy runs."
+    ),
+    "token_budget_p75": (
+        "75th-percentile token usage from reference sessions. "
+        "Sessions above this are consuming more tokens than 75% of healthy runs."
+    ),
+    "outcome_rate": (
+        "Fraction of sessions that produced a successful outcome "
+        "(e.g., a task completed, a lead converted)."
+    ),
+    "extra_rate": (
+        "Fraction of tool calls in a session that go beyond what the reference path expects — "
+        "a proxy for wasted work."
+    ),
+    "coverage": "How much of the reference tool path this session covered.",
+    "estimated_token_waste": (
+        "Tokens estimated to be consumed by the inefficient pattern — useful for cost triage."
+    ),
+    "severity": (
+        "How serious this finding is: 'warning' = notable but not urgent, "
+        "'critical' = likely hurting outcomes or burning significant tokens."
+    ),
+    "show_reference_sections": (
+        "When false, the reference path, budgets, and divergence sections are hidden "
+        "because there are not yet enough clean sessions to compute them reliably."
+    ),
+}
+
+# Severity ordering for max_severity computation: higher index = worse.
+_SEVERITY_RANK: dict[str, int] = {"warning": 0, "critical": 1}
+
+
+def _max_severity(severities: list[str]) -> str | None:
+    """Return the worst severity in *severities*, or None if the list is empty."""
+    if not severities:
+        return None
+    return max(severities, key=lambda s: _SEVERITY_RANK.get(s, -1))
 
 
 # ───────────────────────── View DTOs ─────────────────────────
@@ -128,13 +195,25 @@ class CorrectnessView(BaseModel):
 
 
 class WorkflowView(BaseModel):
-    """The three differentiated views for a single workflow."""
+    """The three differentiated views for a single workflow.
+
+    XER-169 additions:
+      ``show_reference_sections`` — False when confidence is 'none'; the frontend
+        should collapse the reference-path, budgets, and divergence panels and show
+        "Not enough clean sessions yet. Findings below still apply."
+      ``finding_count`` — total deterministic finding rows for this workflow.
+      ``max_severity`` — worst severity across all findings ('critical' > 'warning'),
+        or None when there are no findings. Surface as a badge.
+    """
 
     operation_name: str
     cohort: CohortView
     divergence: list[DivergenceRow]
     correctness: CorrectnessView
     top_pattern_names: list[str]
+    show_reference_sections: bool
+    finding_count: int
+    max_severity: str | None
 
 
 class UnmappedView(BaseModel):
@@ -145,11 +224,28 @@ class UnmappedView(BaseModel):
     sample_traces: list[TraceLink]
 
 
+class AnalysisSummary(BaseModel):
+    """Hero-card metrics surfaced at the top of the analysis view (XER-169).
+
+    ``total_pattern_issues`` — total finding rows across all workflows.
+    ``affected_sessions``     — unique trace ids that have at least one finding.
+    ``workflows_with_findings`` — number of workflows that have at least one finding.
+    """
+
+    total_pattern_issues: int
+    affected_sessions: int
+    workflows_with_findings: int
+
+
 class AnalysisView(BaseModel):
     """Top-level Paperclip-native view payload built from an ``AnalysisResult``.
 
     Self-serializing (``model_dump_json``): this is exactly the JSON the
     Paperclip frontend renders.
+
+    XER-169 additions:
+      ``summary``             — hero-card counts (issues / sessions / workflows).
+      ``metric_descriptions`` — plain-English tooltip text keyed by field name.
     """
 
     phoenix_base_url: str
@@ -157,6 +253,8 @@ class AnalysisView(BaseModel):
     workflows: list[WorkflowView]
     unmapped: UnmappedView
     reliability: dict[str, float]
+    summary: AnalysisSummary
+    metric_descriptions: dict[str, str]
 
 
 # ───────────────────────── Builder ─────────────────────────
@@ -172,27 +270,60 @@ def build_analysis_view(
 
     Every finding/divergence/sample row gets a Phoenix deep-link built from
     ``phoenix_base_url`` and ``phoenix_project``.
+
+    XER-169: workflows with zero total traces are filtered out (they represent
+    lead-pipeline operations that had no activity and would render as empty tables).
     """
 
     def _link(trace_id: str) -> str:
         return phoenix_trace_url(trace_id, base_url=phoenix_base_url, project=phoenix_project)
 
+    # Filter workflows with no trace activity before building view objects.
+    active_workflows = [
+        w for w in result.workflows if (w.full_trace_count + w.attempted_trace_count) > 0
+    ]
+
+    workflow_views = [_workflow_view(w, _link) for w in active_workflows]
+    summary = _build_summary(workflow_views)
+
     return AnalysisView(
         phoenix_base_url=phoenix_base_url,
         phoenix_project=phoenix_project,
-        workflows=[_workflow_view(w, _link) for w in result.workflows],
+        workflows=workflow_views,
         unmapped=_unmapped_view(result.unmapped, _link),
         reliability=result.reliability,
+        summary=summary,
+        metric_descriptions=METRIC_DESCRIPTIONS,
+    )
+
+
+def _build_summary(workflows: list[WorkflowView]) -> AnalysisSummary:
+    """Compute hero-card metrics from the already-built workflow views."""
+    total_issues = sum(wf.finding_count for wf in workflows)
+    affected: set[str] = set()
+    for wf in workflows:
+        for row in wf.correctness.deterministic_findings:
+            affected.add(row.trace_id)
+    workflows_with_findings = sum(1 for wf in workflows if wf.finding_count > 0)
+    return AnalysisSummary(
+        total_pattern_issues=total_issues,
+        affected_sessions=len(affected),
+        workflows_with_findings=workflows_with_findings,
     )
 
 
 def _workflow_view(summary: WorkflowSummary, link: _Linker) -> WorkflowView:
+    findings = [_finding_row(f, link) for f in summary.deterministic_findings]
+    show_ref = summary.reference.confidence.value != "none"
     return WorkflowView(
         operation_name=summary.operation_name,
         cohort=_cohort_view(summary),
         divergence=[_divergence_row(d, link) for d in summary.divergences],
-        correctness=_correctness_view(summary, link),
+        correctness=_correctness_view(summary, findings),
         top_pattern_names=list(summary.top_pattern_names),
+        show_reference_sections=show_ref,
+        finding_count=len(findings),
+        max_severity=_max_severity([f.severity for f in findings]),
     )
 
 
@@ -224,7 +355,7 @@ def _divergence_row(finding: DivergenceFinding, link: _Linker) -> DivergenceRow:
     )
 
 
-def _correctness_view(summary: WorkflowSummary, link: _Linker) -> CorrectnessView:
+def _correctness_view(summary: WorkflowSummary, findings: list[FindingRow]) -> CorrectnessView:
     outcome = summary.outcome
     return CorrectnessView(
         workflow_name=summary.operation_name,
@@ -233,7 +364,7 @@ def _correctness_view(summary: WorkflowSummary, link: _Linker) -> CorrectnessVie
         computable_count=outcome.computable_count,
         passed_count=outcome.passed_count,
         pending_reason=outcome.pending_reason,
-        deterministic_findings=[_finding_row(f, link) for f in summary.deterministic_findings],
+        deterministic_findings=findings,
     )
 
 
@@ -256,5 +387,3 @@ def _unmapped_view(unmapped: UnmappedActivity, link: _Linker) -> UnmappedView:
         top_tools=list(unmapped.top_tools),
         sample_traces=[TraceLink(trace_id=tid, phoenix_url=link(tid)) for tid in unmapped.sample_trace_ids],
     )
-
-
