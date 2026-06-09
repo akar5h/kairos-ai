@@ -258,19 +258,20 @@ def test_phoenix_reader_fetch_envelope_calls_client_with_trace_id() -> None:
     assert client.spans.last_call == {
         "project_identifier": "default",
         "trace_ids": ["0123456789abcdef0123456789abcdef"],
-        "limit": 1000,
+        "limit": 100_000,
     }
 
 
-def test_phoenix_reader_fails_loud_when_span_limit_hit() -> None:
-    # At the fetch limit we cannot tell a complete trace from a truncated one,
-    # so we fail loud instead of analyzing a silently clipped trace.
+def test_phoenix_reader_warns_when_span_limit_hit() -> None:
+    # When span_count == span_limit we may be truncated — warn and continue
+    # instead of crashing so callers still get analysis on what arrived.
     spans = [_phoenix_span(name="kairos.task", attributes={"kairos.agent.name": "agent"})]
     client = _FakePhoenixClient({"trunc": spans})
     reader = PhoenixReader(client=client, project="default", span_limit=1)  # type: ignore[arg-type]
 
-    with pytest.raises(RuntimeError, match="may be truncated"):
-        reader.fetch_envelope("trunc")
+    # Must not raise — returns envelope from whatever spans arrived.
+    env = reader.fetch_envelope("trunc")
+    assert env is not None
 
 
 def test_phoenix_reader_custom_span_limit_forwarded() -> None:
