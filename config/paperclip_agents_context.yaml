@@ -1,0 +1,48 @@
+agent_name: "Paperclip Coding Agents"
+agent_description: "ClaudeCoder and CTO agents executing Paperclip issues — read traces from Phoenix default project."
+
+operations:
+  - name: "Code Implementation"
+    description: "Writing and editing source code to implement features, fix bugs, or refactor"
+    expected_tools:
+      - "Read"
+      - "Edit"
+      - "Write"
+      - "Grep"
+      - "Glob"
+      - "Bash"
+    required_side_effect_tools:
+      - "Edit"
+      - "Write"
+    priority: "high"
+
+  - name: "Multi-Agent Orchestration"
+    description: "Spawning and coordinating subagents for parallel or delegated work"
+    expected_tools:
+      - "Agent"
+      - "Bash"
+      - "Read"
+    required_side_effect_tools:
+      - "Agent"
+    priority: "high"
+
+  - name: "Codebase Research"
+    description: "Read-only exploration — answering questions, mapping structure, finding symbols"
+    expected_tools:
+      - "Read"
+      - "Grep"
+      - "Glob"
+      - "Bash"
+    required_side_effect_tools:
+      - "Bash"
+    priority: "medium"
+
+  - name: "Paperclip Coordination"
+    description: "Checking out issues, posting comments, updating status, creating child tasks via API"
+    expected_tools:
+      - "Bash"
+      - "Skill"
+    required_side_effect_tools:
+      - "Bash"
+      - "Skill"
+    priority: "high"
