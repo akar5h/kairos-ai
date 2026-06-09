@@ -12,8 +12,8 @@ from kairos.analysis.workflow_divergence import DivergenceFinding
 from kairos.detection.models import Finding
 from kairos.engine.pipeline import AnalysisResult, UnmappedActivity, WorkflowSummary
 from kairos.views.analysis_view import (
-    AnalysisView,
     METRIC_DESCRIPTIONS,
+    AnalysisView,
     build_analysis_view,
     phoenix_trace_url,
 )
