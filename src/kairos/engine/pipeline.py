@@ -354,9 +354,7 @@ def run_pipeline(
         )
 
     # Step 4: unmapped = traces with zero memberships across all ops.
-    mapped_trace_ids: set[str] = {
-        trace_id for trace_id, memberships in memberships_per_envelope.items() if memberships
-    }
+    mapped_trace_ids: set[str] = {trace_id for trace_id, memberships in memberships_per_envelope.items() if memberships}
     unmapped_envelopes = [e for e in envelopes if e.trace_id not in mapped_trace_ids]
     unmapped = _summarize_unmapped(unmapped_envelopes)
 

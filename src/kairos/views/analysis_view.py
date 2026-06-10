@@ -100,17 +100,13 @@ METRIC_DESCRIPTIONS: dict[str, str] = {
         "Sessions above this are consuming more tokens than 75% of healthy runs."
     ),
     "outcome_rate": (
-        "Fraction of sessions that produced a successful outcome "
-        "(e.g., a task completed, a lead converted)."
+        "Fraction of sessions that produced a successful outcome (e.g., a task completed, a lead converted)."
     ),
     "extra_rate": (
-        "Fraction of tool calls in a session that go beyond what the reference path expects — "
-        "a proxy for wasted work."
+        "Fraction of tool calls in a session that go beyond what the reference path expects — a proxy for wasted work."
     ),
     "coverage": "How much of the reference tool path this session covered.",
-    "estimated_token_waste": (
-        "Tokens estimated to be consumed by the inefficient pattern — useful for cost triage."
-    ),
+    "estimated_token_waste": ("Tokens estimated to be consumed by the inefficient pattern — useful for cost triage."),
     "severity": (
         "How serious this finding is: 'warning' = notable but not urgent, "
         "'critical' = likely hurting outcomes or burning significant tokens."
@@ -279,9 +275,7 @@ def build_analysis_view(
         return phoenix_trace_url(trace_id, base_url=phoenix_base_url, project=phoenix_project)
 
     # Filter workflows with no trace activity before building view objects.
-    active_workflows = [
-        w for w in result.workflows if (w.full_trace_count + w.attempted_trace_count) > 0
-    ]
+    active_workflows = [w for w in result.workflows if (w.full_trace_count + w.attempted_trace_count) > 0]
 
     workflow_views = [_workflow_view(w, _link) for w in active_workflows]
     summary = _build_summary(workflow_views)

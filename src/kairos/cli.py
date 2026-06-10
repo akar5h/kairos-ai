@@ -83,7 +83,10 @@ def _load_from_phoenix(
     endpoint: str,
     span_limit: int | None = None,
 ) -> list[TraceEnvelope]:
-    reader = PhoenixReader(endpoint=endpoint, **({} if span_limit is None else {"span_limit": span_limit}))
+    if span_limit is not None:
+        reader = PhoenixReader(endpoint=endpoint, span_limit=span_limit)
+    else:
+        reader = PhoenixReader(endpoint=endpoint)
     return [reader.fetch_envelope(tid) for tid in trace_ids]
 
 
@@ -189,7 +192,9 @@ def analyze(
 ) -> None:
     """Produce an AnalysisResult from a live (Phoenix) or offline source."""
     context = BusinessContext.from_yaml(context_path)
-    envelopes = _resolve_envelopes(phoenix_ids, normalized_dir, transcript_path, agent_kind, phoenix_endpoint, span_limit)
+    envelopes = _resolve_envelopes(
+        phoenix_ids, normalized_dir, transcript_path, agent_kind, phoenix_endpoint, span_limit
+    )
 
     result = KairosEngine().analyze(envelopes, context)
     payload = json.dumps(_to_jsonable(result), indent=2)
@@ -272,7 +277,9 @@ def view(
     Paperclip-native UI renders, with a Phoenix deep-link on every finding row.
     """
     context = BusinessContext.from_yaml(context_path)
-    envelopes = _resolve_envelopes(phoenix_ids, normalized_dir, transcript_path, agent_kind, phoenix_endpoint, span_limit)
+    envelopes = _resolve_envelopes(
+        phoenix_ids, normalized_dir, transcript_path, agent_kind, phoenix_endpoint, span_limit
+    )
 
     result = KairosEngine().analyze(envelopes, context)
     analysis_view = build_analysis_view(result, phoenix_base_url=phoenix_base_url, phoenix_project=phoenix_project)

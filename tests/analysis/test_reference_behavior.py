@@ -308,9 +308,11 @@ class TestReferenceSelection:
         op = _hr_operation()
         traces: list[TraceEnvelope] = []
         for i in range(5):
-            extra_steps = [_step(0, "get_rubric")] + [
-                _step(j + 1, "parse_resume", tool_output=f"p-{j}") for j in range(i)
-            ] + [_step(i + 1, "submit_evaluation")]
+            extra_steps = (
+                [_step(0, "get_rubric")]
+                + [_step(j + 1, "parse_resume", tool_output=f"p-{j}") for j in range(i)]
+                + [_step(i + 1, "submit_evaluation")]
+            )
             for idx, s in enumerate(extra_steps):
                 s.step_index = idx
             traces.append(

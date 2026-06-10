@@ -48,10 +48,7 @@ def _linear_trace(trace_id: str, step_count: int) -> TraceEnvelope:
 def _looping_trace(trace_id: str) -> TraceEnvelope:
     """A looping trace: 3+ repeats of the same (A, B) pair with identical outputs."""
     # period-1 loop: same tool repeated 4x with identical output
-    steps: list[Step] = [
-        _step(i, "tool_a", tool_args={"cycle": i}, tool_output="stuck")
-        for i in range(4)
-    ]
+    steps: list[Step] = [_step(i, "tool_a", tool_args={"cycle": i}, tool_output="stuck") for i in range(4)]
     return TraceEnvelope(
         trace_id=trace_id,
         user_input="stuck",

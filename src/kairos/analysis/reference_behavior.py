@@ -318,9 +318,7 @@ def _select_reference_traces(
     if not eligible:
         return []
 
-    seq_counts: Counter[tuple[str, ...]] = Counter(
-        tuple(t.tool_sequence) for t in eligible
-    )
+    seq_counts: Counter[tuple[str, ...]] = Counter(tuple(t.tool_sequence) for t in eligible)
     # Ties broken by shorter sequence first (simpler = better reference),
     # then lexicographically for full determinism.
     mode_seq = max(seq_counts, key=lambda k: (seq_counts[k], -len(k), tuple(-ord(c) for c in "".join(k))))
