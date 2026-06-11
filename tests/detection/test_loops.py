@@ -199,8 +199,8 @@ class TestLoopAssertion:
         ]
         trace = _make_trace("mixed_outputs", specs)
         findings = loop_assertion(trace, min_repeats=3)
-        # Tool "a" has identical non-None outputs → fires.
-        # Tool "b" has all-None, but the guard fires per-trace (all_outputs_absent
-        # is False because tool "a" has outputs).
-        # Tool "b" run: outputs are [None, None, None] → len(set) == 1 → fires too.
+        # Tool "a": identical non-None outputs → fires.
+        # Tool "b": outputs all absent → per-run F10 guard suppresses it even
+        # though other tools in the trace carry output (mixed instrumentation).
         assert any(f.evidence["pattern"][0] == "a" for f in findings)
+        assert not any(f.evidence["pattern"][0] == "b" for f in findings)

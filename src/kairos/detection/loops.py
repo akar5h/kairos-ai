@@ -68,6 +68,13 @@ def loop_assertion(
             run_steps = tool_steps[i:j]
             outputs = [s.tool_output for s in run_steps]
 
+            # F10 guard (per-run): identical-but-absent outputs are no evidence
+            # of stuck-ness — skip runs whose outputs are all uninstrumented,
+            # even when other tools in the trace do carry output.
+            if all(not o for o in outputs):
+                i = j
+                continue
+
             # Progress check: if any output differs, the agent is advancing.
             if len(set(outputs)) == 1:
                 all_error = all(s.status == StepStatus.ERROR for s in run_steps)
