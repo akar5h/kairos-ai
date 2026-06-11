@@ -41,7 +41,23 @@ class Step(BaseModel):
     # Metrics
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_read_tokens: int = 0
     total_tokens: int | None = None
+    """Token spend for this step.
+
+    Semantics (LLM steps only): output + max(input − cache_read, 0), floor 0.
+    This is the chargeable spend that detectors report as potential waste —
+    cache hits are NOT counted because they were paid for at creation time.
+    Absent (None) means the step was not instrumented; absent is never
+    substituted with 0.
+    """
+    tokens_instrumented: bool = False
+    """True when extract_usage() returned a non-None Usage for this step.
+
+    Use this instead of ``total_tokens > 0`` to test whether token data is
+    present; a genuinely zero-token step (e.g. fully-cached call) is
+    instrumented even though total_tokens == 0.
+    """
     latency_ms: int | None = None
 
     # Status

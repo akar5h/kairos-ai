@@ -160,13 +160,47 @@ class TestLoopAssertion:
         findings = loop_assertion(trace, min_repeats=3)
         assert len(findings) == 0
 
-    def test_none_output_treated_as_identical(self) -> None:
-        # All None outputs → outputs are "identical" → loop should fire
+    def test_none_output_all_steps_silent_f10_guard(self) -> None:
+        # F10 guard: ALL outputs None/absent across the entire run →
+        # output is uninstrumented → no finding (no evidence of stuck-ness).
+        # Live claude_code.tool spans carry no tool_output; without output evidence
+        # the detector must not fire to avoid false positives.
         specs: list[tuple[str, str | None, StepStatus]] = [
             ("a", None, StepStatus.OK),
             ("a", None, StepStatus.OK),
             ("a", None, StepStatus.OK),
         ]
-        trace = _make_trace("none_out", specs)
+        trace = _make_trace("none_out_f10", specs)
+        findings = loop_assertion(trace, min_repeats=3)
+        assert len(findings) == 0
+
+    def test_output_present_identical_loop_still_fires(self) -> None:
+        # When outputs ARE instrumented and identical, the loop must still fire.
+        specs: list[tuple[str, str | None, StepStatus]] = [
+            ("a", "stuck_output", StepStatus.OK),
+            ("a", "stuck_output", StepStatus.OK),
+            ("a", "stuck_output", StepStatus.OK),
+        ]
+        trace = _make_trace("output_present_loop", specs)
         findings = loop_assertion(trace, min_repeats=3)
         assert len(findings) == 1
+        assert findings[0].pattern_name == "loop_detected"
+
+    def test_mixed_output_some_present_loop_detects(self) -> None:
+        # When at least one step has output, the guard does not suppress detection.
+        # First tool has output, second does not — but the guard checks the whole run.
+        specs: list[tuple[str, str | None, StepStatus]] = [
+            ("a", "stuck", StepStatus.OK),
+            ("a", "stuck", StepStatus.OK),
+            ("a", "stuck", StepStatus.OK),
+            ("b", None, StepStatus.OK),
+            ("b", None, StepStatus.OK),
+            ("b", None, StepStatus.OK),
+        ]
+        trace = _make_trace("mixed_outputs", specs)
+        findings = loop_assertion(trace, min_repeats=3)
+        # Tool "a" has identical non-None outputs → fires.
+        # Tool "b" has all-None, but the guard fires per-trace (all_outputs_absent
+        # is False because tool "a" has outputs).
+        # Tool "b" run: outputs are [None, None, None] → len(set) == 1 → fires too.
+        assert any(f.evidence["pattern"][0] == "a" for f in findings)

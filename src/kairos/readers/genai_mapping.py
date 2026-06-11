@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -47,6 +48,142 @@ if TYPE_CHECKING:
     from opentelemetry.sdk.trace import ReadableSpan
 
 logger = get_logger(__name__)
+
+# ─────────────────────── token usage extraction ──────────────────────────
+
+
+@dataclass(frozen=True)
+class Usage:
+    """Token usage extracted from a span."""
+
+    input: int
+    output: int
+    cache_read: int
+
+
+# USAGE_KEY_LADDER: ordered list of (input_key, output_key, cache_read_key).
+# First rung where both input AND output keys are present wins.
+# Cache-read key within a rung is optional.
+#
+# Rung 0: top-level custom keys observed on live claude_code.llm_request spans
+#         (2026-06-12 discovery, insight-report-0.md).
+# Rung 1: OTel GenAI semantic-convention (gen_ai.usage.*).
+# Rung 2: OpenInference / OpenLLMetry (llm.token_count.*).
+USAGE_KEY_LADDER: list[tuple[str, str, str]] = [
+    (
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+    ),
+    (
+        "gen_ai.usage.input_tokens",
+        "gen_ai.usage.output_tokens",
+        "gen_ai.usage.cache_read_input_tokens",
+    ),
+    (
+        "llm.token_count.prompt",
+        "llm.token_count.completion",
+        "llm.token_count.prompt_details.cache_read",
+    ),
+]
+
+# Tracks which trace IDs have already logged a coerce warning for type coercion,
+# and which rung they matched. Avoids log floods on repeated calls.
+_coerce_warned: set[str] = set()
+_rung_logged: set[str] = set()
+
+
+def _coerce_int(value: Any, key: str, trace_id: str) -> int:
+    """Coerce *value* to int.  Warns once per run when it was string-typed."""
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        warn_key = f"{trace_id}:{key}"
+        if warn_key not in _coerce_warned:
+            _coerce_warned.add(warn_key)
+            logger.warning(
+                "usage_key.string_typed",
+                key=key,
+                value=value,
+                trace_id=trace_id,
+            )
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return 0
+    if isinstance(value, float):
+        return int(value)
+    return 0
+
+
+def extract_usage(attrs: dict[str, Any], *, trace_id: str = "", span_id: str = "") -> Usage | None:
+    """Extract token usage from span attributes using the key ladder.
+
+    Iterates USAGE_KEY_LADDER in order; first rung where input AND output
+    keys are both present wins. Cache-read key is optional within a rung.
+
+    Returns a Usage dataclass on success; None when no rung matches
+    (meaning "not instrumented" — callers must treat None as absent, not 0).
+
+    Negative values are clamped to 0 with a warning (emitter bugs).
+    String-typed numbers are coerced with a one-per-run warning.
+
+    Logs once per trace which rung matched (at debug level).
+    """
+    for rung_idx, (k_in, k_out, k_cache) in enumerate(USAGE_KEY_LADDER):
+        if k_in not in attrs or k_out not in attrs:
+            continue
+
+        raw_in = attrs[k_in]
+        raw_out = attrs[k_out]
+        raw_cache = attrs.get(k_cache, 0)
+
+        input_val = _coerce_int(raw_in, k_in, trace_id)
+        output_val = _coerce_int(raw_out, k_out, trace_id)
+        cache_val = _coerce_int(raw_cache, k_cache, trace_id) if raw_cache else 0
+
+        # Clamp negatives — emitter bug, never propagate into waste sums.
+        if input_val < 0:
+            logger.warning(
+                "usage_key.negative_clamped",
+                key=k_in,
+                value=input_val,
+                trace_id=trace_id,
+            )
+            input_val = 0
+        if output_val < 0:
+            logger.warning(
+                "usage_key.negative_clamped",
+                key=k_out,
+                value=output_val,
+                trace_id=trace_id,
+            )
+            output_val = 0
+        if cache_val < 0:
+            logger.warning(
+                "usage_key.negative_clamped",
+                key=k_cache,
+                value=cache_val,
+                trace_id=trace_id,
+            )
+            cache_val = 0
+
+        # Log which rung matched — once per trace.
+        log_key = f"{trace_id}:rung"
+        if log_key not in _rung_logged:
+            _rung_logged.add(log_key)
+            logger.debug(
+                "extract_usage.rung_matched",
+                rung=rung_idx,
+                input_key=k_in,
+                output_key=k_out,
+                trace_id=trace_id,
+                span_id=span_id,
+            )
+
+        return Usage(input=input_val, output=output_val, cache_read=cache_val)
+
+    return None
 
 
 SpanKind = Literal["llm", "tool", "retrieval", "task", "other"]
@@ -393,18 +530,26 @@ def span_to_llm_call(span: ReadableSpan, *, step_index: int) -> LLMCall | None:
     if not provider or not model:
         return None
 
-    # Tokens: OpenInference first, then OTel-genai (modern + legacy names).
-    input_tokens = (
-        attrs.get("llm.token_count.prompt")
-        or attrs.get("gen_ai.usage.input_tokens")
-        or attrs.get("gen_ai.usage.prompt_tokens")
-    )
-    output_tokens = (
-        attrs.get("llm.token_count.completion")
-        or attrs.get("gen_ai.usage.output_tokens")
-        or attrs.get("gen_ai.usage.completion_tokens")
-    )
-    total_tokens = attrs.get("llm.token_count.total") or attrs.get("gen_ai.usage.total_tokens")
+    # Tokens: extract via the key ladder (rung 0 = live claude_code custom keys,
+    # rung 1 = OTel GenAI semconv, rung 2 = OpenInference).
+    trace_id_str_val = _trace_id_str(span)
+    span_id_str_val = _span_id_str(span)
+    usage = extract_usage(attrs, trace_id=trace_id_str_val, span_id=span_id_str_val)
+
+    # total_tokens semantics: output + max(input - cache_read, 0).
+    # Absent (usage is None) means not instrumented — leave total_tokens as None.
+    if usage is not None:
+        input_tokens: int | None = usage.input
+        output_tokens: int | None = usage.output
+        cache_read_tokens = usage.cache_read
+        total_tokens: int | None = usage.output + max(usage.input - usage.cache_read, 0)
+        tokens_instrumented = True
+    else:
+        input_tokens = None
+        output_tokens = None
+        cache_read_tokens = 0
+        total_tokens = None
+        tokens_instrumented = False
 
     temperature = _extract_temperature(attrs)
 
@@ -422,8 +567,8 @@ def span_to_llm_call(span: ReadableSpan, *, step_index: int) -> LLMCall | None:
         return None
 
     return LLMCall(
-        trace_id=_trace_id_str(span),
-        span_id=_span_id_str(span),
+        trace_id=trace_id_str_val,
+        span_id=span_id_str_val,
         parent_span_id=_parent_span_id_str(span),
         step_index=step_index,
         emitted_at=ended_at,
@@ -433,9 +578,11 @@ def span_to_llm_call(span: ReadableSpan, *, step_index: int) -> LLMCall | None:
         temperature=temperature,
         content_out=str(content_out) if isinstance(content_out, str) else None,
         tool_calls_emitted=tool_calls,
-        input_tokens=int(input_tokens) if isinstance(input_tokens, int) else None,
-        output_tokens=int(output_tokens) if isinstance(output_tokens, int) else None,
-        total_tokens=int(total_tokens) if isinstance(total_tokens, int) else None,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        total_tokens=total_tokens,
+        tokens_instrumented=tokens_instrumented,
         started_at=started_at,
         ended_at=ended_at,
         status=status,

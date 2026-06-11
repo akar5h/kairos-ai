@@ -161,3 +161,113 @@ class TestRedundantAssertion:
         )
         findings = redundant_assertion(trace)
         assert len(findings) == 0
+
+
+class TestRedundantF10Guard:
+    """F10 guard: args-absent pairs must never produce a finding.
+
+    Live claude_code.tool spans carry no tool_args/tool_output; without args
+    evidence jaccard_dict_similarity returns 1.0 for None/None and ∅/∅, which
+    historically produced a 642-finding flood at confidence 1.0.
+    """
+
+    def _make_trace_no_args(
+        self,
+        trace_id: str,
+        tools: list[tuple[str, StepStatus, int]],
+    ) -> TraceEnvelope:
+        """Build trace from (tool_name, status, total_tokens) — NO args on any step."""
+        steps = [
+            Step(
+                step_index=i,
+                step_type=StepType.TOOL_CALL,
+                tool_name=name,
+                tool_args=None,
+                tool_args_normalized=None,
+                status=status,
+                total_tokens=tokens,
+            )
+            for i, (name, status, tokens) in enumerate(tools)
+        ]
+        return TraceEnvelope(trace_id=trace_id, steps=steps)
+
+    def test_args_absent_both_silent(self) -> None:
+        # Both steps have no args → skip entirely, no finding
+        trace = self._make_trace_no_args(
+            "f10_absent_both",
+            [
+                ("Read", StepStatus.OK, 500),
+                ("Read", StepStatus.OK, 500),
+            ],
+        )
+        findings = redundant_assertion(trace)
+        assert len(findings) == 0
+
+    def test_args_absent_empty_dict_silent(self) -> None:
+        # Empty dicts are falsy — also skipped (same as None)
+        steps = [
+            Step(
+                step_index=0,
+                step_type=StepType.TOOL_CALL,
+                tool_name="Edit",
+                tool_args={},
+                tool_args_normalized={},
+                status=StepStatus.OK,
+                total_tokens=500,
+            ),
+            Step(
+                step_index=1,
+                step_type=StepType.TOOL_CALL,
+                tool_name="Edit",
+                tool_args={},
+                tool_args_normalized={},
+                status=StepStatus.OK,
+                total_tokens=500,
+            ),
+        ]
+        trace = TraceEnvelope(trace_id="f10_empty_dicts", steps=steps)
+        findings = redundant_assertion(trace)
+        assert len(findings) == 0
+
+    def test_args_present_pair_fires(self) -> None:
+        # When at least one side has args, similarity runs and fires above threshold
+        args = {"file_path": "/src/foo.py", "old_str": "x", "new_str": "y"}
+        trace = _make_trace(
+            "f10_args_present",
+            [
+                ("Edit", args, StepStatus.OK, 500),
+                ("Edit", args, StepStatus.OK, 500),
+            ],
+        )
+        findings = redundant_assertion(trace)
+        assert len(findings) == 1
+
+    def test_args_mixed_one_absent_silent(self) -> None:
+        # One step has args, the other doesn't — mixed → skip (both must be truthy).
+        # Actually per spec: "if not args_a and not args_b" — only skip when BOTH absent.
+        # When one has args, similarity runs normally. Let's verify the mixed case
+        # where curr has args but nxt doesn't: Jaccard(dict, None) = 0.0 → below threshold.
+        steps = [
+            Step(
+                step_index=0,
+                step_type=StepType.TOOL_CALL,
+                tool_name="Bash",
+                tool_args={"cmd": "ls"},
+                tool_args_normalized={"cmd": "ls"},
+                status=StepStatus.OK,
+                total_tokens=500,
+            ),
+            Step(
+                step_index=1,
+                step_type=StepType.TOOL_CALL,
+                tool_name="Bash",
+                tool_args=None,
+                tool_args_normalized=None,
+                status=StepStatus.OK,
+                total_tokens=500,
+            ),
+        ]
+        trace = TraceEnvelope(trace_id="f10_mixed", steps=steps)
+        findings = redundant_assertion(trace)
+        # Jaccard({cmd:ls}, None) = 0.0 → below 0.85 threshold → no finding
+        assert len(findings) == 0

@@ -83,6 +83,22 @@ def _step(
     )
 
 
+def _llm_step(
+    i: int,
+    *,
+    total_tokens: int = 100,
+    tokens_instrumented: bool = True,
+) -> Step:
+    """Synthetic LLM step with token instrumentation for coverage tests."""
+    return Step(
+        step_index=i,
+        step_type=StepType.LLM,
+        llm_model="test-model",
+        total_tokens=total_tokens,
+        tokens_instrumented=tokens_instrumented,
+    )
+
+
 def _happy_trace(
     trace_id: str,
     tools: list[str] | None = None,
@@ -421,19 +437,50 @@ class TestBudgets:
         assert result.step_budget_p75 == pytest.approx(3.0, abs=0.01)
 
     def test_token_budget_disabled_when_token_coverage_low(self) -> None:
-        """If <80% of eligible traces have total_tokens → token_budget_p75 is None."""
+        """If <80% of eligible traces have tokens_instrumented=True → token_budget_p75 is None.
+
+        Coverage is computed from tokens_instrumented (not total_tokens > 0); a
+        genuinely zero-token step is still instrumented.
+        """
         op = _hr_operation()
         traces: list[TraceEnvelope] = []
-        # 5 eligible traces, only 1 has tokens > 0 → 20% coverage.
+        # 5 eligible traces; only trace 0 has an instrumented LLM step → 20% coverage.
         for i in range(5):
-            t = _happy_trace(f"t-{i}", total_tokens=(100 if i == 0 else 0))
+            base = _happy_trace(f"t-{i}", total_tokens=100)
+            if i == 0:
+                # Add an instrumented LLM step to this trace only
+                steps_with_llm = list(base.steps) + [_llm_step(len(base.steps), tokens_instrumented=True)]
+                t = TraceEnvelope(
+                    trace_id=base.trace_id,
+                    user_input=base.user_input,
+                    steps=steps_with_llm,
+                    terminal_status=base.terminal_status,
+                    total_tokens=base.total_tokens,
+                    total_latency_ms=base.total_latency_ms,
+                )
+            else:
+                t = base  # no LLM step → tokens_instrumented=False → not covered
             traces.append(t)
         result = extract_reference_behavior(traces, op)
         assert result.token_budget_p75 is None
 
     def test_token_budget_computed_when_tokens_present(self) -> None:
+        """All 8 traces with instrumented LLM steps → token_budget_p75 is computed."""
         op = _hr_operation()
-        traces = [_happy_trace(f"t-{i}", total_tokens=100 + i) for i in range(8)]
+        traces: list[TraceEnvelope] = []
+        for i in range(8):
+            base = _happy_trace(f"t-{i}", total_tokens=100 + i)
+            # Add an instrumented LLM step so tokens_instrumented=True
+            steps_with_llm = list(base.steps) + [_llm_step(len(base.steps), total_tokens=100 + i)]
+            t = TraceEnvelope(
+                trace_id=base.trace_id,
+                user_input=base.user_input,
+                steps=steps_with_llm,
+                terminal_status=base.terminal_status,
+                total_tokens=100 + i,
+                total_latency_ms=base.total_latency_ms,
+            )
+            traces.append(t)
         result = extract_reference_behavior(traces, op)
         assert result.token_budget_p75 is not None
         assert result.token_budget_p75 > 0

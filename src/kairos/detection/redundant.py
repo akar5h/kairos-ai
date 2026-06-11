@@ -45,6 +45,15 @@ def redundant_assertion(
                 continue
             args_a = curr.tool_args_normalized or curr.tool_args
             args_b = nxt.tool_args_normalized or nxt.tool_args
+            # F10 guard: if BOTH steps have no args (uninstrumented tool spans —
+            # live claude_code.tool spans carry no tool_args/tool_output), skip
+            # the pair entirely. jaccard_dict_similarity returns 1.0 for None/None
+            # and ∅/∅, which produced a historical 642-finding flood at confidence
+            # 1.0 on live data. Fix at the detector layer, not by changing Jaccard
+            # semantics globally (tau-bench corpus depends on them).
+            if not args_a and not args_b:
+                i += 1
+                continue
             sim = jaccard_dict_similarity(args_a, args_b)
 
             if sim >= threshold:

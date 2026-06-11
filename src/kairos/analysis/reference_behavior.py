@@ -183,7 +183,12 @@ def extract_reference_behavior(
     step_budget_p75 = float(step_counts[idx])
 
     token_budget_p75: float | None = None
-    if _coverage_ratio([t.total_tokens for t in reference_traces]) >= _TOKEN_COVERAGE_MIN_RATIO:
+    # Use tokens_instrumented (not total_tokens > 0) — a genuinely zero-token
+    # step is instrumented even when total_tokens == 0 (fully-cached call).
+    instrumented_flags = [
+        any(s.tokens_instrumented for s in t.steps if s.step_type == StepType.LLM) for t in reference_traces
+    ]
+    if _coverage_ratio(instrumented_flags) >= _TOKEN_COVERAGE_MIN_RATIO:
         token_counts = sorted(t.total_tokens for t in reference_traces)
         token_budget_p75 = float(token_counts[min(int(0.75 * n), n - 1)])
 
@@ -326,12 +331,16 @@ def _select_reference_traces(
     return result if result else eligible[:1]
 
 
-def _coverage_ratio(values: list[int]) -> float:
-    """Fraction of values that are > 0 (treating 0 as 'missing')."""
+def _coverage_ratio(values: list[bool]) -> float:
+    """Fraction of True values in *values*.
+
+    Used to compute what fraction of reference traces have token
+    instrumentation (``tokens_instrumented``) so the token-budget
+    percentile is only computed when coverage is sufficient.
+    """
     if not values:
         return 0.0
-    nonzero = sum(1 for v in values if v and v > 0)
-    return nonzero / len(values)
+    return sum(1 for v in values if v) / len(values)
 
 
 # ── Reference path (greedy walk) ────────────────────────────────────────

@@ -100,7 +100,9 @@ class LLMCall(_Envelope):
     tool_calls_emitted: list[ToolCallEmitted] = Field(default_factory=list)
     input_tokens: int | None = None
     output_tokens: int | None = None
+    cache_read_tokens: int = 0
     total_tokens: int | None = None
+    tokens_instrumented: bool = False
     started_at: datetime
     ended_at: datetime
     status: StepStatus = StepStatus.OK

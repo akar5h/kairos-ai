@@ -34,11 +34,23 @@ def loop_assertion(
 
     Period-2+ detection is not implemented. It covers < 5% of real loops and
     adds 80 lines of edge-case complexity.
+
+    F10 guard: when tool_output is uninstrumented (None/empty) on ALL steps of
+    the entire run, loop detection degrades to "same tool ≥N consecutive with
+    no progress signal" — NOT a finding. A loop without output evidence is only
+    a triage feature (Day 8 consumes it), not a confirmed detection.
+    See docs/system-audit-and-self-improvement-roadmap.md for F10 context.
     """
     tool_steps = [s for s in trace.steps if s.step_type == StepType.TOOL_CALL and s.tool_name]
     n = len(tool_steps)
 
     if n < min_repeats:
+        return []
+
+    # F10 guard: if output is uninstrumented on ALL steps in the entire run,
+    # do not fire any loop finding — we have no evidence of actual stuck-ness.
+    all_outputs_absent = all(not s.tool_output for s in tool_steps)
+    if all_outputs_absent:
         return []
 
     findings: list[Finding] = []
