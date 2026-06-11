@@ -1,4 +1,4 @@
-# Security & Edge-Case Review — XER-169
+# Security & Edge-Case Review — kairos-ai xer108-otel-preload (full branch)
 
 ## Verdict: PASS
 
@@ -6,22 +6,43 @@
 
 | Area | Finding |
 |------|---------|
-| Secrets / credentials | None. No auth, tokens, or env vars in diff. |
-| Input validation | `METRIC_DESCRIPTIONS` and `_SEVERITY_RANK` are module-level constants; no user input reaches them. All inputs to `build_analysis_view` are typed `AnalysisResult` objects produced internally by the engine. |
-| Injection | No SQL, shell, or template interpolation. URL building uses `urllib.parse.quote` (unchanged). |
-| Serialization | `model_dump_json` via Pydantic — safe. `metric_descriptions` is a `dict[str, str]` constant; no runtime-constructed keys or values from user data. |
-| Data exposure | `AnalysisSummary` and `metric_descriptions` contain no PII or secrets. |
+| Secrets / credentials | None. gitleaks clean. No env vars, tokens, or auth paths in diff. |
+| Input validation | `--span-limit` CLI param is typed `int \| None`; passed directly to PhoenixReader. No user-controlled string interpolation. No injection surface. |
+| Injection (SQL/shell/template) | None. |
+| Serialization | `AnalysisView` Pydantic model changed (removed `llm_used`, `evidence_coverage`; added `reliability`, `summary`, `metric_descriptions`). Breaking change to any consumer serializing/deserializing the old schema — but this is an internal SDK, no external contract to break. |
+| Data exposure | No new data paths. Phoenix reads are read-only. |
+| npm security | GHSA-q7rr-3cgh-j5r3 (CVSS 7.5 HIGH) **patched** by OTel 0.57.x → 0.218.x upgrade. Net positive. |
+| CORS / rate limiting | None changed. |
+| Auth / payment | None touched. |
 
 ## Edge cases
 
 | Scenario | Handled? |
 |----------|----------|
-| All workflows have 0 traces | Yes — `view.workflows == []`; `summary` zeros out correctly |
-| Workflow has findings with unknown severity string | `_max_severity` uses `_SEVERITY_RANK.get(s, -1)` — unknown severities rank lowest, won't erroneously become `max`. Safe degradation. |
-| Same trace_id appears in findings for multiple workflows | `_build_summary` collects unique trace_ids per workflow's `correctness.deterministic_findings`. A trace appearing in two workflows is counted once per workflow in `total_pattern_issues` but deduped globally in `affected_sessions` because a `set` is used. This is correct behavior. |
-| Empty findings list | `_max_severity([]) == None`, `finding_count == 0`. Tested. |
-| `confidence.value` not equal to `"none"` string | Uses `== "none"` comparison against `ReferenceConfidence.NONE.value` (which is `"none"` per the StrEnum). Safe. |
+| `span_limit=0` passed via CLI | Passes to PhoenixReader; Phoenix will return 0 spans → empty envelope. Caller gets empty analysis. Acceptable (user explicitly requested). |
+| `enable_divergence=False` (default) | Divergences list is `[]`. WorkflowView renders correctly with empty divergence. Tested. |
+| Zero eligible traces for p75 | `step_counts` is empty → `min(int(0.75 * 0), -1)` = -1. This is an off-by-one: `step_counts[-1]` would raise IndexError on empty list. **However**: p75 is only computed when `reference_traces` is non-empty (it's derived from `reference_traces`), so this path can't be reached with an empty list. Low risk. |
+| Mode tie-breaking with empty eligible | `_select_reference_traces([])` returns `[]` (early return guard). Safe. |
+| `seq_counts` with single item | `max()` on a 1-item Counter works. Returns that item. |
+| Phoenix span_limit hit at 100k | Warning logged, analysis continues on truncated trace. Downstream analysis may be partial but won't crash. |
+| Callers passing `llm_client` to `run_pipeline` | `llm_client: object \| None` accepted and ignored. No exception. Backward compat preserved. |
 
 ## Human review triggers (from policy)
 
-None triggered: no auth, payment, user data, DB schema, env config, logging, CORS, retry, or external API contract changes.
+| Trigger | Status |
+|---------|--------|
+| Auth logic changed | NO |
+| Payment logic changed | NO |
+| User data access changed | NO |
+| Database schema changed | NO |
+| Environment/config changed | YES — `PAPERCLIP_OTEL_HTTP_SPANS` env gate. Low risk: controls instrumentation only. |
+| Logging around sensitive data | NO |
+| CORS / rate limiting | NO |
+| Background job / retry | NO |
+| External API contract | MINOR — `AnalysisView` schema changed. Internal-only, no external consumers confirmed. |
+
+## Recommendation
+
+PASS with two low-severity notes:
+1. Verify no external consumers rely on the removed `llm_used` / `evidence_coverage` fields in `AnalysisView`.
+2. Verify Phoenix instance handles 100k span requests without OOM on large traces.

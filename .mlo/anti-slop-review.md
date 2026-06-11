@@ -1,29 +1,38 @@
-# Anti-Slop Review — XER-169
+# Anti-Slop Review — kairos-ai xer108-otel-preload (full branch)
 
-## Verdict: PASS
+## Verdict
 
-## Checks
+PASS
 
-### Bloated / over-engineered abstractions
-No new abstraction layers. `_max_severity`, `_build_summary`, and `_workflow_view` are all single-purpose helpers with direct callers. `AnalysisSummary` is a minimal 3-field model.
+## Summary
 
-### Fake robustness (error handling that doesn't handle errors)
-`_max_severity` returns `None` on empty input — correct, not a silent failure. No try/except wrapping clean code paths. No defensive isinstance checks on types the framework already validates.
+Branch is genuine lean-ification: removes numpy, drops LLM semantic pass (not ready for prod), fixes O(N²) loop, simplifies reference selection. All deletions are motivated. No YAGNI additions, no fake robustness, no ornamental abstractions.
 
-### Speculative features / YAGNI
-`METRIC_DESCRIPTIONS` keys cover only fields that exist in the view models. No forward-looking "might need" entries. The dict is static — no factory, no registry, no plugin hooks.
+## Slop findings
 
-### Ornamental code (comments restating the obvious)
-Module-level docstring updates are substantive (they name the issue and the new fields). Field docstrings in `WorkflowView` / `AnalysisSummary` / `AnalysisView` explain non-obvious behavior (`show_reference_sections=False` meaning, uniqueness semantics on `affected_sessions`). No restating-what-the-code-does comments.
+None blocking.
 
-### Duplicate logic
-Findings list is built once in `_workflow_view` and reused in `_correctness_view` (previously built twice). The refactoring removed the duplication.
+## Bloat check
 
-### Test quality
-32 tests; fixtures are parameterized helpers (`_workflow`, `_finding`, etc.) rather than copy-pasted blocks. Each test covers one behavior. No trivial round-trip tests.
+- **unnecessary abstraction**: None. `required_tool_coverage()` in taxonomy/utils is a small, focused utility used directly.
+- **fake fallback**: None. `enable_divergence=False` default is an explicit gate backed by a doc comment explaining the data threshold requirement.
+- **broad try/catch**: None.
+- **dead code**: `week1_pipeline = run_pipeline` alias is kept for backward compat with explicit `# Backward-compat aliases.` comment. Acceptable — callers likely reference the old name.
+- **duplicate logic**: `reference_behavior.py` repeats `int(0.75 * n)` twice (step + token p75). Minor. Not slop — avoids premature abstraction of a 1-liner.
+- **unrelated refactor**: None. All changes are part of the Phase 2-4 scope.
+- **speculative extensibility**: None. `METRIC_DESCRIPTIONS` is a static dict that serves a concrete current need (UI tooltips).
 
-### Zero-trace filtering
-Filtering is a one-liner list comprehension with a clear condition. No class, no strategy pattern, no config flag.
+## Positive signals
 
-## Findings
+- **numpy removal**: drops a heavyweight dep in favor of 3 lines of pure Python for p75 and mode-selection. More honest, same correctness.
+- **O(N²) → pre-index**: `op_full`/`op_attempted` dicts built once before the op loop. Clear win.
+- **Semantic pass removal**: `llm_client` param deprecated with clear docstring; `KairosEngine.analyze()` is a passthrough wrapper with a deprecation note. Old code path gone, not hidden.
+- **Preflight check**: replaces `EvidenceCoverage` machinery with a simpler warning logger. Less code, same observability.
+
+## Required cleanup
+
 None.
+
+## Non-blocking suggestions
+
+- `_select_reference_traces` tie-break: `tuple(-ord(c) for c in "".join(k))` is unusual. A comment explaining why reverse-lex order is chosen would help future readers.

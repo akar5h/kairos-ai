@@ -1,36 +1,56 @@
-# Final Verdict — XER-169
+# Final Verification Verdict — kairos-ai xer108-otel-preload
 
-## APPROVE_FOR_PUSH
+## Status
+
+APPROVE_FOR_PUSH
+
+## Merge/push recommendation
+
+APPROVE
 
 ## Summary
 
-All required gates passed. No blocking findings.
+All deterministic gates passed on the full branch tip (`ca4dbd4`). No blocking findings. Two low-severity items require awareness but do not block push (pre-existing mypy debt unchanged; schema change is internal-only).
 
-| Gate | Result |
-|------|--------|
-| Tests (32 new + 486 total) | ✅ PASS |
-| Ruff lint | ✅ PASS (2 import-sort issues auto-fixed) |
-| Mypy typecheck | ✅ PASS |
-| Gitleaks secret scan | ✅ PASS |
-| Semgrep SAST (151 rules) | ✅ PASS |
-| Anti-slop review | ✅ PASS |
-| Security & edge-case review | ✅ PASS |
-| OSV scanner | ⚠️ SKIPPED (no dependency changes) |
+## Deterministic gate status
 
-## Change scope
+PASS
 
-Three files changed in `src/kairos/views/` and `tests/views/`. All changes are additive to the view data contract (`analysis_view.py`):
+| Gate | Status | Notes |
+|------|--------|-------|
+| pytest (486 passed, 1 skipped) | ✅ PASS | Full branch tip; 81s |
+| ruff check | ✅ PASS | All checks passed |
+| mypy | ⚠️ PRE-EXISTING | 215 errors identical on `main`; branch neutral |
+| gitleaks | ✅ PASS | No leaks, 4.19 MB |
+| semgrep (475 rules) | ✅ PASS | 0 findings |
+| osv-scanner | ✅ PASS | No issues; GHSA-q7rr-3cgh-j5r3 patched |
 
-1. Zero-trace workflow filtering (behavioral — removes empty tables as intended by spec)
-2. `show_reference_sections` flag on `WorkflowView`
-3. `finding_count` + `max_severity` on `WorkflowView`
-4. `AnalysisSummary` hero card on `AnalysisView`
-5. `metric_descriptions` static dict on `AnalysisView`
+## AI reviewer status
 
-## Risk
+| Reviewer | Verdict |
+|---|---|
+| Diff Auditor | PASS (medium risk — schema change internal only) |
+| Anti-Slop Reviewer | PASS |
+| Security & Edge Case Reviewer | PASS |
 
-**LOW.** No auth, payment, PII, DB schema, config, or external API changes. The only behavioral change (zero-trace filtering) is explicitly required by the issue spec and has dedicated test coverage.
+## Blocking issues
 
-## Commit
+None.
 
-`e4043a3` + ruff fixup on branch `xer108-otel-preload`
+## Human must inspect
+
+| File | Reason |
+|---|---|
+| `src/kairos/readers/phoenix.py` | Span limit 1k→100k — verify Phoenix instance handles large traces without OOM |
+| `src/kairos/engine/pipeline.py` | Semantic pass removed + `AnalysisView` schema changed — confirm no external consumers read `llm_used`/`evidence_coverage` fields |
+
+## Missing evidence
+
+- mypy not clean on this branch (pre-existing 215 errors); not a blocker but should be tracked.
+
+## Confidence
+
+HIGH
+
+---
+Branch: `xer108-otel-preload` | Tip: `ca4dbd4` | Verified: 2026-06-11
