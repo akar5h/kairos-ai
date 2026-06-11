@@ -1,8 +1,8 @@
-"""Week 1 pipeline orchestrator.
+"""Pipeline orchestrator.
 
-Glues together the existing Week 1 analysis primitives:
+Glues together the analysis primitives:
 
-    1. evidence coverage (computed once over all envelopes)
+    1. pre-flight check (warns when trace population is too sparse)
     2. multi-label trace -> workflow mapping via per-op recall against
        ``BusinessOperation.expected_tools`` with a three-tier membership
        model (FULL / ATTEMPTED / NONE)
@@ -10,15 +10,13 @@ Glues together the existing Week 1 analysis primitives:
         - outcome rate (over FULL + ATTEMPTED members)
         - reference behavior cohort (FULL members, segmented)
         - Tier 1 deterministic findings
-        - workflow divergence findings
+        - optional workflow divergence findings (behind enable_divergence flag)
         - top pattern names
-        - optional semantic decision-state findings via LLM
     4. unmapped activity summary (sample trace IDs + top tools) — a trace
        is "unmapped" only when its membership is NONE for every operation.
 
-The orchestrator is deterministic when no LLM client is provided. Patching
-points (`detect_tier1`, `compute_evidence_coverage`,
-`analyze_flagged_traces`) are imported by name so test mocks resolve via
+The orchestrator is deterministic. Patching points (`detect_tier1`) are
+imported by name so test mocks resolve via
 `patch("kairos.engine.pipeline.<name>", ...)`.
 """
 
@@ -29,25 +27,18 @@ from dataclasses import dataclass, field
 from statistics import median
 from typing import TYPE_CHECKING
 
-from kairos.analysis.decision_state import extract_packet
-from kairos.analysis.evidence_coverage import compute_evidence_coverage
 from kairos.analysis.outcome_metric import compute_outcome_rate
 from kairos.analysis.reference_behavior import extract_reference_behavior
-from kairos.analysis.semantic_decision import analyze_flagged_traces
 from kairos.analysis.workflow_divergence import detect_workflow_divergence
 from kairos.analysis.workflow_membership import MembershipKind, WorkflowMembership
 from kairos.detection.runner import detect_tier1
 from kairos.log import get_logger
-from kairos.models.enums import StepStatus
+from kairos.models.enums import StepStatus, TerminalStatus
 from kairos.taxonomy.business_context import default_membership_threshold
 
 if TYPE_CHECKING:
-    from kairos.analysis.decision_state import DecisionStatePacket
-    from kairos.analysis.evidence_coverage import EvidenceCoverage
-    from kairos.analysis.llm_client import LLMClient
     from kairos.analysis.outcome_metric import WorkflowOutcomeSummary
     from kairos.analysis.reference_behavior import ReferenceCohort
-    from kairos.analysis.semantic_decision import SemanticDecisionFinding
     from kairos.analysis.workflow_divergence import DivergenceFinding
     from kairos.detection.models import Finding
     from kairos.models.trace import TraceEnvelope
@@ -65,10 +56,14 @@ _TOP_PATTERN_LIMIT: int = 3
 _UNMAPPED_SAMPLE_LIMIT: int = 5
 _UNMAPPED_TOP_TOOLS_LIMIT: int = 10
 
+# Pre-flight thresholds
+_PREFLIGHT_TERMINAL_STATUS_MIN: float = 0.80
+_PREFLIGHT_TOOL_SEQUENCE_MIN: float = 0.70
+
 
 @dataclass
 class WorkflowSummary:
-    """Per-workflow rollup: outcome, reference, deterministic + semantic findings.
+    """Per-workflow rollup: outcome, reference, deterministic findings.
 
     Slice B.0 multi-label model: a trace can be a ``FULL`` or ``ATTEMPTED``
     member of this workflow. ``mapped_trace_count`` is a backwards-compat
@@ -82,7 +77,6 @@ class WorkflowSummary:
     reference: ReferenceCohort
     deterministic_findings: list[Finding]
     divergences: list[DivergenceFinding]
-    semantic_findings: list[SemanticDecisionFinding] = field(default_factory=list)
     top_pattern_names: list[str] = field(default_factory=list)
 
     @property
@@ -102,12 +96,11 @@ class UnmappedActivity:
 
 @dataclass
 class AnalysisResult:
-    """Top-level Week 1 pipeline result."""
+    """Top-level pipeline result."""
 
     workflows: list[WorkflowSummary]
     unmapped: UnmappedActivity
-    evidence_coverage: EvidenceCoverage
-    llm_used: bool
+    reliability: dict[str, float]
 
 
 # ── Multi-label membership (Slice B.0) ─────────────────────────────────
@@ -141,8 +134,6 @@ def classify_membership(
 
     # Ops without a signature tool are utility patterns, not workflows —
     # they can't be distinguished from arbitrary supporting activity.
-    # (Taxonomy validation surfaces this once at pipeline startup; we stay
-    # silent here to avoid per-envelope log spam.)
     if not required_tools:
         return WorkflowMembership(op.name, MembershipKind.NONE, 0.0)
 
@@ -249,89 +240,6 @@ def _top_pattern_names(
     return [name for name, _count in ranked[:limit]]
 
 
-def _safe_step_index(trace: TraceEnvelope, target: int | None) -> int | None:
-    """Return *target* if it points at an actual step, else best-effort fallback."""
-    if not trace.steps:
-        return None
-    valid_indices = {step.step_index for step in trace.steps}
-    if target is not None and target in valid_indices:
-        return target
-    midpoint = trace.step_count // 2
-    if midpoint in valid_indices:
-        return midpoint
-    return trace.steps[0].step_index
-
-
-def _build_packets(
-    workflow_traces: list[TraceEnvelope],
-    operation: BusinessOperation,
-    coverage: EvidenceCoverage,
-    reference: ReferenceCohort,
-    findings: list[Finding],
-    divergences: list[DivergenceFinding],
-) -> dict[str, list[DecisionStatePacket]]:
-    """Build per-pattern packets for the semantic decision pass."""
-    traces_by_id: dict[str, TraceEnvelope] = {t.trace_id: t for t in workflow_traces}
-    packets_by_pattern: dict[str, list[DecisionStatePacket]] = {}
-
-    for finding in findings:
-        trace = traces_by_id.get(finding.trace_id)
-        if trace is None:
-            continue
-        target_step = finding.affected_step_indices[0] if finding.affected_step_indices else None
-        step_index = _safe_step_index(trace, target_step)
-        if step_index is None:
-            continue
-        try:
-            packet = extract_packet(
-                trace=trace,
-                step_index=step_index,
-                operation=operation,
-                coverage=coverage,
-                reference=reference,
-                deterministic_flags=[finding.pattern_name],
-            )
-        except (ValueError, KeyError, AttributeError, IndexError) as exc:
-            logger.warning(
-                "week1_pipeline.packet_extraction_failed",
-                trace_id=finding.trace_id,
-                pattern=finding.pattern_name,
-                error=str(exc)[:200],
-            )
-            continue
-        packets_by_pattern.setdefault(finding.pattern_name, []).append(packet)
-
-    for divergence in divergences:
-        if divergence.first_divergence_step is None:
-            continue
-        trace = traces_by_id.get(divergence.trace_id)
-        if trace is None:
-            continue
-        step_index = _safe_step_index(trace, divergence.first_divergence_step)
-        if step_index is None:
-            continue
-        try:
-            packet = extract_packet(
-                trace=trace,
-                step_index=step_index,
-                operation=operation,
-                coverage=coverage,
-                reference=reference,
-                deterministic_flags=[WORKFLOW_DIVERGENCE_PATTERN_NAME],
-            )
-        except (ValueError, KeyError, AttributeError, IndexError) as exc:
-            logger.warning(
-                "week1_pipeline.packet_extraction_failed",
-                trace_id=divergence.trace_id,
-                pattern=WORKFLOW_DIVERGENCE_PATTERN_NAME,
-                error=str(exc)[:200],
-            )
-            continue
-        packets_by_pattern.setdefault(WORKFLOW_DIVERGENCE_PATTERN_NAME, []).append(packet)
-
-    return packets_by_pattern
-
-
 def _summarize_unmapped(unmapped_envelopes: list[TraceEnvelope]) -> UnmappedActivity:
     """Build the unmapped-activity rollup. Deterministic ordering throughout."""
     if not unmapped_envelopes:
@@ -353,51 +261,30 @@ def _summarize_unmapped(unmapped_envelopes: list[TraceEnvelope]) -> UnmappedActi
     )
 
 
-def _run_semantic_pass(
-    operation: BusinessOperation,
-    workflow_traces: list[TraceEnvelope],
-    coverage: EvidenceCoverage,
-    reference: ReferenceCohort,
-    deterministic_findings: list[Finding],
-    divergences: list[DivergenceFinding],
-    llm_client: LLMClient | None,
-    top_n_patterns: int,
-    per_pattern_trace_limit: int,
-) -> list[SemanticDecisionFinding]:
-    """Run the semantic decision pass. Returns [] when LLM is off or no packets."""
-    if llm_client is None or not workflow_traces:
-        return []
-
-    packets_by_pattern = _build_packets(
-        workflow_traces,
-        operation,
-        coverage,
-        reference,
-        deterministic_findings,
-        divergences,
-    )
-    if not packets_by_pattern:
-        return []
-
-    trace_metrics = {t.trace_id: (t.step_count, t.total_tokens) for t in workflow_traces}
-    return analyze_flagged_traces(
-        packets_by_pattern,
-        llm_client,
-        trace_metrics=trace_metrics,
-        top_n_patterns=top_n_patterns,
-        per_pattern_trace_limit=per_pattern_trace_limit,
-    )
+def _preflight_check(envelopes: list[TraceEnvelope]) -> dict[str, float]:
+    """Warn on sparse trace population. Returns field-rate dict."""
+    n = len(envelopes)
+    if n == 0:
+        return {}
+    terminal_rate = sum(1 for e in envelopes if e.terminal_status != TerminalStatus.UNKNOWN) / n
+    tool_seq_rate = sum(1 for e in envelopes if e.tool_sequence) / n
+    if terminal_rate < _PREFLIGHT_TERMINAL_STATUS_MIN:
+        logger.warning("preflight.sparse_terminal_status", rate=terminal_rate, threshold=_PREFLIGHT_TERMINAL_STATUS_MIN)
+    if tool_seq_rate < _PREFLIGHT_TOOL_SEQUENCE_MIN:
+        logger.warning("preflight.sparse_tool_sequence", rate=tool_seq_rate, threshold=_PREFLIGHT_TOOL_SEQUENCE_MIN)
+    return {"terminal_status_rate": terminal_rate, "tool_sequence_rate": tool_seq_rate}
 
 
-def run_week1_pipeline(
+def run_pipeline(
     envelopes: list[TraceEnvelope],
     context: BusinessContext,
-    llm_client: LLMClient | None = None,
+    llm_client: object | None = None,  # deprecated, ignored — semantic pass removed
     *,
+    enable_divergence: bool = False,
     semantic_top_patterns: int = DEFAULT_SEMANTIC_TOP_PATTERNS,
     semantic_per_pattern: int = DEFAULT_SEMANTIC_PER_PATTERN,
 ) -> AnalysisResult:
-    """Run the Week 1 analysis pipeline end-to-end.
+    """Run the analysis pipeline end-to-end.
 
     Parameters
     ----------
@@ -406,17 +293,13 @@ def run_week1_pipeline(
     context:
         Customer-supplied BusinessContext (operations + expected tools).
     llm_client:
-        Optional LLMClient. When ``None`` the semantic pass is skipped and
-        the result is fully deterministic.
-    semantic_top_patterns:
-        Forwarded to :func:`analyze_flagged_traces` — top-N patterns to
-        analyze semantically.
-    semantic_per_pattern:
-        Forwarded to :func:`analyze_flagged_traces` — per-pattern trace
-        cap for the semantic pass.
+        Deprecated. Ignored. Semantic pass has been removed.
+    enable_divergence:
+        When True, run workflow divergence detection (E). Off by default
+        until reference cohorts have ≥20 eligible traces for two weeks.
     """
     validate_taxonomy(context)
-    coverage = compute_evidence_coverage(envelopes)
+    reliability = _preflight_check(envelopes)
 
     operations = list(context.operations)
 
@@ -425,21 +308,21 @@ def run_week1_pipeline(
         env.trace_id: map_envelope_multilabel(env, operations) for env in envelopes
     }
 
+    # Pre-index members by op name (avoids O(N²) loop).
+    op_full: dict[str, list[TraceEnvelope]] = {op.name: [] for op in operations}
+    op_attempted: dict[str, list[TraceEnvelope]] = {op.name: [] for op in operations}
+    for env in envelopes:
+        for m in memberships_per_envelope.get(env.trace_id, []):
+            if m.kind == MembershipKind.FULL:
+                op_full[m.operation_name].append(env)
+            elif m.kind == MembershipKind.ATTEMPTED:
+                op_attempted[m.operation_name].append(env)
+
     workflows: list[WorkflowSummary] = []
-    semantic_used = False
 
     for op in operations:
-        full_members: list[TraceEnvelope] = []
-        attempted_members: list[TraceEnvelope] = []
-        for env in envelopes:
-            for m in memberships_per_envelope.get(env.trace_id, []):
-                if m.operation_name != op.name:
-                    continue
-                if m.kind == MembershipKind.FULL:
-                    full_members.append(env)
-                elif m.kind == MembershipKind.ATTEMPTED:
-                    attempted_members.append(env)
-
+        full_members = op_full[op.name]
+        attempted_members = op_attempted[op.name]
         all_members = full_members + attempted_members
 
         outcome = compute_outcome_rate(all_members, op)
@@ -452,22 +335,10 @@ def run_week1_pipeline(
         cluster_median_steps = float(median(t.step_count for t in all_members)) if all_members else 0.0
 
         deterministic_findings = detect_tier1(all_members, cluster_median_steps)
-        divergences = detect_workflow_divergence(all_members, reference)
-        top_patterns = _top_pattern_names(deterministic_findings, divergences)
 
-        semantic_findings = _run_semantic_pass(
-            operation=op,
-            workflow_traces=all_members,
-            coverage=coverage,
-            reference=reference,
-            deterministic_findings=deterministic_findings,
-            divergences=divergences,
-            llm_client=llm_client,
-            top_n_patterns=semantic_top_patterns,
-            per_pattern_trace_limit=semantic_per_pattern,
-        )
-        if semantic_findings:
-            semantic_used = True
+        divergences = detect_workflow_divergence(all_members, reference) if enable_divergence else []
+
+        top_patterns = _top_pattern_names(deterministic_findings, divergences)
 
         workflows.append(
             WorkflowSummary(
@@ -478,7 +349,6 @@ def run_week1_pipeline(
                 reference=reference,
                 deterministic_findings=deterministic_findings,
                 divergences=divergences,
-                semantic_findings=semantic_findings,
                 top_pattern_names=top_patterns,
             )
         )
@@ -488,50 +358,35 @@ def run_week1_pipeline(
     unmapped_envelopes = [e for e in envelopes if e.trace_id not in mapped_trace_ids]
     unmapped = _summarize_unmapped(unmapped_envelopes)
 
-    llm_used = llm_client is not None and semantic_used
-
     logger.info(
-        "week1_pipeline.completed",
+        "pipeline.completed",
         total_traces=len(envelopes),
         workflows=len(workflows),
         unmapped=unmapped.trace_count,
-        llm_used=llm_used,
     )
 
     return AnalysisResult(
         workflows=workflows,
         unmapped=unmapped,
-        evidence_coverage=coverage,
-        llm_used=llm_used,
+        reliability=reliability,
     )
 
 
-# Public name retained for ported tests; AnalysisResult is the canonical SDK type.
+# Backward-compat aliases.
+run_week1_pipeline = run_pipeline
 Week1Result = AnalysisResult
 
 
 class KairosEngine:
-    """On-demand analysis engine — the single public entrypoint.
-
-    Reads only the IR (``TraceEnvelope``). Sources are explicit at the call
-    site; the engine itself runs one deterministic path (plus an optional
-    semantic pass when an ``LLMClient`` is supplied).
-    """
+    """Deprecated wrapper. Use :func:`run_pipeline` directly."""
 
     def analyze(
         self,
         envelopes: list[TraceEnvelope],
         context: BusinessContext,
-        llm_client: LLMClient | None = None,
+        llm_client: object | None = None,
         *,
         semantic_top_patterns: int = DEFAULT_SEMANTIC_TOP_PATTERNS,
         semantic_per_pattern: int = DEFAULT_SEMANTIC_PER_PATTERN,
     ) -> AnalysisResult:
-        """Analyze normalized envelopes against a business context."""
-        return run_week1_pipeline(
-            envelopes,
-            context,
-            llm_client,
-            semantic_top_patterns=semantic_top_patterns,
-            semantic_per_pattern=semantic_per_pattern,
-        )
+        return run_pipeline(envelopes, context, llm_client)

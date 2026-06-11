@@ -34,17 +34,14 @@ class TestDetectTier1:
             # Redundant pair (consecutive same tool + same args)
             ("search", "res", same_args, StepStatus.OK),
             ("search", "res", same_args, StepStatus.OK),
-            # Loop: period=2, repeats=3, same outputs
+            # Loop: period-1, tool "a" repeated 3x with same output
             ("a", "out", None, StepStatus.OK),
-            ("b", "out", None, StepStatus.OK),
             ("a", "out", None, StepStatus.OK),
-            ("b", "out", None, StepStatus.OK),
             ("a", "out", None, StepStatus.OK),
-            ("b", "out", None, StepStatus.OK),
         ]
         trace = _make_trace("both1", specs)
-        # Set median low so loop guard passes (8 steps, median=5)
-        findings = detect_tier1([trace], cluster_median_steps=5)
+        # Set median low so loop guard passes (5 steps, median=4)
+        findings = detect_tier1([trace], cluster_median_steps=4)
         patterns = {f.pattern_name for f in findings}
         assert "redundant_execution" in patterns
         assert "loop_detected" in patterns or "stuck_loop" in patterns

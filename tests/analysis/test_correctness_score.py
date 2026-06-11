@@ -160,7 +160,6 @@ def _workflow_summary(
         reference=_empty_reference(),
         deterministic_findings=deterministic_findings or [],
         divergences=divergences or [],
-        semantic_findings=[],
         top_pattern_names=[],
     )
 

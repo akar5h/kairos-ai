@@ -1,0 +1,124 @@
+agent_name: "Xero Platform"
+agent_description: "All Xero workloads: lead generation pipeline (Clutch scrape → score → outreach) and Paperclip coding agents (ClaudeCoder, CTO) executing issues."
+
+# Multi-label model: a trace matches whichever operations' required_side_effect_tools
+# appear in it. Lead pipeline traces match lead ops; coding agent traces match agent ops.
+# Zero overlap by design — distinctive tools are fully disjoint.
+
+operations:
+
+  # ── Lead Generation Pipeline ────────────────────────────────────────────────
+
+  - name: "Lead Scraping"
+    description: "Scrape agency listings from Clutch using Apify actor"
+    expected_tools:
+      - "run_clutch_scrape"
+      - "fetch_apify_results"
+      - "save_raw_companies"
+    required_side_effect_tools:
+      - "save_raw_companies"
+    priority: "high"
+
+  - name: "Lead Scoring"
+    description: "Score companies against ICP rules; assign tier and outreach channel"
+    expected_tools:
+      - "score_company"
+      - "score_companies"
+      - "persist_scores"
+      - "assign_tier"
+      - "assign_channel"
+    required_side_effect_tools:
+      - "persist_scores"
+    priority: "high"
+
+  - name: "Contact Resolution"
+    description: "Resolve decision-maker contact emails for scored companies"
+    expected_tools:
+      - "resolve_contacts"
+      - "save_contacts"
+    required_side_effect_tools:
+      - "save_contacts"
+    priority: "medium"
+
+  - name: "Message Personalisation"
+    description: "Generate personalised outreach emails using LLM; save drafts"
+    expected_tools:
+      - "personalise_message"
+      - "pick_template"
+      - "load_proof_assets"
+      - "save_draft"
+    required_side_effect_tools:
+      - "save_draft"
+    priority: "high"
+
+  - name: "Outreach Sending"
+    description: "Send approved messages via SMTP; enforce daily cap and approval gate"
+    expected_tools:
+      - "check_gate"
+      - "fetch_approved_messages"
+      - "send"
+      - "log_event"
+      - "update_message_status"
+      - "increment_send_count"
+    required_side_effect_tools:
+      - "send"
+      - "log_event"
+    priority: "medium"
+
+  - name: "Follow-up Scheduling"
+    description: "Schedule and dispatch follow-up messages for non-responding leads"
+    expected_tools:
+      - "load_followup_schedule"
+      - "send"
+      - "log_event"
+    required_side_effect_tools:
+      - "send"
+      - "log_event"
+    priority: "low"
+
+  # ── Paperclip Coding Agents ─────────────────────────────────────────────────
+
+  - name: "Code Implementation"
+    description: "Writing and editing source code to implement features or fix bugs"
+    expected_tools:
+      - "Read"
+      - "Edit"
+      - "Write"
+      - "Grep"
+      - "Glob"
+      - "Bash"
+    required_side_effect_tools:
+      - "Edit"
+      - "Write"
+    priority: "high"
+
+  - name: "Multi-Agent Orchestration"
+    description: "Spawning and coordinating subagents for parallel or delegated work"
+    expected_tools:
+      - "Agent"
+      - "Bash"
+      - "Read"
+    required_side_effect_tools:
+      - "Agent"
+    priority: "high"
+
+  - name: "Codebase Research"
+    description: "Read-only exploration — answering questions, mapping structure, finding symbols. Distinctive tool is Read (file reading). Bash/Grep/Glob are supporting tools."
+    expected_tools:
+      - "Read"
+      - "Grep"
+      - "Glob"
+      - "Bash"
+    required_side_effect_tools:
+      - "Read"
+    priority: "medium"
+
+  - name: "Paperclip Coordination"
+    description: "Checking out issues, posting comments, updating status via API"
+    expected_tools:
+      - "Bash"
+      - "Skill"
+    required_side_effect_tools:
+      - "Bash"
+      - "Skill"
+    priority: "high"

@@ -17,11 +17,9 @@ Eligibility for reference consideration (ALL must hold):
 
 from __future__ import annotations
 
-import math
+from collections import Counter
 from dataclasses import dataclass
 from enum import StrEnum
-
-import numpy as np
 
 from kairos.analysis.workflow_membership import MembershipKind, WorkflowMembership  # noqa: TCH001
 from kairos.detection.loops import loop_assertion
@@ -67,10 +65,6 @@ _REFERENCE_PATH_MAX_STEPS = 20
 _CONFIDENCE_HIGH_MIN = 50
 _CONFIDENCE_MEDIUM_MIN = 20
 _CONFIDENCE_LOW_MIN = 5
-
-_DEFAULT_W_STEPS = 0.4
-_DEFAULT_W_TOKENS = 0.4
-_DEFAULT_W_LATENCY = 0.2
 
 
 def segment_trace_for_workflow(
@@ -183,13 +177,15 @@ def extract_reference_behavior(
         reference_edges = set(reference_dfg.edges.keys())
         reference_path = _greedy_reference_path(reference_dfg, reference_traces)
 
-    step_counts = np.array([t.step_count for t in reference_traces], dtype=float)
-    step_budget_p75 = float(np.percentile(step_counts, 75))
+    step_counts = sorted(t.step_count for t in reference_traces)
+    n = len(step_counts)
+    idx = min(int(0.75 * n), n - 1)
+    step_budget_p75 = float(step_counts[idx])
 
     token_budget_p75: float | None = None
     if _coverage_ratio([t.total_tokens for t in reference_traces]) >= _TOKEN_COVERAGE_MIN_RATIO:
-        token_counts = np.array([t.total_tokens for t in reference_traces], dtype=float)
-        token_budget_p75 = float(np.percentile(token_counts, 75))
+        token_counts = sorted(t.total_tokens for t in reference_traces)
+        token_budget_p75 = float(token_counts[min(int(0.75 * n), n - 1)])
 
     logger.info(
         "reference_behavior.extracted",
@@ -311,56 +307,23 @@ def _confidence_tier(n_eligible: int) -> ReferenceConfidence:
 def _select_reference_traces(
     eligible: list[TraceEnvelope],
 ) -> list[TraceEnvelope]:
-    """Bottom quartile by efficiency (lowest = best). Ties broken by trace_id."""
+    """Select reference traces as those matching the mode tool_sequence.
+
+    The mode is the most frequent tool_sequence tuple across eligible traces.
+    Ties broken by earliest occurrence in the input list. If no sequence
+    repeats, the single most common sequence is selected. This is simpler
+    and more honest than a 3-weight efficiency model whose weights are
+    arbitrary until enough data exists to calibrate them.
+    """
     if not eligible:
         return []
 
-    efficiency = _efficiency_scores(eligible)
-
-    # Pair (efficiency, trace_id, index). Sort ascending on (efficiency, trace_id)
-    # so best (most efficient) traces come first; ties deterministic.
-    indexed = sorted(
-        range(len(eligible)),
-        key=lambda i: (efficiency[i], eligible[i].trace_id),
-    )
-
-    k = max(1, math.ceil(0.25 * len(eligible)))
-    selected_indices = sorted(indexed[:k])  # preserve input ordering in output
-    return [eligible[i] for i in selected_indices]
-
-
-def _efficiency_scores(eligible: list[TraceEnvelope]) -> np.ndarray:
-    """Min-max normalized composite efficiency score (lower = better).
-
-    Dynamically drops token and/or latency components when their coverage
-    across the eligible cohort falls below ``_TOKEN_COVERAGE_MIN_RATIO``.
-    Remaining weights are rescaled to sum to 1.0.
-    """
-    steps = np.array([t.step_count for t in eligible], dtype=float)
-    tokens = np.array([t.total_tokens for t in eligible], dtype=float)
-    latency = np.array([t.total_latency_ms for t in eligible], dtype=float)
-
-    has_tokens = _coverage_ratio([t.total_tokens for t in eligible]) >= _TOKEN_COVERAGE_MIN_RATIO
-    has_latency = _coverage_ratio([t.total_latency_ms for t in eligible]) >= _TOKEN_COVERAGE_MIN_RATIO
-
-    w_steps = _DEFAULT_W_STEPS
-    w_tokens = _DEFAULT_W_TOKENS if has_tokens else 0.0
-    w_latency = _DEFAULT_W_LATENCY if has_latency else 0.0
-
-    total = w_steps + w_tokens + w_latency
-    if total <= 0.0:
-        # Defensive — steps weight is a constant > 0.
-        w_steps, w_tokens, w_latency = 1.0, 0.0, 0.0
-    else:
-        w_steps /= total
-        w_tokens /= total
-        w_latency /= total
-
-    norm_steps = _min_max_normalize(steps)
-    norm_tokens = _min_max_normalize(tokens) if w_tokens > 0.0 else np.zeros_like(steps)
-    norm_latency = _min_max_normalize(latency) if w_latency > 0.0 else np.zeros_like(steps)
-
-    return w_steps * norm_steps + w_tokens * norm_tokens + w_latency * norm_latency
+    seq_counts: Counter[tuple[str, ...]] = Counter(tuple(t.tool_sequence) for t in eligible)
+    # Ties broken by shorter sequence first (simpler = better reference),
+    # then lexicographically for full determinism.
+    mode_seq = max(seq_counts, key=lambda k: (seq_counts[k], -len(k), tuple(-ord(c) for c in "".join(k))))
+    result = [t for t in eligible if tuple(t.tool_sequence) == mode_seq]
+    return result if result else eligible[:1]
 
 
 def _coverage_ratio(values: list[int]) -> float:
@@ -369,16 +332,6 @@ def _coverage_ratio(values: list[int]) -> float:
         return 0.0
     nonzero = sum(1 for v in values if v and v > 0)
     return nonzero / len(values)
-
-
-def _min_max_normalize(values: np.ndarray) -> np.ndarray:
-    """Normalize to [0, 1]. Returns zeros if min == max (all tied)."""
-    if values.size == 0:
-        return values
-    vmin, vmax = float(values.min()), float(values.max())
-    if vmin == vmax:
-        return np.zeros_like(values)
-    return (values - vmin) / (vmax - vmin)
 
 
 # ── Reference path (greedy walk) ────────────────────────────────────────

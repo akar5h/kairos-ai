@@ -41,9 +41,10 @@ from kairos.readers.genai_mapping import (
 
 logger = get_logger(__name__)
 
-# Phoenix limits get_spans to 1000 by default; raise it to capture any
-# realistic single-trace fan-out.
-_DEFAULT_LIMIT: int = 1000
+# arize-phoenix-client.get_spans paginates internally via cursor until
+# all matching spans are fetched or the limit is reached. 100_000 covers
+# any realistic trace; raise further with PhoenixReader(span_limit=N).
+_DEFAULT_LIMIT: int = 100_000
 _DEFAULT_PROJECT: str = "default"
 
 
@@ -244,15 +245,17 @@ class PhoenixReader:
                 limit=self._span_limit,
             )
         )
-        # Fail loud rather than analyze a silently truncated trace: at the
-        # limit we cannot tell "exactly N spans" from "more than N, clipped".
+        # When span_count == span_limit we may have been truncated — warn but
+        # continue so callers get analysis on whatever spans arrived. Raise the
+        # default (100_000) or pass PhoenixReader(span_limit=N) if needed.
         if len(spans) >= self._span_limit:
-            msg = (
-                f"trace {trace_id} returned {len(spans)} spans, hitting the Phoenix "
-                f"fetch limit of {self._span_limit}; the trace may be truncated. "
-                "Pass PhoenixReader(span_limit=...) with a higher limit to capture it."
+            logger.warning(
+                "phoenix_reader.span_limit_reached",
+                trace_id=trace_id,
+                span_count=len(spans),
+                limit=self._span_limit,
+                hint="Increase PhoenixReader(span_limit=N) to capture all spans.",
             )
-            raise RuntimeError(msg)
         envelope = spans_to_envelope(spans)
         logger.info(
             "phoenix_reader.fetched",

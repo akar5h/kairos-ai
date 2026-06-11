@@ -78,8 +78,15 @@ def _to_jsonable(obj: Any) -> Any:
     raise TypeError(msg)
 
 
-def _load_from_phoenix(trace_ids: tuple[str, ...], endpoint: str) -> list[TraceEnvelope]:
-    reader = PhoenixReader(endpoint=endpoint)
+def _load_from_phoenix(
+    trace_ids: tuple[str, ...],
+    endpoint: str,
+    span_limit: int | None = None,
+) -> list[TraceEnvelope]:
+    if span_limit is not None:
+        reader = PhoenixReader(endpoint=endpoint, span_limit=span_limit)
+    else:
+        reader = PhoenixReader(endpoint=endpoint)
     return [reader.fetch_envelope(tid) for tid in trace_ids]
 
 
@@ -106,6 +113,7 @@ def _resolve_envelopes(
     transcript_path: Path | None,
     agent_kind: str | None,
     phoenix_endpoint: str,
+    span_limit: int | None = None,
 ) -> list[TraceEnvelope]:
     """Load envelopes from exactly one explicit source. No fallback chain."""
     sources = [bool(phoenix_ids), normalized_dir is not None, transcript_path is not None]
@@ -117,7 +125,7 @@ def _resolve_envelopes(
         raise click.UsageError(msg)
 
     if phoenix_ids:
-        return _load_from_phoenix(phoenix_ids, phoenix_endpoint)
+        return _load_from_phoenix(phoenix_ids, phoenix_endpoint, span_limit)
     if transcript_path is not None:
         assert agent_kind is not None  # noqa: S101 — guaranteed by the --agent check above
         return _load_from_transcript(transcript_path, agent_kind)
@@ -160,6 +168,13 @@ def cli() -> None:
 )
 @click.option("--phoenix-endpoint", default="http://localhost:6006", show_default=True)
 @click.option(
+    "--span-limit",
+    "span_limit",
+    type=int,
+    default=None,
+    help="Max spans per trace from Phoenix (default: 100 000). Raise for very long traces.",
+)
+@click.option(
     "--output",
     "output_path",
     type=click.Path(dir_okay=False, path_type=Path),
@@ -172,11 +187,14 @@ def analyze(
     agent_kind: str | None,
     context_path: Path,
     phoenix_endpoint: str,
+    span_limit: int | None,
     output_path: Path | None,
 ) -> None:
     """Produce an AnalysisResult from a live (Phoenix) or offline source."""
     context = BusinessContext.from_yaml(context_path)
-    envelopes = _resolve_envelopes(phoenix_ids, normalized_dir, transcript_path, agent_kind, phoenix_endpoint)
+    envelopes = _resolve_envelopes(
+        phoenix_ids, normalized_dir, transcript_path, agent_kind, phoenix_endpoint, span_limit
+    )
 
     result = KairosEngine().analyze(envelopes, context)
     payload = json.dumps(_to_jsonable(result), indent=2)
@@ -229,6 +247,13 @@ def analyze(
     help="Phoenix project for deep-links.",
 )
 @click.option(
+    "--span-limit",
+    "span_limit",
+    type=int,
+    default=None,
+    help="Max spans per trace from Phoenix (default: 100 000). Raise for very long traces.",
+)
+@click.option(
     "--output",
     "output_path",
     type=click.Path(dir_okay=False, path_type=Path),
@@ -243,6 +268,7 @@ def view(
     phoenix_endpoint: str,
     phoenix_base_url: str,
     phoenix_project: str,
+    span_limit: int | None,
     output_path: Path | None,
 ) -> None:
     """Emit the Paperclip-native view payload (cohort/divergence/correctness).
@@ -251,7 +277,9 @@ def view(
     Paperclip-native UI renders, with a Phoenix deep-link on every finding row.
     """
     context = BusinessContext.from_yaml(context_path)
-    envelopes = _resolve_envelopes(phoenix_ids, normalized_dir, transcript_path, agent_kind, phoenix_endpoint)
+    envelopes = _resolve_envelopes(
+        phoenix_ids, normalized_dir, transcript_path, agent_kind, phoenix_endpoint, span_limit
+    )
 
     result = KairosEngine().analyze(envelopes, context)
     analysis_view = build_analysis_view(result, phoenix_base_url=phoenix_base_url, phoenix_project=phoenix_project)

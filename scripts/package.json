@@ -5,11 +5,11 @@
   "type": "module",
   "private": true,
   "dependencies": {
-    "@opentelemetry/sdk-node": "^0.57.0",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.57.0",
-    "@opentelemetry/core": "^1.30.0",
-    "@opentelemetry/instrumentation-http": "^0.57.0",
-    "@opentelemetry/instrumentation-express": "^0.46.0",
-    "@opentelemetry/instrumentation-pg": "^0.50.0"
+    "@opentelemetry/sdk-node": "^0.218.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.218.0",
+    "@opentelemetry/core": "^2.7.1",
+    "@opentelemetry/instrumentation-http": "^0.218.0",
+    "@opentelemetry/instrumentation-express": "^0.66.0",
+    "@opentelemetry/instrumentation-pg": "^0.70.0"
   }
 }
