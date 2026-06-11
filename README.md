@@ -133,6 +133,26 @@ pytest -x --tb=short --cov=kairos --cov-report=term-missing
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the pre-commit gate, and the
 non-negotiable hard rules.
 
+## Trace topology
+
+```
+Paperclip node process
+  │ OTLP :4317 / :4318
+  ▼
+otel-collector  (Docker container: deploy-otel-collector-1)
+  │ forwards to :4319
+  ▼
+Phoenix         (Docker container: deploy-phoenix-1, UI :6006)
+  project "default"
+  │ GraphQL / span fetch
+  ▼
+kairos view CLI  →  AnalysisView JSON
+```
+
+- **OTel collector** listens on `:4317` (gRPC) and `:4318` (HTTP/protobuf), forwards to Phoenix on `:4319`.
+- **Phoenix UI / GraphQL** at <http://localhost:6006>, project `"default"`.
+- **Archived SQLite** at `~/.phoenix/phoenix-taubench-archive-2026-05.db` — May 2026 tau-bench traces kept as eval-corpus raw material (Day 6 of the sprint). This is **not** the live store; the live store lives inside the `deploy-phoenix-1` container.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
