@@ -152,6 +152,8 @@ class TestWorkflowMapping:
         assert result.unmapped.trace_count == 0
 
     def test_trace_below_threshold_is_unmapped(self) -> None:
+        # Op has a signature tool (D) so it is usable; trace only provides A →
+        # recall 1/4 = 0.25, below default 0.5 threshold → trace lands in unmapped.
         ctx = BusinessContext(
             agent_name="Test",
             agent_description="",
@@ -160,11 +162,12 @@ class TestWorkflowMapping:
                     name="Op A",
                     description="",
                     expected_tools=["A", "B", "C", "D"],
+                    required_side_effect_tools=["D"],
                     priority="medium",
                 )
             ],
         )
-        # Envelope with one tool overlapping out of 4 → Jaccard = 1/4 = 0.25
+        # Trace only has A: recall = 1/4 = 0.25, below threshold.
         trace = _trace("t-low", ["A"])
         result = run_week1_pipeline([trace], ctx, llm_client=None)
         # The op had no traces map to it; trace lands in unmapped
@@ -314,16 +317,20 @@ class TestRecallBasedMapping:
 
     def test_trace_below_recall_threshold_is_unmapped(self) -> None:
         # recall = 2/5 = 0.4 for both ops → below tiebreak lower → unmapped.
+        # Both ops have required_side_effect_tools so they are usable (not utility
+        # patterns) — the low-recall trace still lands in unmapped.
         op1 = BusinessOperation(
             name="Op One",
             description="",
             expected_tools=["A", "B", "C", "D", "E"],
+            required_side_effect_tools=["E"],
             priority="medium",
         )
         op2 = BusinessOperation(
             name="Op Two",
             description="",
             expected_tools=["A", "B", "F", "G", "H"],
+            required_side_effect_tools=["H"],
             priority="medium",
         )
         ctx = BusinessContext(agent_name="x", agent_description="", operations=[op1, op2])
@@ -336,8 +343,10 @@ class TestRecallBasedMapping:
 
     def test_op_without_distinctive_tool_is_utility_pattern_never_matches(self) -> None:
         # Op with no required_side_effect_tools is a utility pattern — no
-        # signature, so nothing can belong to it. Trace with recall 3/5 = 0.6
-        # (above the 0.5 default threshold) still returns NONE.
+        # signature, so nothing can belong to it.
+        # Day 1.2: when ALL ops are utility patterns the pipeline raises a
+        # hard error (an analysis with zero usable ops produces a misleading
+        # empty result).
         op = BusinessOperation(
             name="Op No Signature",
             description="",
@@ -346,13 +355,8 @@ class TestRecallBasedMapping:
         )
         ctx = BusinessContext(agent_name="x", agent_description="", operations=[op])
         trace = _trace("t-no-signature", ["A", "B", "C"])
-        result = run_week1_pipeline([trace], ctx, llm_client=None)
-
-        assert result.unmapped.trace_count == 1
-        # Op still appears in workflows list with zero members.
-        assert len(result.workflows) == 1
-        ws = result.workflows[0]
-        assert ws.mapped_trace_count == 0
+        with pytest.raises(ValueError, match="unusable"):
+            run_week1_pipeline([trace], ctx, llm_client=None)
 
     def test_mapping_recall_threshold_constant_importable(self) -> None:
         from kairos.engine.pipeline import (
@@ -577,6 +581,75 @@ class TestEmptyInput:
 
         assert result.workflows == []
         assert result.unmapped.trace_count == 3
+
+
+# ───────────────────────── Day 1.2: null reliability + all-invalid ops ──────────
+
+
+class TestDay12NullReliability:
+    """Day 1.2: zero-envelope run returns null reliability (not vacuous 1.0)."""
+
+    def test_zero_envelopes_returns_null_reliability(self) -> None:
+        ctx = _hr_context()
+        result = run_week1_pipeline([], ctx, llm_client=None)
+        assert result.reliability["terminal_status_rate"] is None
+        assert result.reliability["tool_sequence_rate"] is None
+
+    def test_nonzero_envelopes_returns_float_reliability(self) -> None:
+        ctx = _hr_context()
+        traces = [_trace("t-1", ["get_rubric", "parse_resume", "submit_evaluation"])]
+        result = run_week1_pipeline(traces, ctx, llm_client=None)
+        assert isinstance(result.reliability["terminal_status_rate"], float)
+        assert isinstance(result.reliability["tool_sequence_rate"], float)
+
+
+class TestAllInvalidOpsHardError:
+    """Day 1.2: when ALL operations are unusable, pipeline raises instead of silently returning empty."""
+
+    def test_all_ops_missing_signature_tool_raises(self) -> None:
+        # Both ops have expected_tools but no required_side_effect_tools —
+        # they are utility patterns and will never match anything.
+        ctx = BusinessContext(
+            agent_name="Bad Config",
+            agent_description="",
+            operations=[
+                BusinessOperation(
+                    name="Op A",
+                    description="no sig",
+                    expected_tools=["a", "b"],
+                    required_side_effect_tools=[],
+                ),
+                BusinessOperation(
+                    name="Op B",
+                    description="no sig either",
+                    expected_tools=["c", "d"],
+                    required_side_effect_tools=[],
+                ),
+            ],
+        )
+        traces = [_trace("t-1", ["a", "b"])]
+        with pytest.raises(ValueError, match="unusable"):
+            run_week1_pipeline(traces, ctx, llm_client=None)
+
+    def test_one_usable_op_does_not_raise(self) -> None:
+        # Mixed: one utility pattern + one real op → pipeline runs.
+        ctx = BusinessContext(
+            agent_name="Mixed Config",
+            agent_description="",
+            operations=[
+                BusinessOperation(
+                    name="Utility",
+                    description="no sig",
+                    expected_tools=["a", "b"],
+                    required_side_effect_tools=[],
+                ),
+                _hr_op(),
+            ],
+        )
+        traces = [_trace("t-1", ["get_rubric", "parse_resume", "submit_evaluation"])]
+        # Must not raise; utility warning is logged but not fatal.
+        result = run_week1_pipeline(traces, ctx, llm_client=None)
+        assert isinstance(result, Week1Result)
 
 
 # Sanity import check: ensure the module-level constants exist where needed.

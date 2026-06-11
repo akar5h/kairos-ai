@@ -75,6 +75,7 @@ operations:
   - name: inspect_repo
     description: List repository contents and read files to answer a question.
     expected_tools: [Bash, Read]
+    required_side_effect_tools: [Read]
     priority: high
 """
 

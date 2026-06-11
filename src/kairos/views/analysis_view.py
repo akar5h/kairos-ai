@@ -30,6 +30,30 @@ from urllib.parse import quote
 
 from pydantic import BaseModel
 
+
+class AnalysisMeta(BaseModel):
+    """Provenance block attached to every AnalysisView produced by the engine.
+
+    Carries enough information to reproduce or audit the run:
+      engine_version     — importlib.metadata.version("kairos-ai")
+      context_path       — absolute path to the context YAML used
+      context_sha256     — SHA-256 hex digest of the raw context file bytes
+      operation_count    — number of operations loaded from the context
+      trace_count_fetched   — envelopes resolved from the data source
+      trace_count_analyzed  — envelopes that passed normalization and entered the pipeline
+
+    No timestamps here — the engine is deterministic; wall-clock time is stamped
+    by the plugin on the saved filename, not inside the payload.
+    """
+
+    engine_version: str
+    context_path: str
+    context_sha256: str
+    operation_count: int
+    trace_count_fetched: int
+    trace_count_analyzed: int
+
+
 # Builds a Phoenix deep-link from a trace id; closed over the base-url/project
 # chosen for one ``build_analysis_view`` call.
 _Linker = Callable[[str], str]
@@ -242,15 +266,21 @@ class AnalysisView(BaseModel):
     XER-169 additions:
       ``summary``             — hero-card counts (issues / sessions / workflows).
       ``metric_descriptions`` — plain-English tooltip text keyed by field name.
+
+    Day 1.2 additions:
+      ``meta``        — provenance block; None when parsing old saved files.
+      ``reliability`` — values are ``float | None``; None when the run had zero
+                        envelopes (null-reliability invariant — no vacuous 1.0).
     """
 
     phoenix_base_url: str
     phoenix_project: str
     workflows: list[WorkflowView]
     unmapped: UnmappedView
-    reliability: dict[str, float]
+    reliability: dict[str, float | None]
     summary: AnalysisSummary
     metric_descriptions: dict[str, str]
+    meta: AnalysisMeta | None = None
 
 
 # ───────────────────────── Builder ─────────────────────────
@@ -261,6 +291,7 @@ def build_analysis_view(
     *,
     phoenix_base_url: str = DEFAULT_PHOENIX_BASE_URL,
     phoenix_project: str = DEFAULT_PHOENIX_PROJECT,
+    meta: AnalysisMeta | None = None,
 ) -> AnalysisView:
     """Flatten an ``AnalysisResult`` into a JSON-serializable ``AnalysisView``.
 
@@ -269,6 +300,10 @@ def build_analysis_view(
 
     XER-169: workflows with zero total traces are filtered out (they represent
     lead-pipeline operations that had no activity and would render as empty tables).
+
+    Day 1.2: ``meta`` carries run provenance (engine version, context path/sha,
+    trace counts). Pass it from the CLI; it is optional so old saved files parse
+    without it.
     """
 
     def _link(trace_id: str) -> str:
@@ -288,6 +323,7 @@ def build_analysis_view(
         reliability=result.reliability,
         summary=summary,
         metric_descriptions=METRIC_DESCRIPTIONS,
+        meta=meta,
     )
 
 

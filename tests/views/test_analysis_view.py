@@ -13,6 +13,7 @@ from kairos.detection.models import Finding
 from kairos.engine.pipeline import AnalysisResult, UnmappedActivity, WorkflowSummary
 from kairos.views.analysis_view import (
     METRIC_DESCRIPTIONS,
+    AnalysisMeta,
     AnalysisView,
     build_analysis_view,
     phoenix_trace_url,
@@ -375,3 +376,64 @@ class TestMetricDescriptions:
         parsed = json.loads(view.model_dump_json())
         assert "metric_descriptions" in parsed
         assert "confidence" in parsed["metric_descriptions"]
+
+
+# ───────────────────────── Day 1.2: AnalysisMeta ─────────────────────────
+
+
+class TestAnalysisMeta:
+    """Day 1.2: meta provenance block round-trips; old JSON without meta still parses."""
+
+    def _meta(self) -> AnalysisMeta:
+        from kairos.views.analysis_view import AnalysisMeta
+
+        return AnalysisMeta(
+            engine_version="0.1.0",
+            context_path="/path/to/context.yaml",
+            context_sha256="abc123def456" * 4 + "abc123de",  # 64-char hex placeholder
+            operation_count=3,
+            trace_count_fetched=42,
+            trace_count_analyzed=40,
+        )
+
+    def test_meta_round_trips_through_model_dump_json(self) -> None:
+        view = build_analysis_view(_sample_result(), meta=self._meta())
+        serialized = view.model_dump_json()
+        parsed = json.loads(serialized)
+
+        assert "meta" in parsed
+        m = parsed["meta"]
+        assert m["engine_version"] == "0.1.0"
+        assert m["context_path"] == "/path/to/context.yaml"
+        assert m["operation_count"] == 3
+        assert m["trace_count_fetched"] == 42
+        assert m["trace_count_analyzed"] == 40
+
+    def test_meta_none_by_default(self) -> None:
+        view = build_analysis_view(_sample_result())
+        assert view.meta is None
+
+    def test_old_style_json_without_meta_still_parses(self) -> None:
+        """AnalysisView JSON from before Day 1.2 (no meta field) must parse cleanly."""
+        view = build_analysis_view(_sample_result())
+        d = json.loads(view.model_dump_json())
+        # Simulate an old saved payload by removing the meta key.
+        d.pop("meta", None)
+        # Re-parse via model_validate — must succeed with meta=None.
+        reparsed = AnalysisView.model_validate(d)
+        assert reparsed.meta is None
+
+    def test_null_reliability_passthrough(self) -> None:
+        """AnalysisResult with None reliability values round-trips through AnalysisView."""
+        empty_result = AnalysisResult(
+            workflows=[],
+            unmapped=UnmappedActivity(trace_count=0, sample_trace_ids=[], top_tools=[]),
+            reliability={"terminal_status_rate": None, "tool_sequence_rate": None},
+        )
+        view = build_analysis_view(empty_result)
+        assert view.reliability["terminal_status_rate"] is None
+        assert view.reliability["tool_sequence_rate"] is None
+
+        parsed = json.loads(view.model_dump_json())
+        assert parsed["reliability"]["terminal_status_rate"] is None
+        assert parsed["reliability"]["tool_sequence_rate"] is None

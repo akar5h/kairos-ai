@@ -14,6 +14,8 @@ as JSON.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import importlib.metadata
 import json
 from datetime import datetime
 from enum import Enum
@@ -35,6 +37,7 @@ from kairos.taxonomy.business_context import BusinessContext
 from kairos.views.analysis_view import (
     DEFAULT_PHOENIX_BASE_URL,
     DEFAULT_PHOENIX_PROJECT,
+    AnalysisMeta,
     build_analysis_view,
 )
 
@@ -93,6 +96,25 @@ def _load_from_phoenix(
 def _load_from_transcript(path: Path, agent_kind: str) -> list[TraceEnvelope]:
     adapter = _TRANSCRIPT_ADAPTERS[agent_kind]()
     return [adapter.normalize_jsonl(path)]
+
+
+def _build_meta(
+    context_path: Path,
+    context: BusinessContext,
+    trace_count_fetched: int,
+    trace_count_analyzed: int,
+) -> AnalysisMeta:
+    """Construct the AnalysisMeta provenance block for a view run."""
+    raw_bytes = context_path.read_bytes()
+    sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    return AnalysisMeta(
+        engine_version=importlib.metadata.version("kairos-ai"),
+        context_path=str(context_path.resolve()),
+        context_sha256=sha256,
+        operation_count=len(context.operations),
+        trace_count_fetched=trace_count_fetched,
+        trace_count_analyzed=trace_count_analyzed,
+    )
 
 
 def _load_from_dir(directory: Path) -> list[TraceEnvelope]:
@@ -280,9 +302,22 @@ def view(
     envelopes = _resolve_envelopes(
         phoenix_ids, normalized_dir, transcript_path, agent_kind, phoenix_endpoint, span_limit
     )
+    trace_count_fetched = len(envelopes)
+
+    # Envelopes that are valid after normalization are the ones that enter the
+    # pipeline.  The CLI normalizes at fetch time, so all resolved envelopes
+    # are already normalized — trace_count_analyzed == trace_count_fetched here.
+    # The distinction matters for future callers that may filter post-fetch.
+    trace_count_analyzed = len(envelopes)
 
     result = KairosEngine().analyze(envelopes, context)
-    analysis_view = build_analysis_view(result, phoenix_base_url=phoenix_base_url, phoenix_project=phoenix_project)
+    meta = _build_meta(context_path, context, trace_count_fetched, trace_count_analyzed)
+    analysis_view = build_analysis_view(
+        result,
+        phoenix_base_url=phoenix_base_url,
+        phoenix_project=phoenix_project,
+        meta=meta,
+    )
     payload = analysis_view.model_dump_json(indent=2)
 
     if output_path is not None:

@@ -100,7 +100,7 @@ class AnalysisResult:
 
     workflows: list[WorkflowSummary]
     unmapped: UnmappedActivity
-    reliability: dict[str, float]
+    reliability: dict[str, float | None]
 
 
 # ── Multi-label membership (Slice B.0) ─────────────────────────────────
@@ -180,8 +180,14 @@ def validate_taxonomy(context: BusinessContext) -> list[str]:
     review hint so operators can decide whether to add a signature tool or
     drop the op as a utility pattern. Returns the list of flagged op names
     so callers can surface them in reports.
+
+    Hard error: when ALL operations are unusable (every op either has no
+    expected_tools, or has expected_tools but no required_side_effect_tools),
+    the pipeline cannot match any trace and would silently produce an empty
+    result. Raise ``ValueError`` so the misconfiguration is visible immediately.
     """
     flagged: list[str] = []
+    usable: list[str] = []
     for op in context.operations:
         if op.expected_tools and not op.required_side_effect_tools:
             flagged.append(op.name)
@@ -195,12 +201,22 @@ def validate_taxonomy(context: BusinessContext) -> list[str]:
                     "taxonomy — it will never match under distinctive-tool gating."
                 ),
             )
+        else:
+            usable.append(op.name)
     if flagged:
         logger.warning(
             "taxonomy.utility_patterns_detected",
             count=len(flagged),
             operations=flagged,
         )
+    if context.operations and not usable:
+        msg = (
+            f"All {len(context.operations)} operation(s) in the taxonomy are unusable "
+            f"(missing required_side_effect_tools): {flagged}. "
+            "The pipeline cannot classify any trace. "
+            "Add required_side_effect_tools to at least one operation."
+        )
+        raise ValueError(msg)
     return flagged
 
 
@@ -261,11 +277,16 @@ def _summarize_unmapped(unmapped_envelopes: list[TraceEnvelope]) -> UnmappedActi
     )
 
 
-def _preflight_check(envelopes: list[TraceEnvelope]) -> dict[str, float]:
-    """Warn on sparse trace population. Returns field-rate dict."""
+def _preflight_check(envelopes: list[TraceEnvelope]) -> dict[str, float | None]:
+    """Warn on sparse trace population. Returns field-rate dict.
+
+    When the envelope list is empty the reliability rates are ``None`` — not
+    ``1.0``.  Returning 1.0 for an empty run is vacuously true and misleading;
+    ``None`` signals "not computable" to consumers (UI renders ``—``).
+    """
     n = len(envelopes)
     if n == 0:
-        return {}
+        return {"terminal_status_rate": None, "tool_sequence_rate": None}
     terminal_rate = sum(1 for e in envelopes if e.terminal_status != TerminalStatus.UNKNOWN) / n
     tool_seq_rate = sum(1 for e in envelopes if e.tool_sequence) / n
     if terminal_rate < _PREFLIGHT_TERMINAL_STATUS_MIN:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -242,3 +243,65 @@ class TestBusinessOperationWeek1Fields:
             membership_recall_threshold=0.7,
         )
         assert default_membership_threshold(op) == 0.7
+
+
+# ───────────────────────── Day 1.2: fail-loud from_yaml ─────────────────────────
+
+
+class TestFromYamlFailLoud:
+    """Day 1.2: from_yaml raises with the file path in the message for bad configs."""
+
+    def test_zero_operations_raises_with_path_in_message(self, tmp_path: Path) -> None:
+        """A YAML file with an empty operations list must raise with the path named."""
+        yaml_content = textwrap.dedent("""\
+            agent_name: "Test Agent"
+            agent_description: "no ops"
+            operations: []
+        """)
+        ctx_file = tmp_path / "empty_ops.yaml"
+        ctx_file.write_text(yaml_content)
+
+        with pytest.raises(ValueError, match=str(ctx_file)):
+            BusinessContext.from_yaml(ctx_file)
+
+    def test_missing_operations_key_raises_with_path_in_message(self, tmp_path: Path) -> None:
+        """A YAML file without an operations key must raise with the path named."""
+        yaml_content = textwrap.dedent("""\
+            agent_name: "Test Agent"
+            agent_description: "no ops key"
+        """)
+        ctx_file = tmp_path / "no_ops_key.yaml"
+        ctx_file.write_text(yaml_content)
+
+        with pytest.raises(ValueError, match=str(ctx_file)):
+            BusinessContext.from_yaml(ctx_file)
+
+    def test_non_mapping_document_raises_with_path_in_message(self, tmp_path: Path) -> None:
+        """A YAML file whose root is a list (not a mapping) must raise with the path named."""
+        yaml_content = textwrap.dedent("""\
+            - item1
+            - item2
+        """)
+        ctx_file = tmp_path / "list_root.yaml"
+        ctx_file.write_text(yaml_content)
+
+        with pytest.raises(ValueError, match=str(ctx_file)):
+            BusinessContext.from_yaml(ctx_file)
+
+    def test_valid_yaml_still_loads_cleanly(self, tmp_path: Path) -> None:
+        """Regression: a well-formed context file must not be broken by the guards."""
+        yaml_content = textwrap.dedent("""\
+            agent_name: "Good Agent"
+            agent_description: "has ops"
+            operations:
+              - name: "Op One"
+                description: "first op"
+                expected_tools: [Read, Write]
+                required_side_effect_tools: [Write]
+        """)
+        ctx_file = tmp_path / "good.yaml"
+        ctx_file.write_text(yaml_content)
+
+        ctx = BusinessContext.from_yaml(ctx_file)
+        assert ctx.agent_name == "Good Agent"
+        assert len(ctx.operations) == 1

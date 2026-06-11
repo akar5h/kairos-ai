@@ -56,10 +56,33 @@ class BusinessContext:
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> BusinessContext:
-        """Load business context from a YAML file."""
+        """Load business context from a YAML file.
+
+        Raises ``ValueError`` (with the file path in the message) when:
+          - the parsed document is not a mapping (e.g. YAML list at root)
+          - the document has zero operations
+
+        These checks happen before ``from_dict`` so the error message always
+        names the file, making misconfigured-run errors actionable from the
+        first line of the traceback.
+        """
         path = Path(path)
         with path.open() as f:
             data = yaml.safe_load(f)
+
+        if not isinstance(data, dict):
+            msg = (
+                f"Context file {path} did not parse to a YAML mapping "
+                f"(got {type(data).__name__}). "
+                "Expected a mapping with an 'operations' key."
+            )
+            raise ValueError(msg)
+
+        raw_ops = data.get("operations")
+        if not raw_ops:
+            msg = f"Context file {path} has no operations. Add at least one entry under the 'operations' key."
+            raise ValueError(msg)
+
         return cls.from_dict(data)
 
     @classmethod
