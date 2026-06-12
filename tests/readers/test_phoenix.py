@@ -30,7 +30,7 @@ from typing import Any
 
 import pytest  # noqa: TC002
 
-from kairos.models.enums import StepType, TerminalStatus
+from kairos.models.enums import StepStatus, StepStatusSource, StepType, TerminalStatus
 from kairos.readers.phoenix import PhoenixReader, spans_to_envelope
 
 
@@ -354,3 +354,88 @@ def test_fetch_envelope_round_trips_real_claude_code_trace() -> None:
     llm_steps = [s for s in env.steps if s.step_type is StepType.LLM]
     assert all(s.llm_model == "claude-opus-4-8[1m]" for s in llm_steps)
     assert env.user_input is not None and "hello.txt" in env.user_input
+
+
+# ───────────── Rung 3 wiring: adapter extractor on the live path ─────────────
+#
+# Day 3 review fix: spans_to_envelope applies ClaudeCodeNormalizer.step_outcome
+# (via apply_step_outcomes) on claude_code-shaped traces, for tool steps still
+# at status_source == NONE after rungs 1–2.
+
+
+def _cc_live_trace(tool_attrs: dict[str, Any]) -> list[dict[str, Any]]:
+    """interaction root + one claude_code.tool span with the given attributes."""
+    return [
+        _phoenix_span(
+            name="claude_code.interaction",
+            span_id="aaaaaaaaaaaaaaaa",
+            attributes={"span.type": "interaction", "user_prompt": "do it"},
+            start_time="2026-06-05T08:00:00.000000+00:00",
+            end_time="2026-06-05T08:00:10.000000+00:00",
+        ),
+        _phoenix_span(
+            name="claude_code.tool",
+            span_id="bbbbbbbbbbbbbbbb",
+            parent_id="aaaaaaaaaaaaaaaa",
+            attributes={"span.type": "tool", "tool_name": "Bash", **tool_attrs},
+            start_time="2026-06-05T08:00:01.000000+00:00",
+            end_time="2026-06-05T08:00:02.000000+00:00",
+        ),
+    ]
+
+
+def test_live_success_attr_wins_over_error_prefix() -> None:
+    """Review test 2: success=true AND 'Error:' prefix output → stays OK
+    (rung 2 short-circuits; adapter never consulted)."""
+    env = spans_to_envelope(_cc_live_trace({"success": True, "output.value": "Error: looks scary but rung 2 won"}))
+    step = next(s for s in env.steps if s.tool_name == "Bash")
+    assert step.status is StepStatus.OK
+    assert step.status_source is StepStatusSource.ATTR_SUCCESS
+
+
+def test_live_error_prefix_without_success_attr_fires_adapter() -> None:
+    """No success attr, output starts 'Error:' → rung 3 flips to ERROR/ADAPTER."""
+    env = spans_to_envelope(_cc_live_trace({"output.value": "Error: ENOENT no such file"}))
+    step = next(s for s in env.steps if s.tool_name == "Bash")
+    assert step.status is StepStatus.ERROR
+    assert step.status_source is StepStatusSource.ADAPTER
+    assert env.error_count == 1
+
+
+def test_live_exit_code_attr_fires_adapter() -> None:
+    """exit_code attr (forward-compat) reaches the adapter through Step.attrs."""
+    env = spans_to_envelope(_cc_live_trace({"exit_code": 2, "output.value": "command exited"}))
+    step = next(s for s in env.steps if s.tool_name == "Bash")
+    assert step.status is StepStatus.ERROR
+    assert step.status_source is StepStatusSource.ADAPTER
+
+
+def test_live_no_signal_leaves_none_for_rung4() -> None:
+    """Review test 3: rung 3 has no opinion → status_source stays NONE,
+    so rung 4 (outcome_metric textual) remains the only eligible tier."""
+    env = spans_to_envelope(_cc_live_trace({"output.value": "deploy failed: connection refused"}))
+    step = next(s for s in env.steps if s.tool_name == "Bash")
+    assert step.status is StepStatus.OK
+    assert step.status_source is StepStatusSource.NONE
+
+
+def test_non_claude_code_trace_skips_adapter() -> None:
+    """Generic OTel traces (no claude_code.* spans) never get the CC adapter."""
+    spans = [
+        _phoenix_span(
+            name="kairos.task",
+            span_id="aaaaaaaaaaaaaaaa",
+            attributes={"kairos.agent.name": "generic"},
+        ),
+        _phoenix_span(
+            name="tool.submit",
+            span_id="cccccccccccccccc",
+            parent_id="aaaaaaaaaaaaaaaa",
+            attributes={"gen_ai.tool.name": "submit", "output.value": "Error: would flip under CC adapter"},
+        ),
+    ]
+    env = spans_to_envelope(spans)
+    step = next(s for s in env.steps if s.tool_name == "submit")
+    # No claude_code span in the trace → adapter not applied → NONE/OK preserved.
+    assert step.status is StepStatus.OK
+    assert step.status_source is StepStatusSource.NONE

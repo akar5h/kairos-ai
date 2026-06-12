@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from kairos.engine import AnalysisResult, KairosEngine
-from kairos.models.enums import StepStatus, StepType, TerminalStatus
+from kairos.models.enums import StepStatus, StepStatusSource, StepType, TerminalStatus
 from kairos.normalization.agents.claude_code import ClaudeCodeNormalizer
 from kairos.taxonomy.business_context import BusinessContext
 
@@ -113,3 +113,99 @@ def test_real_session_smoke() -> None:
     env = ClaudeCodeNormalizer().normalize_jsonl(sessions[0])
     assert env.source == "claude_code"
     assert env.step_count >= 0
+
+
+# ───────────── Rung 3 wiring: adapter extractor on the transcript path ─────────────
+#
+# Day 3 review fix: AgentTranscriptNormalizer.normalize() applies
+# apply_step_outcomes() so the adapter extractor (rung 3) actually runs on
+# transcript-sourced envelopes (tau-bench / Day 6 path — no `success` attr).
+
+
+def _records_with_tool_result(content: str, *, is_error: bool = False) -> list[dict]:
+    """Minimal transcript: prompt → assistant tool_use → tool_result → final text."""
+    return [
+        {
+            "type": "user",
+            "sessionId": "sess-rung3",
+            "uuid": "u1",
+            "timestamp": "2026-06-04T10:00:00.000Z",
+            "message": {"role": "user", "content": "do the thing"},
+        },
+        {
+            "type": "assistant",
+            "sessionId": "sess-rung3",
+            "uuid": "a1",
+            "parentUuid": "u1",
+            "timestamp": "2026-06-04T10:00:01.000Z",
+            "message": {
+                "role": "assistant",
+                "model": "claude-opus-4-8",
+                "usage": {"input_tokens": 10, "output_tokens": 5},
+                "content": [{"type": "tool_use", "id": "toolu_x", "name": "Read", "input": {"file_path": "/x"}}],
+            },
+        },
+        {
+            "type": "user",
+            "sessionId": "sess-rung3",
+            "uuid": "u2",
+            "parentUuid": "a1",
+            "timestamp": "2026-06-04T10:00:02.000Z",
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_x", "is_error": is_error, "content": content}
+                ],
+            },
+        },
+        {
+            "type": "assistant",
+            "sessionId": "sess-rung3",
+            "uuid": "a2",
+            "parentUuid": "u2",
+            "timestamp": "2026-06-04T10:00:03.000Z",
+            "message": {
+                "role": "assistant",
+                "model": "claude-opus-4-8",
+                "usage": {"input_tokens": 12, "output_tokens": 6},
+                "content": [{"type": "text", "text": "done"}],
+            },
+        },
+    ]
+
+
+def test_rung3_harness_prefix_sets_error_with_adapter_source() -> None:
+    """Review test 1: transcript step, output 'Error: ENOENT...', no status info
+    (is_error=False → OK, status_source=NONE) → adapter flips to ERROR/ADAPTER."""
+    env = ClaudeCodeNormalizer().normalize(_records_with_tool_result("Error: ENOENT no such file"))
+    step = next(s for s in env.steps if s.tool_name == "Read")
+    assert step.status is StepStatus.ERROR
+    assert step.status_source is StepStatusSource.ADAPTER
+    # error_count was recomputed after the rung-3 pass.
+    assert env.error_count == 1
+
+
+def test_rung3_no_opinion_leaves_status_source_none() -> None:
+    """Clean output, no signals → adapter has no opinion → NONE stays (rung 4 eligible)."""
+    env = ClaudeCodeNormalizer().normalize(_records_with_tool_result("file contents here"))
+    step = next(s for s in env.steps if s.tool_name == "Read")
+    assert step.status is StepStatus.OK
+    assert step.status_source is StepStatusSource.NONE
+
+
+def test_rung3_failure_text_mid_output_not_flipped_by_adapter() -> None:
+    """'failed' mid-output is NOT a harness prefix → adapter silent → NONE stays.
+    Rung 4 (outcome_metric) remains the only tier allowed to judge this text."""
+    env = ClaudeCodeNormalizer().normalize(_records_with_tool_result("deploy failed: connection refused"))
+    step = next(s for s in env.steps if s.tool_name == "Read")
+    assert step.status is StepStatus.OK
+    assert step.status_source is StepStatusSource.NONE
+
+
+def test_rung3_does_not_override_is_error_verdict() -> None:
+    """is_error=True already set ERROR; adapter pass must not weaken it."""
+    env = ClaudeCodeNormalizer().normalize(
+        _records_with_tool_result("ENOENT: no such file or directory", is_error=True)
+    )
+    step = next(s for s in env.steps if s.tool_name == "Read")
+    assert step.status is StepStatus.ERROR

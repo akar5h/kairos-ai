@@ -29,6 +29,8 @@ from opentelemetry.trace import StatusCode  # noqa: TC002 — runtime use in ada
 from kairos.log import get_logger
 from kairos.models.enums import TerminalStatus
 from kairos.models.trace import TraceEnvelope
+from kairos.normalization.agents.base import apply_step_outcomes
+from kairos.normalization.agents.claude_code import ClaudeCodeNormalizer
 from kairos.normalization.events import AnyEvent  # noqa: TC001
 from kairos.normalization.live_normalizer import LiveNormalizer
 from kairos.readers.genai_mapping import (
@@ -47,6 +49,10 @@ logger = get_logger(__name__)
 # any realistic trace; raise further with PhoenixReader(span_limit=N).
 _DEFAULT_LIMIT: int = 100_000
 _DEFAULT_PROJECT: str = "default"
+
+# Shared stateless adapter for rung 3 on claude_code-shaped live traces.
+# No import cycle: normalization.agents.* never imports kairos.readers.
+_CLAUDE_CODE_NORMALIZER = ClaudeCodeNormalizer()
 
 
 # ───────────────────────── Phoenix-span adapter ─────────────────────────
@@ -199,6 +205,11 @@ def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
     (conservative check: final non-task span is ``blocked_on_user`` AND no
     subsequent ``llm_request``), the TraceEnd gets ``TerminalStatus.HUMAN_ESCALATION``
     regardless of the task root's OTel status.  HUMAN_ESCALATION is pass-eligible.
+
+    Rung 3: when the trace is claude_code-shaped (any ``claude_code.*`` span),
+    the ClaudeCode adapter extractor runs over tool steps still at
+    ``status_source == NONE`` after rungs 1–2 (kairos.outcome / success attr /
+    OTel status) were silent.  Steps decided by rungs 1–2 are never touched.
     """
     if not spans:
         return TraceEnvelope(
@@ -249,6 +260,13 @@ def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
         events.append(trace_end)
 
     envelope = LiveNormalizer().normalize(events)
+
+    # Rung 3: claude_code-shaped traces get the adapter extractor applied to
+    # tool steps that rungs 1–2 left undecided (status_source == NONE).
+    is_claude_code = any(getattr(s, "name", "").startswith("claude_code.") for s in wrapped)
+    if is_claude_code:
+        apply_step_outcomes(envelope, _CLAUDE_CODE_NORMALIZER)
+
     logger.info(
         "phoenix_reader.spans_to_envelope",
         trace_id=envelope.trace_id,
@@ -256,6 +274,7 @@ def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
         event_count=len(events),
         had_task_root=task_span is not None,
         human_escalation=session_blocked,
+        adapter_outcomes_applied=is_claude_code,
     )
     return envelope
 

@@ -24,12 +24,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from kairos.log import get_logger
+from kairos.models.enums import StepStatus, StepStatusSource, StepType
 from kairos.normalization.live_normalizer import LiveNormalizer
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from kairos.models.enums import StepStatus
     from kairos.models.trace import Step, TraceEnvelope
     from kairos.normalization.events import AnyEvent
 
@@ -81,6 +81,7 @@ class AgentTranscriptNormalizer(ABC):
         envelope.source = self.source
         if events:
             envelope.source_trace_id = events[0].trace_id
+        apply_step_outcomes(envelope, self)
         logger.info(
             "agent_normalizer.normalized",
             source=self.source,
@@ -93,6 +94,37 @@ class AgentTranscriptNormalizer(ABC):
     def normalize_jsonl(self, path: str | Path) -> TraceEnvelope:
         """Read a JSONL transcript (one JSON object per line) and normalize it."""
         return self.normalize(read_jsonl(path))
+
+
+def apply_step_outcomes(envelope: TraceEnvelope, normalizer: AgentTranscriptNormalizer) -> None:
+    """Rung 3 of the evidence ladder: apply the adapter extractor in place.
+
+    For every TOOL_CALL step still without a structured status signal
+    (``status_source == NONE`` — rungs 1 and 2 were silent), ask the adapter's
+    :meth:`AgentTranscriptNormalizer.step_outcome` for a verdict.  A non-None
+    verdict sets ``step.status`` and stamps ``status_source = ADAPTER``.
+
+    Steps already decided by rungs 1–2 are never touched (short-circuiting
+    ladder).  Steps where the adapter has no opinion stay at ``NONE`` so
+    rung 4 (textual, outcome_metric.py) remains eligible.
+
+    ``envelope.error_count`` is recomputed when any status changed — it was
+    derived in ``model_post_init`` before this pass ran.
+    """
+    changed = False
+    for step in envelope.steps:
+        if step.step_type is not StepType.TOOL_CALL:
+            continue
+        if step.status_source is not StepStatusSource.NONE:
+            continue
+        verdict = normalizer.step_outcome(step)
+        if verdict is None:
+            continue
+        step.status = verdict
+        step.status_source = StepStatusSource.ADAPTER
+        changed = True
+    if changed:
+        envelope.error_count = sum(1 for s in envelope.steps if s.status == StepStatus.ERROR)
 
 
 def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
