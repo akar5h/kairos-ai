@@ -1,0 +1,81 @@
+# eval/corpus/taubench/context.yaml
+# tau-bench evaluation context — airline domain (only env present in ablation bundles).
+#
+# Tool names sourced from observed trajectories in the ablation bundles (no invention).
+# All tool names below appear in at least one checkpoint_rows[].traj in the bundles.
+#
+# Airline domain tools observed:
+#   read  : get_user_details, get_reservation_details, search_direct_flight,
+#           search_onestop_flight, think, calculate
+#   write : book_reservation, cancel_reservation, update_reservation_flights,
+#           update_reservation_baggages, update_reservation_passengers
+#   escalation: transfer_to_human_agents
+#
+# Operations: one per domain category of outcome-bearing action.
+# required_side_effect_tools uses the default "all" per sprint spec (commit 30090a9).
+
+agent_name: "tau-bench Airline Agent"
+agent_description: "Tool-calling airline customer service agent (tau-bench evaluation harness)."
+
+operations:
+
+  - name: "Airline Flight Modification"
+    description: >
+      Agent modifies an existing reservation: changes flights, cabin, baggage,
+      or passenger information. The write-action tools are the distinctive
+      side-effect signals.
+    expected_tools:
+      - get_user_details
+      - get_reservation_details
+      - search_direct_flight
+      - search_onestop_flight
+      - update_reservation_flights
+      - update_reservation_baggages
+      - update_reservation_passengers
+    required_side_effect_tools:
+      - update_reservation_flights
+      - update_reservation_baggages
+      - update_reservation_passengers
+    # "any": a real modification session typically uses one of these write tools,
+    # rarely all three simultaneously. Demanding all three fails single-write traces.
+    side_effect_match: any
+    priority: high
+
+  - name: "Airline Reservation Booking"
+    description: >
+      Agent creates a new reservation via book_reservation. Always a write action.
+    expected_tools:
+      - get_user_details
+      - search_direct_flight
+      - search_onestop_flight
+      - book_reservation
+    required_side_effect_tools:
+      - book_reservation
+    side_effect_match: all
+    priority: high
+
+  - name: "Airline Reservation Cancellation"
+    description: >
+      Agent cancels an existing reservation via cancel_reservation.
+    expected_tools:
+      - get_user_details
+      - get_reservation_details
+      - cancel_reservation
+    required_side_effect_tools:
+      - cancel_reservation
+    side_effect_match: all
+    priority: high
+
+  - name: "Airline Human Escalation"
+    description: >
+      Agent correctly transfers to a human agent when the request is out of scope.
+      transfer_to_human_agents is both the required write tool and the terminal action.
+      Reward==1.0 on these traces means the escalation was correct per tau-bench scoring.
+    expected_tools:
+      - get_user_details
+      - get_reservation_details
+      - transfer_to_human_agents
+    required_side_effect_tools:
+      - transfer_to_human_agents
+    side_effect_match: all
+    priority: medium

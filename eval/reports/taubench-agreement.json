@@ -1,0 +1,142 @@
+{
+  "summary": {
+    "total_rows": 161,
+    "binary_eligible": 161,
+    "n_computable": 161,
+    "n_non_computable": 0,
+    "abstention_rate": 0.0,
+    "confusion_matrix": {
+      "kairos_pass_bench_pass": 58,
+      "kairos_pass_bench_fail": 67,
+      "kairos_fail_bench_pass": 7,
+      "kairos_fail_bench_fail": 29
+    },
+    "accuracy": 0.5404,
+    "cohens_kappa": 0.1692,
+    "unique_task_kappa": 0.0162,
+    "unique_task_n": 26,
+    "decision_tree": "kappa<0.7: Day 7 morning = iterate W3 against disagreement analysis; labeling compresses to afternoon"
+  },
+  "disagreement_class_summary": [
+    {
+      "class": "FP:none",
+      "count": 9
+    },
+    {
+      "class": "FN:missing_side_effect",
+      "count": 1
+    }
+  ],
+  "top_10_disagreements": [
+    {
+      "trace_id": "00eb89f9dc99ec541b29a6a568d86b7d",
+      "task_id": 17,
+      "reward": 1.0,
+      "bench_label": "PASS",
+      "kairos_verdict": "outcome_fail",
+      "failure_reason": "missing_side_effect",
+      "bundle": "kairos_ablation_airline_19_29_20260519T181343Z.json",
+      "mode": "memory_cascade",
+      "note": "false-negative: Kairos says FAIL (missing_side_effect) but tau-bench reward=1"
+    },
+    {
+      "trace_id": "03dfc78ed3b344fc4a43f27042193d32",
+      "task_id": 19,
+      "reward": 0.0,
+      "bench_label": "FAIL",
+      "kairos_verdict": "outcome_pass",
+      "failure_reason": null,
+      "bundle": "kairos_ablation_airline_19_21_20260513T062832Z.json",
+      "mode": "baseline_no_kairos",
+      "note": "false-positive: Kairos says PASS but tau-bench reward=0 (wrong action or wrong args)"
+    },
+    {
+      "trace_id": "09d7adf60f6520e6e7f4ba4d7f312967",
+      "task_id": 34,
+      "reward": 0.0,
+      "bench_label": "FAIL",
+      "kairos_verdict": "outcome_pass",
+      "failure_reason": null,
+      "bundle": "kairos_ablation_airline_19_29_20260519T181343Z.json",
+      "mode": "memory_cascade",
+      "note": "false-positive: Kairos says PASS but tau-bench reward=0 (wrong action or wrong args)"
+    },
+    {
+      "trace_id": "1120465f51a4deda005e648761fba23d",
+      "task_id": 25,
+      "reward": 0.0,
+      "bench_label": "FAIL",
+      "kairos_verdict": "outcome_pass",
+      "failure_reason": null,
+      "bundle": "kairos_ablation_airline_19_29_20260519T202052Z.json",
+      "mode": "memory_cascade",
+      "note": "false-positive: Kairos says PASS but tau-bench reward=0 (wrong action or wrong args)"
+    },
+    {
+      "trace_id": "11e88acc141377356799355a4ab31da5",
+      "task_id": 30,
+      "reward": 0.0,
+      "bench_label": "FAIL",
+      "kairos_verdict": "outcome_pass",
+      "failure_reason": null,
+      "bundle": "kairos_ablation_airline_19_29_20260519T181343Z.json",
+      "mode": "baseline_no_kairos",
+      "note": "false-positive: Kairos says PASS but tau-bench reward=0 (wrong action or wrong args)"
+    },
+    {
+      "trace_id": "13181ddfb96ba7bcb623273fd91578bd",
+      "task_id": 26,
+      "reward": 0.0,
+      "bench_label": "FAIL",
+      "kairos_verdict": "outcome_pass",
+      "failure_reason": null,
+      "bundle": "kairos_ablation_airline_19_29_20260519T135901Z.json",
+      "mode": "baseline_no_kairos",
+      "note": "false-positive: Kairos says PASS but tau-bench reward=0 (wrong action or wrong args)"
+    },
+    {
+      "trace_id": "1997dad5d05c7cbcca9e54c741a9b643",
+      "task_id": 2,
+      "reward": 0.0,
+      "bench_label": "FAIL",
+      "kairos_verdict": "outcome_pass",
+      "failure_reason": null,
+      "bundle": "kairos_ablation_airline_19_29_20260519T202052Z.json",
+      "mode": "memory_cascade",
+      "note": "false-positive: Kairos says PASS but tau-bench reward=0 (wrong action or wrong args)"
+    },
+    {
+      "trace_id": "1e35a948b80cead90310ca67dc595266",
+      "task_id": 25,
+      "reward": 0.0,
+      "bench_label": "FAIL",
+      "kairos_verdict": "outcome_pass",
+      "failure_reason": null,
+      "bundle": "kairos_ablation_airline_19_29_20260519T181343Z.json",
+      "mode": "memory_cascade",
+      "note": "false-positive: Kairos says PASS but tau-bench reward=0 (wrong action or wrong args)"
+    },
+    {
+      "trace_id": "1f0d0e40c9bdbdd695e2729847619d7c",
+      "task_id": 20,
+      "reward": 0.0,
+      "bench_label": "FAIL",
+      "kairos_verdict": "outcome_pass",
+      "failure_reason": null,
+      "bundle": "kairos_ablation_airline_19_29_20260519T055406Z.json",
+      "mode": "baseline_no_kairos",
+      "note": "false-positive: Kairos says PASS but tau-bench reward=0 (wrong action or wrong args)"
+    },
+    {
+      "trace_id": "1f3c849d40fd3d18886cf6a9701f9635",
+      "task_id": 19,
+      "reward": 0.0,
+      "bench_label": "FAIL",
+      "kairos_verdict": "outcome_pass",
+      "failure_reason": null,
+      "bundle": "kairos_ablation_airline_19_29_20260521T063603Z.json",
+      "mode": "memory_cascade",
+      "note": "false-positive: Kairos says PASS but tau-bench reward=0 (wrong action or wrong args)"
+    }
+  ]
+}
