@@ -41,6 +41,10 @@ data/
 traces/
 *.jsonl.gz
 
+# Eval corpus trace files (regenerable from ablation bundles via taubench_corpus.py)
+# labels.jsonl and context.yaml are committed; raw trace JSONs are not.
+eval/corpus/taubench/*.json
+
 # Editor / OS
 .idea/
 .vscode/
