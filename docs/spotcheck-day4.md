@@ -1,6 +1,6 @@
 # Spot-check — Day 4 Exit Gate
 
-Generated: 2026-06-12 04:55 UTC
+Generated: 2026-06-12 04:59 UTC
 Window: last 168h
 Phoenix: http://localhost:6006 / project: default
 Context: /Users/akarshgajbhiye/kairos-ai/config/context.yaml
@@ -9,10 +9,12 @@ Context: /Users/akarshgajbhiye/kairos-ai/config/context.yaml
 
 | Stratum | Available | Sampled | Target |
 |---------|-----------|---------|--------|
-| fail | 200 | 10 | 10 |
+| fail | 15 | 10 | 10 |
 | pass | 138 | 5 | 5 |
 | escalated | 0 | 5 | 5 |
-| **total** | 338 | **20** | 20 |
+| **total** | 153 | **20** | 20 |
+
+**Unmapped traces (no operation matched → no verdict by definition): 187.** Not part of the verdict strata. These are predominantly Bash-only coordination sessions (see insight-report-0.md); they become mappable after the Day 13 intervention.
 
 **Stratum notes:**
 - escalated stratum short by 5 (only 0 available); filling from fail/pass.
@@ -23,26 +25,26 @@ Owner: fill the **AGREE?** column (Y = engine correct, N = engine wrong, ? = uns
 
 | Trace | Primary workflow | Verdict | Failure reason | Evidence step | Status source | Last tools | AGREE? |
 |-------|-----------------|---------|---------------|--------------|--------------|-----------|--------|
-| [2860b1c082620f10…](http://localhost:6006/projects/default/traces/2860b1c082620f107b0d62c7807b4875) | unmapped | fail | missing_side_effect |  |  | Bash |  |
-| [1abd38cfb4a9a5b8…](http://localhost:6006/projects/default/traces/1abd38cfb4a9a5b83ff6ea242de96844) | unmapped | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
-| [2de5a083fec3943a…](http://localhost:6006/projects/default/traces/2de5a083fec3943a92e5ef62cf49952f) | unmapped | fail | missing_side_effect |  |  | Bash, Bash |  |
-| [cb3b334015d5082f…](http://localhost:6006/projects/default/traces/cb3b334015d5082fed0f819ebc54cff2) | unmapped | fail | missing_side_effect |  |  | Bash |  |
 | [8f0780364da8cbff…](http://localhost:6006/projects/default/traces/8f0780364da8cbffa1f0544951ecce44) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
-| [dda0a79707d1591d…](http://localhost:6006/projects/default/traces/dda0a79707d1591d5e980e1be62eb416) | unmapped | fail | missing_side_effect |  |  | (none) |  |
-| [f2a736380b567ff7…](http://localhost:6006/projects/default/traces/f2a736380b567ff7b4e00617afd1ba2a) | unmapped | fail | missing_side_effect |  |  | Bash, Bash |  |
-| [4673ac8f1c33052e…](http://localhost:6006/projects/default/traces/4673ac8f1c33052e0ccc62477949c2b6) | unmapped | fail | missing_side_effect |  |  | Bash |  |
-| [4df0af9172cd9017…](http://localhost:6006/projects/default/traces/4df0af9172cd90177bd813db029f8f1b) | unmapped | fail | missing_side_effect |  |  | Bash, Bash, Edit |  |
-| [abc2b5be66235c90…](http://localhost:6006/projects/default/traces/abc2b5be66235c90197a54a53b8fe27a) | unmapped | fail | missing_side_effect |  |  | Bash, Bash |  |
+| [bd56871947a909a7…](http://localhost:6006/projects/default/traces/bd56871947a909a7f146e070f4139c12) | Multi-Agent Orchestration | fail | critical_tool_error |  |  | Bash, Bash, Bash |  |
+| [79043f7ec7bf0d1a…](http://localhost:6006/projects/default/traces/79043f7ec7bf0d1aa0df958067e3dc30) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [b1c3f0272403b740…](http://localhost:6006/projects/default/traces/b1c3f0272403b740981f70b713cd35d2) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [ea9692b98678ac4e…](http://localhost:6006/projects/default/traces/ea9692b98678ac4e3aa760cc8cd3c75e) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [8b0336fad7f4b1ce…](http://localhost:6006/projects/default/traces/8b0336fad7f4b1cec2387bd880f7d5ea) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [5eee0136777444f3…](http://localhost:6006/projects/default/traces/5eee0136777444f37ac2e2b878db5c42) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [f07e36e3a13b9b48…](http://localhost:6006/projects/default/traces/f07e36e3a13b9b4840896531fa74cdcf) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [a851f9c219fcad64…](http://localhost:6006/projects/default/traces/a851f9c219fcad649037d4aae8aecd97) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [f788bf6a34304376…](http://localhost:6006/projects/default/traces/f788bf6a34304376f3d91dca7c8d9320) | Code Implementation | fail | missing_side_effect |  |  | Edit, Bash, Bash |  |
 | [8fe79bb7a022ad93…](http://localhost:6006/projects/default/traces/8fe79bb7a022ad93fae87166a0c50fd8) | Codebase Research | pass |  |  |  | Bash, Bash, Bash |  |
 | [21ae18d63b6335e8…](http://localhost:6006/projects/default/traces/21ae18d63b6335e8a8e7329d68d2e2f0) | Code Implementation | pass |  |  |  | Bash, Bash, Bash |  |
 | [a9c229dd1b993134…](http://localhost:6006/projects/default/traces/a9c229dd1b9931346048c646ecce4f93) | Paperclip Coordination | pass |  |  |  | Bash, Bash, Bash |  |
 | [656619f5b3e13b8c…](http://localhost:6006/projects/default/traces/656619f5b3e13b8c57a8ef4970e0c90f) | Code Implementation | pass |  |  |  | Bash, Bash, Bash |  |
 | [1984809abfa7d3a7…](http://localhost:6006/projects/default/traces/1984809abfa7d3a7da2b2db4566ecc02) | Paperclip Coordination | pass |  |  |  | Bash, Bash, Bash |  |
-| [7d44d731153c49f8…](http://localhost:6006/projects/default/traces/7d44d731153c49f8300082c21e3d230c) | unmapped | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
-| [55b62d8963107794…](http://localhost:6006/projects/default/traces/55b62d8963107794d135a0fa46c6fc7e) | unmapped | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
-| [0f9121f02658793e…](http://localhost:6006/projects/default/traces/0f9121f02658793e111918a04a0a367e) | unmapped | fail | missing_side_effect |  |  | Bash |  |
-| [2719d88a0cd75d52…](http://localhost:6006/projects/default/traces/2719d88a0cd75d5282708a61cbb27bcb) | unmapped | fail | missing_side_effect |  |  | Bash |  |
-| [56126763de4fee62…](http://localhost:6006/projects/default/traces/56126763de4fee6216b7b9214924a1ee) | unmapped | fail | missing_side_effect |  |  | Bash |  |
+| [96d0f15c010f64bb…](http://localhost:6006/projects/default/traces/96d0f15c010f64bbbc2c909ce894c5e4) | Code Implementation | fail | missing_side_effect |  |  | Bash, Write, Bash |  |
+| [a3bc546c39899e73…](http://localhost:6006/projects/default/traces/a3bc546c39899e73f046a42d7a203c72) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [03969588096b5b35…](http://localhost:6006/projects/default/traces/03969588096b5b35310d7546cb097b71) | Code Implementation | fail | missing_side_effect |  |  | Read, Edit, Bash |  |
+| [bd0ce91137f0f343…](http://localhost:6006/projects/default/traces/bd0ce91137f0f343020845f529ff2a50) | Code Implementation | fail | missing_side_effect |  |  | Edit, Edit, Bash |  |
+| [425764d1beab6b2f…](http://localhost:6006/projects/default/traces/425764d1beab6b2f138ddc2a78355a85) | Code Implementation | fail | missing_side_effect |  |  | Edit, Bash, Bash |  |
 
 ---
 

@@ -301,6 +301,7 @@ def main() -> None:
 
     rows_by_verdict: dict[str, list[tuple[str, str, str, str | None, int | None, str | None, str]]] = defaultdict(list)
     # Each value: (trace_id, primary_workflow, verdict, failure_reason, evidence_step, status_source, last_tools)
+    unmapped_traces: list[tuple[str, str]] = []  # (trace_id, last_tools) — no verdict by definition
 
     errors = 0
     for i, trace_id in enumerate(trace_ids):
@@ -318,11 +319,12 @@ def main() -> None:
 
         primary = _primary_workflow(envelope, context)
         if primary == "unmapped":
-            # For unmapped traces, pick the first op for outcome evaluation purposes.
-            op = operations[0] if operations else None
-        else:
-            op = next((o for o in operations if o.name == primary), operations[0] if operations else None)
-
+            # A trace matching no operation has no side-effect contract to pass
+            # or fail — it gets no verdict. Listed separately, never sampled
+            # into the verdict strata.
+            unmapped_traces.append((trace_id, _last_tool_summary(envelope)))
+            continue
+        op = next((o for o in operations if o.name == primary), None)
         if op is None:
             continue
 
@@ -417,6 +419,13 @@ def main() -> None:
     lines.append(f"| pass | {len(pass_pool)} | {len(sampled_pass)} | {TARGET_PASS} |")
     lines.append(f"| escalated | {len(escalated_pool)} | {len(sampled_escalated)} | {TARGET_ESCALATED} |")
     lines.append(f"| **total** | {len(fail_pool)+len(pass_pool)+len(escalated_pool)} | **{len(all_sampled)}** | {total_needed} |")
+    lines.append(f"")
+    lines.append(
+        f"**Unmapped traces (no operation matched → no verdict by definition): "
+        f"{len(unmapped_traces)}.** Not part of the verdict strata. "
+        f"These are predominantly Bash-only coordination sessions (see insight-report-0.md); "
+        f"they become mappable after the Day 13 intervention."
+    )
     lines.append(f"")
 
     if strata_notes:
