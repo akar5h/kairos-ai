@@ -267,6 +267,23 @@ def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
     if is_claude_code:
         apply_step_outcomes(envelope, _CLAUDE_CODE_NORMALIZER)
 
+    # Day 4: orphan/integrity check.
+    # A span is an orphan when it has a parent_id that is not present in this trace's
+    # span set AND it is not a root span (root = parent is None).
+    span_ids: set[int] = {s.context.span_id for s in wrapped}
+    orphans = [
+        s for s in wrapped
+        if s.parent is not None and s.parent.span_id not in span_ids
+    ]
+    if orphans:
+        envelope = envelope.model_copy(update={"integrity": "partial"})
+        logger.warning(
+            "phoenix_reader.orphan_spans_detected",
+            trace_id=envelope.trace_id,
+            orphan_count=len(orphans),
+            orphan_span_ids=[hex(s.context.span_id) for s in orphans[:5]],
+        )
+
     logger.info(
         "phoenix_reader.spans_to_envelope",
         trace_id=envelope.trace_id,

@@ -11,6 +11,7 @@ from kairos.analysis.reference_behavior import ReferenceCohort, ReferenceConfide
 from kairos.analysis.workflow_divergence import DivergenceFinding
 from kairos.detection.models import Finding
 from kairos.engine.pipeline import AnalysisResult, UnmappedActivity, WorkflowSummary
+from kairos.taxonomy.business_context import BusinessOperation
 from kairos.views.analysis_view import (
     METRIC_DESCRIPTIONS,
     AnalysisMeta,
@@ -437,3 +438,178 @@ class TestAnalysisMeta:
         parsed = json.loads(view.model_dump_json())
         assert parsed["reliability"]["terminal_status_rate"] is None
         assert parsed["reliability"]["tool_sequence_rate"] is None
+
+
+# ───────────────────────── Day 4: outcome_rows ─────────────────────────
+
+
+class TestOutcomeRows:
+    """Day 4: CorrectnessView.outcome_rows carries per-trace verdicts with failure_reason + evidence."""
+
+    def _workflow_with_outcomes(self) -> WorkflowSummary:
+        """Build a WorkflowSummary carrying per_trace_results via compute_outcome_rate."""
+        from kairos.analysis.outcome_metric import compute_outcome_rate
+        from kairos.models.enums import StepStatus, StepStatusSource, StepType, TerminalStatus
+        from kairos.models.trace import Step, TraceEnvelope
+
+        def _make_trace(trace_id: str, terminal: TerminalStatus, *, write_ok: bool = True) -> TraceEnvelope:
+            return TraceEnvelope(
+                trace_id=trace_id,
+                terminal_status=terminal,
+                steps=[
+                    Step(
+                        step_index=0,
+                        step_type=StepType.TOOL_CALL,
+                        tool_name="Write",
+                        status=StepStatus.OK if write_ok else StepStatus.ERROR,
+                        status_source=StepStatusSource.ATTR_SUCCESS,
+                        tool_output="written" if write_ok else None,
+                        error_message=None if write_ok else "disk full",
+                    )
+                ],
+            )
+
+        op = BusinessOperation(
+            name="Code Implementation",
+            description="test",
+            expected_tools=["Write"],
+            priority="high",
+            required_side_effect_tools=["Write"],
+        )
+        traces = [
+            _make_trace("pass-1", TerminalStatus.COMPLETED),
+            _make_trace("escalated-1", TerminalStatus.HUMAN_ESCALATION),
+            _make_trace("fail-1", TerminalStatus.ERROR),
+        ]
+        outcome = compute_outcome_rate(traces, op)
+        return WorkflowSummary(
+            operation_name=op.name,
+            full_trace_count=2,
+            attempted_trace_count=1,
+            outcome=outcome,
+            reference=_ref(),
+            deterministic_findings=[],
+            divergences=[],
+            member_envelopes=traces,
+        )
+
+    def test_outcome_rows_present_and_non_empty(self) -> None:
+        wf_summary = self._workflow_with_outcomes()
+        result = AnalysisResult(
+            workflows=[wf_summary],
+            unmapped=UnmappedActivity(trace_count=0, sample_trace_ids=[], top_tools=[]),
+            reliability={},
+        )
+        view = build_analysis_view(result)
+        corr = view.workflows[0].correctness
+        assert len(corr.outcome_rows) == 3
+
+    def test_pass_verdict(self) -> None:
+        wf_summary = self._workflow_with_outcomes()
+        result = AnalysisResult(
+            workflows=[wf_summary],
+            unmapped=UnmappedActivity(trace_count=0, sample_trace_ids=[], top_tools=[]),
+            reliability={},
+        )
+        view = build_analysis_view(result)
+        rows = {r.trace_id: r for r in view.workflows[0].correctness.outcome_rows}
+        assert rows["pass-1"].verdict == "pass"
+        assert rows["pass-1"].failure_reason is None
+
+    def test_escalated_verdict(self) -> None:
+        wf_summary = self._workflow_with_outcomes()
+        result = AnalysisResult(
+            workflows=[wf_summary],
+            unmapped=UnmappedActivity(trace_count=0, sample_trace_ids=[], top_tools=[]),
+            reliability={},
+        )
+        view = build_analysis_view(result)
+        rows = {r.trace_id: r for r in view.workflows[0].correctness.outcome_rows}
+        assert rows["escalated-1"].verdict == "escalated"
+        assert rows["escalated-1"].failure_reason is None
+
+    def test_fail_verdict_with_failure_reason(self) -> None:
+        wf_summary = self._workflow_with_outcomes()
+        result = AnalysisResult(
+            workflows=[wf_summary],
+            unmapped=UnmappedActivity(trace_count=0, sample_trace_ids=[], top_tools=[]),
+            reliability={},
+        )
+        view = build_analysis_view(result)
+        rows = {r.trace_id: r for r in view.workflows[0].correctness.outcome_rows}
+        assert rows["fail-1"].verdict == "fail"
+        assert rows["fail-1"].failure_reason == "terminal_error"
+
+    def test_outcome_rows_carry_phoenix_url(self) -> None:
+        wf_summary = self._workflow_with_outcomes()
+        result = AnalysisResult(
+            workflows=[wf_summary],
+            unmapped=UnmappedActivity(trace_count=0, sample_trace_ids=[], top_tools=[]),
+            reliability={},
+        )
+        view = build_analysis_view(result, phoenix_base_url="http://px:6006")
+        rows = {r.trace_id: r for r in view.workflows[0].correctness.outcome_rows}
+        assert rows["pass-1"].phoenix_url == "http://px:6006/projects/default/traces/pass-1"
+
+    def test_outcome_rows_in_serialized_json(self) -> None:
+        wf_summary = self._workflow_with_outcomes()
+        result = AnalysisResult(
+            workflows=[wf_summary],
+            unmapped=UnmappedActivity(trace_count=0, sample_trace_ids=[], top_tools=[]),
+            reliability={},
+        )
+        view = build_analysis_view(result)
+        parsed = json.loads(view.model_dump_json())
+        rows = parsed["workflows"][0]["correctness"]["outcome_rows"]
+        assert isinstance(rows, list)
+        assert len(rows) == 3
+        verdicts = {r["trace_id"]: r["verdict"] for r in rows}
+        assert verdicts["pass-1"] == "pass"
+        assert verdicts["escalated-1"] == "escalated"
+        assert verdicts["fail-1"] == "fail"
+
+    def test_outcome_rows_empty_for_old_style_workflow(self) -> None:
+        """WorkflowSummary with no member_envelopes → outcome_rows is empty (backward compat)."""
+        view = build_analysis_view(_sample_result())
+        # _sample_result uses _workflow() which has empty member_envelopes and empty per_trace_results
+        corr = view.workflows[0].correctness
+        assert corr.outcome_rows == []
+
+    def test_non_computable_partial_trace_verdict(self) -> None:
+        """A partial-trace envelope → verdict='non_computable', failure_reason='partial_trace'."""
+        from kairos.analysis.outcome_metric import compute_outcome_rate
+        from kairos.models.enums import TerminalStatus
+        from kairos.models.trace import TraceEnvelope
+
+        op = BusinessOperation(
+            name="Code Implementation",
+            description="test",
+            expected_tools=["Write"],
+            priority="high",
+            required_side_effect_tools=["Write"],
+        )
+        partial = TraceEnvelope(
+            trace_id="t-partial",
+            terminal_status=TerminalStatus.COMPLETED,
+            integrity="partial",
+        )
+        outcome = compute_outcome_rate([partial], op)
+        wf_summary = WorkflowSummary(
+            operation_name=op.name,
+            full_trace_count=0,
+            attempted_trace_count=1,
+            outcome=outcome,
+            reference=_ref(),
+            deterministic_findings=[],
+            divergences=[],
+            member_envelopes=[partial],
+        )
+        result = AnalysisResult(
+            workflows=[wf_summary],
+            unmapped=UnmappedActivity(trace_count=0, sample_trace_ids=[], top_tools=[]),
+            reliability={},
+        )
+        view = build_analysis_view(result)
+        rows = {r.trace_id: r for r in view.workflows[0].correctness.outcome_rows}
+        assert rows["t-partial"].verdict == "non_computable"
+        assert rows["t-partial"].failure_reason == "partial_trace"

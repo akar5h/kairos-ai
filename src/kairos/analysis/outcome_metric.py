@@ -112,6 +112,12 @@ class WorkflowOutcomeSummary:
     This metric tracks the autonomy dial: high rate = agent escalates frequently.
     None when computable_count == 0.
     """
+    per_trace_results: list[OutcomeResult] = field(default_factory=list)
+    """Per-trace OutcomeResult objects used to build outcome_rows in the view.
+
+    Populated by compute_outcome_rate; consumed by build_analysis_view to
+    produce the CorrectnessView.outcome_rows table.
+    """
 
 
 def _is_successful_tool_step(step: Step, tool_name: str) -> bool:
@@ -249,6 +255,17 @@ def evaluate_outcome(trace: TraceEnvelope, operation: BusinessOperation) -> Outc
     Returns an OutcomeResult with ``outcome_pass``, ``computable``, and an
     optional ``reason`` citing which condition failed.
     """
+    # Day 4: integrity check — partial traces are non-computable.
+    # NEVER score a partial trace as failed; outcome is unknown because spans are missing.
+    if trace.integrity == "partial":
+        return OutcomeResult(
+            trace_id=trace.trace_id,
+            outcome_pass=False,
+            computable=False,
+            reason="partial_trace",
+            failure_reason=FailureReason.PARTIAL_TRACE,
+        )
+
     # Condition 1: terminal status
     if trace.terminal_status == TerminalStatus.UNKNOWN:
         return OutcomeResult(
@@ -376,6 +393,7 @@ def compute_outcome_rate(
             outcome_rate=None,
             pending_reason="no computable traces",
             human_escalation_rate=None,
+            per_trace_results=results,
         )
     else:
         summary = WorkflowOutcomeSummary(
@@ -386,6 +404,7 @@ def compute_outcome_rate(
             outcome_rate=passed_count / computable_count,
             pending_reason=None,
             human_escalation_rate=human_escalation_rate,
+            per_trace_results=results,
         )
 
     logger.info(

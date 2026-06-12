@@ -78,6 +78,12 @@ class WorkflowSummary:
     deterministic_findings: list[Finding]
     divergences: list[DivergenceFinding]
     top_pattern_names: list[str] = field(default_factory=list)
+    member_envelopes: list[TraceEnvelope] = field(default_factory=list)
+    """All member envelopes (full + attempted) for this workflow.
+
+    Carried so build_analysis_view can resolve per-trace status_source_of_evidence
+    for the outcome_rows table without a second pass through the engine.
+    """
 
     @property
     def mapped_trace_count(self) -> int:
@@ -371,6 +377,7 @@ def run_pipeline(
                 deterministic_findings=deterministic_findings,
                 divergences=divergences,
                 top_pattern_names=top_patterns,
+                member_envelopes=all_members,
             )
         )
 

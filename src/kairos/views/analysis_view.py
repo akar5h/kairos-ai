@@ -59,6 +59,7 @@ class AnalysisMeta(BaseModel):
 _Linker = Callable[[str], str]
 
 if TYPE_CHECKING:
+    from kairos.analysis.outcome_metric import OutcomeResult
     from kairos.analysis.reference_behavior import ReferenceCohort
     from kairos.analysis.workflow_divergence import DivergenceFinding
     from kairos.detection.models import Finding
@@ -207,6 +208,25 @@ class FindingRow(BaseModel):
     estimated_token_waste: int
 
 
+class OutcomeRow(BaseModel):
+    """Per-trace outcome summary row for the CorrectnessView outcome table.
+
+    Day 4: surfaces failure_reason and evidence through the view so every fail
+    is one click from its cause.
+    """
+
+    trace_id: str
+    phoenix_url: str
+    verdict: str
+    """One of: "pass" | "fail" | "escalated" | "non_computable"."""
+    failure_reason: str | None
+    """FailureReason enum value as string, or None when verdict is pass/escalated."""
+    evidence_step: int | None
+    """Step index that caused the verdict, from OutcomeEvidence.step_index."""
+    status_source_of_evidence: str | None
+    """status_source of the evidence step (StepStatusSource enum value as string), or None."""
+
+
 class CorrectnessView(BaseModel):
     """Outcome rate + all findings for one workflow."""
 
@@ -223,6 +243,12 @@ class CorrectnessView(BaseModel):
     this metric tracks the autonomy dial (high rate = escalates frequently).
     """
     deterministic_findings: list[FindingRow]
+    outcome_rows: list[OutcomeRow] = []
+    """Per-trace outcome rows with verdict, failure_reason, and evidence pointer.
+
+    Day 4: enables the outcome table in the plugin CorrectnessSection.
+    Empty list in views built before Day 4 (backwards-compatible).
+    """
 
 
 class WorkflowView(BaseModel):
@@ -360,7 +386,7 @@ def _workflow_view(summary: WorkflowSummary, link: _Linker) -> WorkflowView:
         operation_name=summary.operation_name,
         cohort=_cohort_view(summary),
         divergence=[_divergence_row(d, link) for d in summary.divergences],
-        correctness=_correctness_view(summary, findings),
+        correctness=_correctness_view(summary, findings, link),
         top_pattern_names=list(summary.top_pattern_names),
         show_reference_sections=show_ref,
         finding_count=len(findings),
@@ -396,8 +422,70 @@ def _divergence_row(finding: DivergenceFinding, link: _Linker) -> DivergenceRow:
     )
 
 
-def _correctness_view(summary: WorkflowSummary, findings: list[FindingRow]) -> CorrectnessView:
+def _outcome_verdict(result: OutcomeResult, envelope_map: dict[str, object]) -> str:
+    """Map an OutcomeResult to one of: pass | fail | escalated | non_computable."""
+    if not result.computable:
+        return "non_computable"
+    if result.outcome_pass:
+        # Distinguish escalated from plain pass via terminal_status on the envelope.
+        from kairos.models.enums import TerminalStatus  # local import avoids cycle at module level
+
+        envelope = envelope_map.get(result.trace_id)
+        if envelope is not None:
+            ts = getattr(envelope, "terminal_status", None)
+            if ts == TerminalStatus.HUMAN_ESCALATION:
+                return "escalated"
+        return "pass"
+    return "fail"
+
+
+def _status_source_of_evidence(result: OutcomeResult, envelope_map: dict[str, object]) -> str | None:
+    """Return the status_source enum value of the evidence step, or None."""
+    step_idx = result.evidence.step_index
+    if step_idx is None:
+        return None
+    envelope = envelope_map.get(result.trace_id)
+    if envelope is None:
+        return None
+    steps = getattr(envelope, "steps", [])
+    for step in steps:
+        if getattr(step, "step_index", None) == step_idx:
+            ss = getattr(step, "status_source", None)
+            return str(ss) if ss is not None else None
+    return None
+
+
+def _build_outcome_rows(
+    outcome_results: list[OutcomeResult],
+    envelope_map: dict[str, object],
+    link: _Linker,
+) -> list[OutcomeRow]:
+    """Build the per-trace outcome rows for CorrectnessView.outcome_rows."""
+    rows: list[OutcomeRow] = []
+    for result in outcome_results:
+        verdict = _outcome_verdict(result, envelope_map)
+        rows.append(
+            OutcomeRow(
+                trace_id=result.trace_id,
+                phoenix_url=link(result.trace_id) if result.trace_id else "",
+                verdict=verdict,
+                failure_reason=result.failure_reason.value if result.failure_reason is not None else None,
+                evidence_step=result.evidence.step_index,
+                status_source_of_evidence=_status_source_of_evidence(result, envelope_map),
+            )
+        )
+    return rows
+
+
+def _correctness_view(
+    summary: WorkflowSummary,
+    findings: list[FindingRow],
+    link: _Linker,
+) -> CorrectnessView:
     outcome = summary.outcome
+    # Build a trace_id → TraceEnvelope lookup for evidence resolution.
+    envelope_map: dict[str, object] = {e.trace_id: e for e in summary.member_envelopes}
+    outcome_rows = _build_outcome_rows(outcome.per_trace_results, envelope_map, link)
     return CorrectnessView(
         workflow_name=summary.operation_name,
         outcome_rate=outcome.outcome_rate,
@@ -407,6 +495,7 @@ def _correctness_view(summary: WorkflowSummary, findings: list[FindingRow]) -> C
         pending_reason=outcome.pending_reason,
         human_escalation_rate=outcome.human_escalation_rate,
         deterministic_findings=findings,
+        outcome_rows=outcome_rows,
     )
 
 

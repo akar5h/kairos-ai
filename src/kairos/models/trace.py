@@ -141,6 +141,13 @@ class TraceEnvelope(BaseModel):
     # Provenance
     source_metadata: dict[str, Any] | None = None
 
+    # Integrity (Day 4: orphan check)
+    integrity: str = "complete"
+    """Span-set integrity. "complete" when all parent_ids resolve within the trace;
+    "partial" when any non-root span references a parent_id not present in the span set.
+    Outcome evaluation refuses to score a "partial" trace (non-computable, reason=PARTIAL_TRACE).
+    """
+
     # Validation
     is_valid: bool = True
     validation_warnings: list[str] = Field(default_factory=list)
