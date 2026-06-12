@@ -35,6 +35,18 @@ _TERMINAL_FAILURE_STATUSES: frozenset[TerminalStatus] = frozenset(
     {TerminalStatus.ERROR, TerminalStatus.TIMEOUT},
 )
 
+# Structured evidence sources (rungs 1–3 of the evidence ladder). A successful
+# side-effect call with one of these status_sources is verified WITHOUT needing
+# readable tool_output — structured status wins, text is last resort.
+_STRUCTURED_STATUS_SOURCES: frozenset[StepStatusSource] = frozenset(
+    {
+        StepStatusSource.ATTR_SUCCESS,
+        StepStatusSource.OTEL_STATUS,
+        StepStatusSource.KAIROS_OUTCOME,
+        StepStatusSource.ADAPTER,
+    },
+)
+
 # ─── Rung 4: textual last-resort markers ─────────────────────────────────────
 # Applied ONLY to the last 500 chars of tool_output when status_source == NONE.
 # Word-boundary anchored so "error" in "no errors found" is masked by _NEGATED_RE.
@@ -215,9 +227,17 @@ def _side_effect_result(
             )
             return False, True, "missing_side_effect", FailureReason.MISSING_SIDE_EFFECT, evidence
 
-        # Multi-call any-of: the side-effect passes if at least one successful call
-        # has a clean tool_output. It only fails when every successful call either
-        # has a failure marker or an unreadable output.
+        # Structured evidence (rungs 1–3): a successful call whose status_source is
+        # ATTR_SUCCESS / OTEL_STATUS / KAIROS_OUTCOME / ADAPTER already carries a
+        # verified OK verdict — readable output is NOT required to confirm it.
+        # Live claude_code spans carry no tool_output; without this, pass is
+        # structurally impossible on live data (healthy traces → non-computable).
+        has_structured_ok = any(call.status_source in _STRUCTURED_STATUS_SOURCES for call in successful_calls)
+
+        # Multi-call any-of over readable outputs: the side-effect passes if at
+        # least one successful call has a clean tool_output. Readable outputs can
+        # DOWNGRADE structured evidence: if outputs exist and every readable output
+        # carries a failure marker, fail with side_effect_output_failed.
         any_clean = False
         any_readable = False
         failing_step: Step | None = None
@@ -231,9 +251,11 @@ def _side_effect_result(
             elif failing_step is None:
                 failing_step = call
 
-        if not any_readable:
-            return False, False, "side effect computability unknown", None, OutcomeEvidence()
-        if not any_clean:
+        if any_clean:
+            continue  # at least one clean readable output → satisfied
+        if any_readable:
+            # Outputs exist and ALL readable outputs failed → downgrade, even
+            # when structured evidence said OK (text contradicts; surface it).
             evidence = OutcomeEvidence(
                 step_index=failing_step.step_index if failing_step is not None else None,
                 rung=4,
@@ -245,6 +267,12 @@ def _side_effect_result(
                 FailureReason.SIDE_EFFECT_OUTPUT_FAILED,
                 evidence,
             )
+        # No readable outputs at all:
+        if has_structured_ok:
+            continue  # structured OK (rungs 1–3) is sufficient evidence → satisfied
+        # Successful calls exist but status_source is NONE everywhere and no output
+        # is readable — genuinely no evidence either way → non-computable.
+        return False, False, "side effect computability unknown", None, OutcomeEvidence()
 
     return True, True, None, None, OutcomeEvidence()
 

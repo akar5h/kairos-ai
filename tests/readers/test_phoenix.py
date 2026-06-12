@@ -439,3 +439,93 @@ def test_non_claude_code_trace_skips_adapter() -> None:
     # No claude_code span in the trace → adapter not applied → NONE/OK preserved.
     assert step.status is StepStatus.OK
     assert step.status_source is StepStatusSource.NONE
+
+
+# ─────────────── Day 4 fix: execution-child success propagation ───────────────
+#
+# The emitter sets status_code=OK unconditionally on ``claude_code.tool`` spans;
+# the real verdict (``success`` attr) lives on the ``tool.execution`` sub-phase
+# child. spans_to_envelope copies it onto the parent before event conversion so
+# rung 2a (ATTR_SUCCESS) resolves on live tool steps.
+
+
+def _cc_trace_with_execution_child(execution_attrs: dict[str, Any]) -> list[dict[str, Any]]:
+    """interaction root + claude_code.tool span + its tool.execution child."""
+    return [
+        _phoenix_span(
+            name="claude_code.interaction",
+            span_id="aaaaaaaaaaaaaaaa",
+            attributes={"span.type": "interaction", "user_prompt": "do it"},
+            start_time="2026-06-05T08:00:00.000000+00:00",
+            end_time="2026-06-05T08:00:10.000000+00:00",
+        ),
+        _phoenix_span(
+            name="claude_code.tool",
+            span_id="bbbbbbbbbbbbbbbb",
+            parent_id="aaaaaaaaaaaaaaaa",
+            attributes={"span.type": "tool", "tool_name": "Write"},
+            start_time="2026-06-05T08:00:01.000000+00:00",
+            end_time="2026-06-05T08:00:02.000000+00:00",
+        ),
+        _phoenix_span(
+            name="claude_code.tool.execution",
+            span_id="cccccccccccccccc",
+            parent_id="bbbbbbbbbbbbbbbb",
+            attributes={"span.type": "tool_execution", **execution_attrs},
+            start_time="2026-06-05T08:00:01.100000+00:00",
+            end_time="2026-06-05T08:00:01.900000+00:00",
+        ),
+    ]
+
+
+def test_execution_child_success_true_propagates_to_tool_step() -> None:
+    """tool span (no success attr) + execution child success=True → ATTR_SUCCESS OK."""
+    env = spans_to_envelope(_cc_trace_with_execution_child({"success": True}))
+    step = next(s for s in env.steps if s.tool_name == "Write")
+    assert step.status is StepStatus.OK
+    assert step.status_source is StepStatusSource.ATTR_SUCCESS
+
+
+def test_execution_child_success_false_propagates_error() -> None:
+    """execution child success=False → tool step is ERROR via ATTR_SUCCESS."""
+    env = spans_to_envelope(_cc_trace_with_execution_child({"success": False}))
+    step = next(s for s in env.steps if s.tool_name == "Write")
+    assert step.status is StepStatus.ERROR
+    assert step.status_source is StepStatusSource.ATTR_SUCCESS
+
+
+def test_parent_success_attr_not_overwritten_by_child() -> None:
+    """A tool span that already carries success=False keeps it (child says True)."""
+    spans = _cc_trace_with_execution_child({"success": True})
+    spans[1]["attributes"]["success"] = False  # parent's own attr wins
+    env = spans_to_envelope(spans)
+    step = next(s for s in env.steps if s.tool_name == "Write")
+    assert step.status is StepStatus.ERROR
+    assert step.status_source is StepStatusSource.ATTR_SUCCESS
+
+
+def test_execution_child_without_success_leaves_step_undecided() -> None:
+    """execution child with no success attr → no propagation → adapter/NONE path."""
+    env = spans_to_envelope(_cc_trace_with_execution_child({}))
+    step = next(s for s in env.steps if s.tool_name == "Write")
+    assert step.status is StepStatus.OK
+    assert step.status_source is StepStatusSource.NONE
+
+
+def test_live_shaped_trace_end_to_end_outcome_pass() -> None:
+    """Live-shaped trace (success attrs on execution children, no outputs) →
+    computable PASS through evaluate_outcome (Day 4 review fix, end-to-end)."""
+    from kairos.analysis.outcome_metric import evaluate_outcome
+    from kairos.taxonomy.business_context import BusinessOperation
+
+    env = spans_to_envelope(_cc_trace_with_execution_child({"success": True}))
+    op = BusinessOperation(
+        name="Code Implementation",
+        description="test",
+        expected_tools=["Write"],
+        priority="high",
+        required_side_effect_tools=["Write"],
+    )
+    result = evaluate_outcome(env, op)
+    assert result.computable is True
+    assert result.outcome_pass is True

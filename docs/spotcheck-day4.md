@@ -1,6 +1,6 @@
 # Spot-check — Day 4 Exit Gate
 
-Generated: 2026-06-12 04:19 UTC
+Generated: 2026-06-12 04:35 UTC
 Window: last 168h
 Phoenix: http://localhost:6006 / project: default
 Context: /Users/akarshgajbhiye/kairos-ai/config/context.yaml
@@ -9,13 +9,12 @@ Context: /Users/akarshgajbhiye/kairos-ai/config/context.yaml
 
 | Stratum | Available | Sampled | Target |
 |---------|-----------|---------|--------|
-| fail | 185 | 10 | 10 |
-| pass | 0 | 5 | 5 |
+| fail | 182 | 10 | 10 |
+| pass | 148 | 5 | 5 |
 | escalated | 0 | 5 | 5 |
-| **total** | 185 | **20** | 20 |
+| **total** | 330 | **20** | 20 |
 
 **Stratum notes:**
-- pass stratum short by 5 (only 0 available); filling from fail/escalated.
 - escalated stratum short by 5 (only 0 available); filling from fail/pass.
 
 ## Trace rows
@@ -34,11 +33,11 @@ Owner: fill the **AGREE?** column (Y = engine correct, N = engine wrong, ? = uns
 | [4df0af9172cd9017…](http://localhost:6006/projects/default/traces/4df0af9172cd90177bd813db029f8f1b) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash, Bash, Edit |  |
 | [abc2b5be66235c90…](http://localhost:6006/projects/default/traces/abc2b5be66235c90197a54a53b8fe27a) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash, Bash |  |
 | [7d44d731153c49f8…](http://localhost:6006/projects/default/traces/7d44d731153c49f8300082c21e3d230c) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
-| [55b62d8963107794…](http://localhost:6006/projects/default/traces/55b62d8963107794d135a0fa46c6fc7e) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
-| [0f9121f02658793e…](http://localhost:6006/projects/default/traces/0f9121f02658793e111918a04a0a367e) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash |  |
-| [2719d88a0cd75d52…](http://localhost:6006/projects/default/traces/2719d88a0cd75d5282708a61cbb27bcb) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash |  |
-| [56126763de4fee62…](http://localhost:6006/projects/default/traces/56126763de4fee6216b7b9214924a1ee) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash |  |
-| [d5663ba42e8c54ba…](http://localhost:6006/projects/default/traces/d5663ba42e8c54baa862a3835b4d6c01) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [8fe79bb7a022ad93…](http://localhost:6006/projects/default/traces/8fe79bb7a022ad93fae87166a0c50fd8) | Codebase Research | pass |  |  |  | Bash, Bash, Bash |  |
+| [21ae18d63b6335e8…](http://localhost:6006/projects/default/traces/21ae18d63b6335e8a8e7329d68d2e2f0) | Code Implementation | pass |  |  |  | Bash, Bash, Bash |  |
+| [a9c229dd1b993134…](http://localhost:6006/projects/default/traces/a9c229dd1b9931346048c646ecce4f93) | Paperclip Coordination | pass |  |  |  | Bash, Bash, Bash |  |
+| [656619f5b3e13b8c…](http://localhost:6006/projects/default/traces/656619f5b3e13b8c57a8ef4970e0c90f) | Code Implementation | pass |  |  |  | Bash, Bash, Bash |  |
+| [1984809abfa7d3a7…](http://localhost:6006/projects/default/traces/1984809abfa7d3a7da2b2db4566ecc02) | Paperclip Coordination | pass |  |  |  | Bash, Bash, Bash |  |
 | [55b62d8963107794…](http://localhost:6006/projects/default/traces/55b62d8963107794d135a0fa46c6fc7e) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
 | [0f9121f02658793e…](http://localhost:6006/projects/default/traces/0f9121f02658793e111918a04a0a367e) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash |  |
 | [2719d88a0cd75d52…](http://localhost:6006/projects/default/traces/2719d88a0cd75d5282708a61cbb27bcb) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash |  |

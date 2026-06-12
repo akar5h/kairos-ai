@@ -191,6 +191,32 @@ def _is_session_end_blocked_on_user(wrapped: list[Any]) -> bool:
     return True
 
 
+def _propagate_execution_success(wrapped: list[Any]) -> None:
+    """Copy the ``success`` attr from ``claude_code.tool.execution`` children onto
+    their parent ``claude_code.tool`` spans (in place).
+
+    The parent tool span is what becomes the tool Step, but the emitter marks it
+    OK unconditionally; the execution child carries the real structured verdict.
+    A parent that already has a ``success`` attribute is never overwritten.
+    """
+    span_by_id: dict[int, Any] = {s.context.span_id: s for s in wrapped}
+    for span in wrapped:
+        if getattr(span, "name", "") != "claude_code.tool.execution":
+            continue
+        child_attrs = getattr(span, "attributes", None)
+        if not isinstance(child_attrs, dict):
+            continue
+        success = child_attrs.get("success")
+        if success is None or span.parent is None:
+            continue
+        parent = span_by_id.get(span.parent.span_id)
+        if parent is None or getattr(parent, "name", "") != "claude_code.tool":
+            continue
+        parent_attrs = getattr(parent, "attributes", None)
+        if isinstance(parent_attrs, dict) and "success" not in parent_attrs:
+            parent_attrs["success"] = success
+
+
 def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
     """Convert a list of OTel-shaped spans (or Phoenix dicts) into a TraceEnvelope.
 
@@ -224,6 +250,16 @@ def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
     # mypy quiet at the boundary.
     wrapped: list[Any] = [_phoenix_dict_to_span(s) if isinstance(s, dict) else s for s in spans]
     wrapped.sort(key=lambda s: s.start_time)
+
+    # Day 4 fix (rung 2a propagation): the emitter sets status_code=OK
+    # unconditionally on ``claude_code.tool`` spans (live: 4904 OK / 0 ERROR);
+    # the real verdict lives on the ``tool.execution`` sub-phase child as a
+    # ``success`` attribute (live: True/False matches the child's OTel status).
+    # Copy it onto the parent BEFORE event conversion so
+    # ``_step_status_with_source`` resolves rung 2a (ATTR_SUCCESS). Without
+    # this, live tool steps land at status_source=NONE with no readable output
+    # and outcome pass is structurally impossible.
+    _propagate_execution_success(wrapped)
 
     task_span: Any | None = next((s for s in wrapped if classify_span(s) == "task"), None)
 

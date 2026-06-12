@@ -462,3 +462,120 @@ class TestTauBenchRegression:
     def test_no_errors_found_passes(self) -> None:
         """Spec verdict table: 'no errors found' → pass."""
         assert _textual_failure("linter ran: no errors found") is False
+
+
+# ── Day 4 fix: structured status satisfies side-effect without output ─────
+
+
+class TestStructuredEvidenceSideEffect:
+    """Condition 4: structured status_source (rungs 1–3) verifies a side-effect
+    call WITHOUT readable output. Live claude_code spans carry no tool_output;
+    before this fix, pass was structurally impossible on live data.
+    """
+
+    def test_live_shaped_trace_passes_with_structured_ok_no_output(self) -> None:
+        """Success attrs + no outputs + all side-effect tools OK → computable PASS."""
+        op = _op()
+        trace = _trace(
+            [
+                _step(
+                    0,
+                    "Write",
+                    status=StepStatus.OK,
+                    status_source=StepStatusSource.ATTR_SUCCESS,
+                    output=None,  # live claude_code: no tool_output instrumented
+                ),
+                _step(
+                    1,
+                    "Bash",
+                    status=StepStatus.OK,
+                    status_source=StepStatusSource.ATTR_SUCCESS,
+                    output=None,
+                ),
+            ]
+        )
+        result = evaluate_outcome(trace, op)
+        assert result.computable is True
+        assert result.outcome_pass is True
+        assert result.failure_reason is None
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            StepStatusSource.ATTR_SUCCESS,
+            StepStatusSource.OTEL_STATUS,
+            StepStatusSource.KAIROS_OUTCOME,
+            StepStatusSource.ADAPTER,
+        ],
+    )
+    def test_every_structured_source_satisfies_without_output(self, source: StepStatusSource) -> None:
+        """All four structured rung sources count as verified evidence."""
+        op = _op()
+        trace = _trace([_step(0, "Write", status=StepStatus.OK, status_source=source, output=None)])
+        result = evaluate_outcome(trace, op)
+        assert result.computable is True
+        assert result.outcome_pass is True
+
+    def test_no_output_and_status_source_none_still_non_computable(self) -> None:
+        """Successful call, no output, status_source NONE → genuinely no evidence → non-computable."""
+        op = _op()
+        trace = _trace(
+            [_step(0, "Write", status=StepStatus.OK, status_source=StepStatusSource.NONE, output=None)]
+        )
+        result = evaluate_outcome(trace, op)
+        assert result.computable is False
+        assert result.reason == "side effect computability unknown"
+
+    def test_side_effect_tool_absent_still_fails_missing_side_effect(self) -> None:
+        """Side-effect tool absent → computable FAIL missing_side_effect (unchanged)."""
+        op = _op()
+        trace = _trace(
+            [_step(0, "Bash", status=StepStatus.OK, status_source=StepStatusSource.ATTR_SUCCESS, output=None)]
+        )
+        result = evaluate_outcome(trace, op)
+        assert result.computable is True
+        assert result.outcome_pass is False
+        assert result.failure_reason == FailureReason.MISSING_SIDE_EFFECT
+
+    def test_readable_failing_outputs_downgrade_structured_ok(self) -> None:
+        """Outputs exist and ALL readable outputs fail → side_effect_output_failed,
+        even when another successful call of the same tool carries structured OK.
+        Readable text contradicting silence is surfaced, not suppressed.
+        """
+        op = _op()
+        trace = _trace(
+            [
+                # Structured OK, no output (live-shaped).
+                _step(
+                    0,
+                    "Write",
+                    status=StepStatus.OK,
+                    status_source=StepStatusSource.ATTR_SUCCESS,
+                    output=None,
+                ),
+                # Unstructured call with failing readable output.
+                _step(
+                    1,
+                    "Write",
+                    status=StepStatus.OK,
+                    status_source=StepStatusSource.NONE,
+                    output="validation failed: schema mismatch",
+                ),
+            ]
+        )
+        result = evaluate_outcome(trace, op)
+        assert result.computable is True
+        assert result.outcome_pass is False
+        assert result.failure_reason == FailureReason.SIDE_EFFECT_OUTPUT_FAILED
+        assert result.evidence.step_index == 1
+        assert result.evidence.rung == 4
+
+    def test_clean_readable_output_still_passes_regardless_of_source(self) -> None:
+        """tau-bench-shaped: outputs present, no status attrs → existing behavior unchanged."""
+        op = _op()
+        trace = _trace(
+            [_step(0, "Write", status=StepStatus.OK, status_source=StepStatusSource.NONE, output="written ok")]
+        )
+        result = evaluate_outcome(trace, op)
+        assert result.computable is True
+        assert result.outcome_pass is True
