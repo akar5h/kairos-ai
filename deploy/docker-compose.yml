@@ -34,7 +34,7 @@ services:
   # Opt-in (Elastic License 2.0). Not part of the default Apache-2.0 deploy.
   # OTLP gRPC on host :4319 to avoid clashing with the collector; UI on :6006.
   phoenix:
-    image: arizephoenix/phoenix:version-7.9.0
+    image: arizephoenix/phoenix:version-15.4.0
     profiles: ["phoenix"]
     ports:
       - "6006:6006"     # Phoenix UI
