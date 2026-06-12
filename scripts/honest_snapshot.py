@@ -160,7 +160,14 @@ def _primary_workflow_name(envelope: TraceEnvelope, context: BusinessContext) ->
 
 
 def _phoenix_url(trace_id: str, endpoint: str, project: str) -> str:
+    """Build a Phoenix UI deep-link.
+
+    ``project`` must be the project NODE id (base64 relay id, e.g.
+    ``UHJvamVjdDox``), not the project name — Phoenix 15.x UI routes resolve
+    the node id; name-based URLs make the projectLoaderQuery fail.
+    """
     from urllib.parse import quote
+
     return f"{endpoint.rstrip('/')}/projects/{quote(project, safe='')}/traces/{quote(trace_id, safe='')}"
 
 
@@ -386,7 +393,7 @@ def main() -> None:
         lines.append(f"| Tokens | Workflow | Link |")
         lines.append(f"|---|---|---|")
         for tokens, tid, wf_name in costliest_sorted:
-            url = _phoenix_url(tid, args.endpoint, args.project)
+            url = _phoenix_url(tid, args.endpoint, project_id)
             lines.append(f"| {tokens:,} | {wf_name} | [{tid[:16]}…]({url}) |")
     else:
         lines.append(

@@ -17,6 +17,8 @@ import dataclasses
 import hashlib
 import importlib.metadata
 import json
+import urllib.error
+import urllib.request
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -115,6 +117,48 @@ def _build_meta(
         trace_count_fetched=trace_count_fetched,
         trace_count_analyzed=trace_count_analyzed,
     )
+
+
+def _resolve_phoenix_project_id(endpoint: str, project_name: str) -> str | None:
+    """Resolve a Phoenix project name to its GraphQL node id (base64 relay id).
+
+    Phoenix 15.x UI routes require the node id (e.g. ``UHJvamVjdDox``) — URLs
+    built with the project *name* make the UI's projectLoaderQuery fail.
+    Returns ``None`` on any failure (network, project missing, malformed
+    response): deep-links then fall back to the name. Never raises — a broken
+    link is better than a crashed analysis run.
+    """
+    url = endpoint.rstrip("/") + "/graphql"
+    body = json.dumps({"query": "{ projects(first: 100) { edges { node { id name } } } }"}).encode()
+    req = urllib.request.Request(  # noqa: S310 — caller-supplied Phoenix endpoint
+        url,
+        data=body,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+            parsed = json.loads(resp.read())
+        edges = parsed.get("data", {}).get("projects", {}).get("edges", [])
+        for edge in edges:
+            node = edge.get("node", {})
+            if node.get("name") == project_name:
+                return str(node["id"])
+        logger.warning(
+            "cli.phoenix_project_id.not_found",
+            project=project_name,
+            available=[e.get("node", {}).get("name") for e in edges],
+            hint="Deep-links will use the project name and may 404 in the Phoenix UI.",
+        )
+    except (urllib.error.URLError, json.JSONDecodeError, KeyError, TimeoutError) as exc:
+        logger.warning(
+            "cli.phoenix_project_id.resolution_failed",
+            endpoint=endpoint,
+            project=project_name,
+            error=str(exc),
+            hint="Deep-links will use the project name and may 404 in the Phoenix UI.",
+        )
+    return None
 
 
 def _load_from_dir(directory: Path) -> list[TraceEnvelope]:
@@ -312,10 +356,19 @@ def view(
 
     result = KairosEngine().analyze(envelopes, context)
     meta = _build_meta(context_path, context, trace_count_fetched, trace_count_analyzed)
+
+    # Phoenix 15.x UI routes need the project NODE id, not the name. Resolve it
+    # once when the source is live Phoenix (endpoint reachable by definition);
+    # failure falls back to the name with a warning — never crashes the run.
+    phoenix_project_id: str | None = None
+    if phoenix_ids:
+        phoenix_project_id = _resolve_phoenix_project_id(phoenix_endpoint, phoenix_project)
+
     analysis_view = build_analysis_view(
         result,
         phoenix_base_url=phoenix_base_url,
         phoenix_project=phoenix_project,
+        phoenix_project_id=phoenix_project_id,
         meta=meta,
     )
     payload = analysis_view.model_dump_json(indent=2)

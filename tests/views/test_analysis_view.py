@@ -187,6 +187,55 @@ class TestBuildAnalysisView:
         assert view.phoenix_project == "xero"
         assert "/projects/xero/traces/" in view.workflows[0].divergence[0].phoenix_url
 
+    def test_project_node_id_used_in_links_when_set(self) -> None:
+        """Phoenix 15.x: UI routes need the project NODE id, not the name.
+
+        When phoenix_project_id is provided, every deep-link uses it in place
+        of the project name. The phoenix_project field (the name) is unchanged.
+        """
+        view = build_analysis_view(
+            _sample_result(),
+            phoenix_project="default",
+            phoenix_project_id="UHJvamVjdDox",
+        )
+        # The view still reports the human-readable project name.
+        assert view.phoenix_project == "default"
+        # But every link is built from the node id.
+        assert (
+            view.workflows[0].divergence[0].phoenix_url
+            == "http://localhost:6006/projects/UHJvamVjdDox/traces/div-1"
+        )
+        assert (
+            view.workflows[0].correctness.deterministic_findings[0].phoenix_url
+            == "http://localhost:6006/projects/UHJvamVjdDox/traces/det-1"
+        )
+        assert view.unmapped.sample_traces[0].phoenix_url == (
+            "http://localhost:6006/projects/UHJvamVjdDox/traces/unm-1"
+        )
+        # No link anywhere uses the name-based route.
+        assert "/projects/default/" not in view.workflows[0].divergence[0].phoenix_url
+
+    def test_project_id_none_falls_back_to_name(self) -> None:
+        """Default phoenix_project_id=None preserves name-based links (old behavior)."""
+        view = build_analysis_view(
+            _sample_result(),
+            phoenix_project="default",
+            phoenix_project_id=None,
+        )
+        assert (
+            view.workflows[0].divergence[0].phoenix_url
+            == "http://localhost:6006/projects/default/traces/div-1"
+        )
+
+    def test_empty_string_project_id_falls_back_to_name(self) -> None:
+        """An empty-string node id (failed resolution artifact) must not produce /projects//."""
+        view = build_analysis_view(
+            _sample_result(),
+            phoenix_project="default",
+            phoenix_project_id="",
+        )
+        assert "/projects/default/traces/" in view.workflows[0].divergence[0].phoenix_url
+
     def test_view_is_json_serializable(self) -> None:
         view = build_analysis_view(_sample_result())
         payload = view.model_dump_json()

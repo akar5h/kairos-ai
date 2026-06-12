@@ -1,6 +1,6 @@
 # Honest Snapshot 1
 
-**Date:** 2026-06-12 04:54 UTC  **Config SHA:** `a0cfc85b`  **Engine:** `0.1.0`
+**Date:** 2026-06-12 17:29 UTC  **Config SHA:** `a0cfc85b`  **Engine:** `0.1.0`
 
 **Window:** last 168h  **Phoenix:** http://localhost:6006 / project: `default`
 
@@ -86,11 +86,11 @@
 
 | Tokens | Workflow | Link |
 |---|---|---|
-| 5,901,834 | Paperclip Coordination | [1c59051c3ba82897…](http://localhost:6006/projects/default/traces/1c59051c3ba828971115984f68f3f2d8) |
-| 250,529 | Paperclip Coordination | [a7c25ff55887e03c…](http://localhost:6006/projects/default/traces/a7c25ff55887e03ca3d2559d6b7c0c87) |
-| 222,056 | Paperclip Coordination | [a4f51dcbdcd9d2c4…](http://localhost:6006/projects/default/traces/a4f51dcbdcd9d2c41f2b7fd91e66aec2) |
-| 120,895 | Paperclip Coordination | [362e4e575d96d21c…](http://localhost:6006/projects/default/traces/362e4e575d96d21c398846a7c8c83e97) |
-| 67,466 | Paperclip Coordination | [d82c0771ddc3eedf…](http://localhost:6006/projects/default/traces/d82c0771ddc3eedf3b17978968275134) |
+| 5,901,834 | Paperclip Coordination | [1c59051c3ba82897…](http://localhost:6006/projects/UHJvamVjdDox/traces/1c59051c3ba828971115984f68f3f2d8) |
+| 250,529 | Paperclip Coordination | [a7c25ff55887e03c…](http://localhost:6006/projects/UHJvamVjdDox/traces/a7c25ff55887e03ca3d2559d6b7c0c87) |
+| 222,056 | Paperclip Coordination | [a4f51dcbdcd9d2c4…](http://localhost:6006/projects/UHJvamVjdDox/traces/a4f51dcbdcd9d2c41f2b7fd91e66aec2) |
+| 120,895 | Paperclip Coordination | [362e4e575d96d21c…](http://localhost:6006/projects/UHJvamVjdDox/traces/362e4e575d96d21c398846a7c8c83e97) |
+| 67,466 | Paperclip Coordination | [d82c0771ddc3eedf…](http://localhost:6006/projects/UHJvamVjdDox/traces/d82c0771ddc3eedf3b17978968275134) |
 
 ---
 

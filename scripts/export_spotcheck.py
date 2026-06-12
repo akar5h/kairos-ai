@@ -195,6 +195,12 @@ def _last_tool_summary(envelope: TraceEnvelope, n: int = 3) -> str:
 
 
 def _phoenix_trace_url(trace_id: str, endpoint: str, project: str) -> str:
+    """Build a Phoenix UI deep-link.
+
+    ``project`` must be the project NODE id (base64 relay id, e.g.
+    ``UHJvamVjdDox``), not the project name — Phoenix 15.x UI routes resolve
+    the node id; name-based URLs make the projectLoaderQuery fail.
+    """
     from urllib.parse import quote
 
     return f"{endpoint.rstrip('/')}/projects/{quote(project, safe='')}/traces/{quote(trace_id, safe='')}"
@@ -446,7 +452,7 @@ def main() -> None:
     )
 
     for (trace_id, primary, verdict, failure_reason, evidence_step, status_source, last_tools) in all_sampled:
-        url = _phoenix_trace_url(trace_id, args.endpoint, args.project)
+        url = _phoenix_trace_url(trace_id, args.endpoint, project_id)
         lines.append(
             _md_row(trace_id, url, primary, verdict, failure_reason, evidence_step, status_source, last_tools)
         )

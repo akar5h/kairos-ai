@@ -1,6 +1,6 @@
 # Spot-check — Day 4 Exit Gate
 
-Generated: 2026-06-12 04:59 UTC
+Generated: 2026-06-12 17:29 UTC
 Window: last 168h
 Phoenix: http://localhost:6006 / project: default
 Context: /Users/akarshgajbhiye/kairos-ai/config/context.yaml
@@ -25,26 +25,26 @@ Owner: fill the **AGREE?** column (Y = engine correct, N = engine wrong, ? = uns
 
 | Trace | Primary workflow | Verdict | Failure reason | Evidence step | Status source | Last tools | AGREE? |
 |-------|-----------------|---------|---------------|--------------|--------------|-----------|--------|
-| [8f0780364da8cbff…](http://localhost:6006/projects/default/traces/8f0780364da8cbffa1f0544951ecce44) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
-| [bd56871947a909a7…](http://localhost:6006/projects/default/traces/bd56871947a909a7f146e070f4139c12) | Multi-Agent Orchestration | fail | critical_tool_error |  |  | Bash, Bash, Bash |  |
-| [79043f7ec7bf0d1a…](http://localhost:6006/projects/default/traces/79043f7ec7bf0d1aa0df958067e3dc30) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
-| [b1c3f0272403b740…](http://localhost:6006/projects/default/traces/b1c3f0272403b740981f70b713cd35d2) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
-| [ea9692b98678ac4e…](http://localhost:6006/projects/default/traces/ea9692b98678ac4e3aa760cc8cd3c75e) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
-| [8b0336fad7f4b1ce…](http://localhost:6006/projects/default/traces/8b0336fad7f4b1cec2387bd880f7d5ea) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
-| [5eee0136777444f3…](http://localhost:6006/projects/default/traces/5eee0136777444f37ac2e2b878db5c42) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
-| [f07e36e3a13b9b48…](http://localhost:6006/projects/default/traces/f07e36e3a13b9b4840896531fa74cdcf) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
-| [a851f9c219fcad64…](http://localhost:6006/projects/default/traces/a851f9c219fcad649037d4aae8aecd97) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
-| [f788bf6a34304376…](http://localhost:6006/projects/default/traces/f788bf6a34304376f3d91dca7c8d9320) | Code Implementation | fail | missing_side_effect |  |  | Edit, Bash, Bash |  |
-| [8fe79bb7a022ad93…](http://localhost:6006/projects/default/traces/8fe79bb7a022ad93fae87166a0c50fd8) | Codebase Research | pass |  |  |  | Bash, Bash, Bash |  |
-| [21ae18d63b6335e8…](http://localhost:6006/projects/default/traces/21ae18d63b6335e8a8e7329d68d2e2f0) | Code Implementation | pass |  |  |  | Bash, Bash, Bash |  |
-| [a9c229dd1b993134…](http://localhost:6006/projects/default/traces/a9c229dd1b9931346048c646ecce4f93) | Paperclip Coordination | pass |  |  |  | Bash, Bash, Bash |  |
-| [656619f5b3e13b8c…](http://localhost:6006/projects/default/traces/656619f5b3e13b8c57a8ef4970e0c90f) | Code Implementation | pass |  |  |  | Bash, Bash, Bash |  |
-| [1984809abfa7d3a7…](http://localhost:6006/projects/default/traces/1984809abfa7d3a7da2b2db4566ecc02) | Paperclip Coordination | pass |  |  |  | Bash, Bash, Bash |  |
-| [96d0f15c010f64bb…](http://localhost:6006/projects/default/traces/96d0f15c010f64bbbc2c909ce894c5e4) | Code Implementation | fail | missing_side_effect |  |  | Bash, Write, Bash |  |
-| [a3bc546c39899e73…](http://localhost:6006/projects/default/traces/a3bc546c39899e73f046a42d7a203c72) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
-| [03969588096b5b35…](http://localhost:6006/projects/default/traces/03969588096b5b35310d7546cb097b71) | Code Implementation | fail | missing_side_effect |  |  | Read, Edit, Bash |  |
-| [bd0ce91137f0f343…](http://localhost:6006/projects/default/traces/bd0ce91137f0f343020845f529ff2a50) | Code Implementation | fail | missing_side_effect |  |  | Edit, Edit, Bash |  |
-| [425764d1beab6b2f…](http://localhost:6006/projects/default/traces/425764d1beab6b2f138ddc2a78355a85) | Code Implementation | fail | missing_side_effect |  |  | Edit, Bash, Bash |  |
+| [8f0780364da8cbff…](http://localhost:6006/projects/UHJvamVjdDox/traces/8f0780364da8cbffa1f0544951ecce44) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [bd56871947a909a7…](http://localhost:6006/projects/UHJvamVjdDox/traces/bd56871947a909a7f146e070f4139c12) | Multi-Agent Orchestration | fail | critical_tool_error |  |  | Bash, Bash, Bash |  |
+| [79043f7ec7bf0d1a…](http://localhost:6006/projects/UHJvamVjdDox/traces/79043f7ec7bf0d1aa0df958067e3dc30) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [b1c3f0272403b740…](http://localhost:6006/projects/UHJvamVjdDox/traces/b1c3f0272403b740981f70b713cd35d2) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [ea9692b98678ac4e…](http://localhost:6006/projects/UHJvamVjdDox/traces/ea9692b98678ac4e3aa760cc8cd3c75e) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [8b0336fad7f4b1ce…](http://localhost:6006/projects/UHJvamVjdDox/traces/8b0336fad7f4b1cec2387bd880f7d5ea) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [5eee0136777444f3…](http://localhost:6006/projects/UHJvamVjdDox/traces/5eee0136777444f37ac2e2b878db5c42) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [f07e36e3a13b9b48…](http://localhost:6006/projects/UHJvamVjdDox/traces/f07e36e3a13b9b4840896531fa74cdcf) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [a851f9c219fcad64…](http://localhost:6006/projects/UHJvamVjdDox/traces/a851f9c219fcad649037d4aae8aecd97) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [f788bf6a34304376…](http://localhost:6006/projects/UHJvamVjdDox/traces/f788bf6a34304376f3d91dca7c8d9320) | Code Implementation | fail | missing_side_effect |  |  | Edit, Bash, Bash |  |
+| [8fe79bb7a022ad93…](http://localhost:6006/projects/UHJvamVjdDox/traces/8fe79bb7a022ad93fae87166a0c50fd8) | Codebase Research | pass |  |  |  | Bash, Bash, Bash |  |
+| [21ae18d63b6335e8…](http://localhost:6006/projects/UHJvamVjdDox/traces/21ae18d63b6335e8a8e7329d68d2e2f0) | Code Implementation | pass |  |  |  | Bash, Bash, Bash |  |
+| [a9c229dd1b993134…](http://localhost:6006/projects/UHJvamVjdDox/traces/a9c229dd1b9931346048c646ecce4f93) | Paperclip Coordination | pass |  |  |  | Bash, Bash, Bash |  |
+| [656619f5b3e13b8c…](http://localhost:6006/projects/UHJvamVjdDox/traces/656619f5b3e13b8c57a8ef4970e0c90f) | Code Implementation | pass |  |  |  | Bash, Bash, Bash |  |
+| [1984809abfa7d3a7…](http://localhost:6006/projects/UHJvamVjdDox/traces/1984809abfa7d3a7da2b2db4566ecc02) | Paperclip Coordination | pass |  |  |  | Bash, Bash, Bash |  |
+| [96d0f15c010f64bb…](http://localhost:6006/projects/UHJvamVjdDox/traces/96d0f15c010f64bbbc2c909ce894c5e4) | Code Implementation | fail | missing_side_effect |  |  | Bash, Write, Bash |  |
+| [a3bc546c39899e73…](http://localhost:6006/projects/UHJvamVjdDox/traces/a3bc546c39899e73f046a42d7a203c72) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [03969588096b5b35…](http://localhost:6006/projects/UHJvamVjdDox/traces/03969588096b5b35310d7546cb097b71) | Code Implementation | fail | missing_side_effect |  |  | Read, Edit, Bash |  |
+| [bd0ce91137f0f343…](http://localhost:6006/projects/UHJvamVjdDox/traces/bd0ce91137f0f343020845f529ff2a50) | Code Implementation | fail | missing_side_effect |  |  | Edit, Edit, Bash |  |
+| [425764d1beab6b2f…](http://localhost:6006/projects/UHJvamVjdDox/traces/425764d1beab6b2f138ddc2a78355a85) | Code Implementation | fail | missing_side_effect |  |  | Edit, Bash, Bash |  |
 
 ---
 

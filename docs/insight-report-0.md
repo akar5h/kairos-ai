@@ -44,12 +44,12 @@ Grep/Glob called 4 and 3 times in 36 hours; the equivalent ran through Bash (`fs
 ### Worst traces (Phoenix links)
 | Run | Trace |
 |---|---|
-| 47× consecutive Bash (claudecoder) | `http://localhost:6006/projects/default/traces/568077220b64c8cb05e6c2107f26fdd9` |
-| 32× + 25× Bash, same trace (claudecoder) | `http://localhost:6006/projects/default/traces/d4c37eddc89d0d55232eb01905846379` |
-| 29× Bash (claudecoder) | `http://localhost:6006/projects/default/traces/ccbe004c1d74fca49722bd70d6c143ee` |
-| 28× Bash in 92-call trace (claudecoder) | `http://localhost:6006/projects/default/traces/4d470c8f8b30ff48f8cbd3dcca8c1269` |
-| Whole heartbeat = 23× Bash (cto) | `http://localhost:6006/projects/default/traces/3bef17ac1e608b18cbffe0003cd46e9c` |
-| Whole heartbeat = 21× Bash (cto) | `http://localhost:6006/projects/default/traces/2ab4ce5cab3bd57272eefd56051047da` |
+| 47× consecutive Bash (claudecoder) | `http://localhost:6006/projects/UHJvamVjdDox/traces/568077220b64c8cb05e6c2107f26fdd9` |
+| 32× + 25× Bash, same trace (claudecoder) | `http://localhost:6006/projects/UHJvamVjdDox/traces/d4c37eddc89d0d55232eb01905846379` |
+| 29× Bash (claudecoder) | `http://localhost:6006/projects/UHJvamVjdDox/traces/ccbe004c1d74fca49722bd70d6c143ee` |
+| 28× Bash in 92-call trace (claudecoder) | `http://localhost:6006/projects/UHJvamVjdDox/traces/4d470c8f8b30ff48f8cbd3dcca8c1269` |
+| Whole heartbeat = 23× Bash (cto) | `http://localhost:6006/projects/UHJvamVjdDox/traces/3bef17ac1e608b18cbffe0003cd46e9c` |
+| Whole heartbeat = 21× Bash (cto) | `http://localhost:6006/projects/UHJvamVjdDox/traces/2ab4ce5cab3bd57272eefd56051047da` |
 
 ## 3. Root cause, one level deeper
 

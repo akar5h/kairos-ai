@@ -332,12 +332,20 @@ def build_analysis_view(
     *,
     phoenix_base_url: str = DEFAULT_PHOENIX_BASE_URL,
     phoenix_project: str = DEFAULT_PHOENIX_PROJECT,
+    phoenix_project_id: str | None = None,
     meta: AnalysisMeta | None = None,
 ) -> AnalysisView:
     """Flatten an ``AnalysisResult`` into a JSON-serializable ``AnalysisView``.
 
     Every finding/divergence/sample row gets a Phoenix deep-link built from
     ``phoenix_base_url`` and ``phoenix_project``.
+
+    ``phoenix_project_id``: Phoenix 15.x UI routes require the project NODE id
+    (base64 relay id, e.g. ``UHJvamVjdDox``), not the project name — name-based
+    URLs make the UI's projectLoaderQuery fail. When set, deep-links use the
+    node id in place of the name. Default ``None`` preserves old behavior; the
+    engine stays offline/deterministic — it never resolves the id itself, the
+    caller (CLI/plugin) does.
 
     XER-169: workflows with zero total traces are filtered out (they represent
     lead-pipeline operations that had no activity and would render as empty tables).
@@ -346,9 +354,10 @@ def build_analysis_view(
     trace counts). Pass it from the CLI; it is optional so old saved files parse
     without it.
     """
+    link_project = phoenix_project_id if phoenix_project_id else phoenix_project
 
     def _link(trace_id: str) -> str:
-        return phoenix_trace_url(trace_id, base_url=phoenix_base_url, project=phoenix_project)
+        return phoenix_trace_url(trace_id, base_url=phoenix_base_url, project=link_project)
 
     # Filter workflows with no trace activity before building view objects.
     active_workflows = [w for w in result.workflows if (w.full_trace_count + w.attempted_trace_count) > 0]
