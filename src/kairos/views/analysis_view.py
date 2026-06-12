@@ -225,6 +225,8 @@ class OutcomeRow(BaseModel):
     """Step index that caused the verdict, from OutcomeEvidence.step_index."""
     status_source_of_evidence: str | None
     """status_source of the evidence step (StepStatusSource enum value as string), or None."""
+    is_primary: bool = False
+    """True when this trace's primary workflow label is this workflow."""
 
 
 class CorrectnessView(BaseModel):
@@ -271,6 +273,8 @@ class WorkflowView(BaseModel):
     show_reference_sections: bool
     finding_count: int
     max_severity: str | None
+    secondary_membership_count: int = 0
+    """Number of traces for which this workflow is a secondary (non-primary) match."""
 
 
 class UnmappedView(BaseModel):
@@ -391,6 +395,7 @@ def _workflow_view(summary: WorkflowSummary, link: _Linker) -> WorkflowView:
         show_reference_sections=show_ref,
         finding_count=len(findings),
         max_severity=_max_severity([f.severity for f in findings]),
+        secondary_membership_count=summary.secondary_membership_count,
     )
 
 
@@ -459,6 +464,7 @@ def _build_outcome_rows(
     outcome_results: list[OutcomeResult],
     envelope_map: dict[str, object],
     link: _Linker,
+    primary_trace_ids: set[str] | None = None,
 ) -> list[OutcomeRow]:
     """Build the per-trace outcome rows for CorrectnessView.outcome_rows."""
     rows: list[OutcomeRow] = []
@@ -472,6 +478,7 @@ def _build_outcome_rows(
                 failure_reason=result.failure_reason.value if result.failure_reason is not None else None,
                 evidence_step=result.evidence.step_index,
                 status_source_of_evidence=_status_source_of_evidence(result, envelope_map),
+                is_primary=result.trace_id in (primary_trace_ids or set()),
             )
         )
     return rows
@@ -485,7 +492,10 @@ def _correctness_view(
     outcome = summary.outcome
     # Build a trace_id → TraceEnvelope lookup for evidence resolution.
     envelope_map: dict[str, object] = {e.trace_id: e for e in summary.member_envelopes}
-    outcome_rows = _build_outcome_rows(outcome.per_trace_results, envelope_map, link)
+    outcome_rows = _build_outcome_rows(
+        outcome.per_trace_results, envelope_map, link,
+        primary_trace_ids=set(summary.primary_trace_ids),
+    )
     return CorrectnessView(
         workflow_name=summary.operation_name,
         outcome_rate=outcome.outcome_rate,

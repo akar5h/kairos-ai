@@ -1,0 +1,89 @@
+# config/context.lead-pipeline.yaml.disabled
+#
+# Lead generation pipeline operations — DISABLED.
+#
+# Reason: all 21 lead-tool names (run_clutch_scrape, fetch_apify_results,
+# save_raw_companies, score_company, score_companies, persist_scores,
+# assign_tier, assign_channel, resolve_contacts, save_contacts,
+# personalise_message, pick_template, load_proof_assets, save_draft,
+# check_gate, fetch_approved_messages, send, log_event,
+# update_message_status, increment_send_count, load_followup_schedule)
+# had ZERO spans in the 168h observation window (2026-06-12 audit, F8).
+# The lead pipeline has not run recently; including these ops produces
+# empty workflow buckets in the analysis view without signal value.
+#
+# Owner: descoped from Day 5 sprint per audit F8.
+# To re-enable: rename to context.lead-pipeline.yaml and merge into
+# the primary context.yaml or pass as --context to kairos view.
+
+agent_name: "Xero Platform — Lead Pipeline"
+agent_description: "Lead generation pipeline (Clutch scrape → score → outreach)"
+
+operations:
+
+  - name: "Lead Scraping"
+    description: "Scrape agency listings from Clutch using Apify actor"
+    expected_tools:
+      - "run_clutch_scrape"
+      - "fetch_apify_results"
+      - "save_raw_companies"
+    required_side_effect_tools:
+      - "save_raw_companies"
+    priority: "high"
+
+  - name: "Lead Scoring"
+    description: "Score companies against ICP rules; assign tier and outreach channel"
+    expected_tools:
+      - "score_company"
+      - "score_companies"
+      - "persist_scores"
+      - "assign_tier"
+      - "assign_channel"
+    required_side_effect_tools:
+      - "persist_scores"
+    priority: "high"
+
+  - name: "Contact Resolution"
+    description: "Resolve decision-maker contact emails for scored companies"
+    expected_tools:
+      - "resolve_contacts"
+      - "save_contacts"
+    required_side_effect_tools:
+      - "save_contacts"
+    priority: "medium"
+
+  - name: "Message Personalisation"
+    description: "Generate personalised outreach emails using LLM; save drafts"
+    expected_tools:
+      - "personalise_message"
+      - "pick_template"
+      - "load_proof_assets"
+      - "save_draft"
+    required_side_effect_tools:
+      - "save_draft"
+    priority: "high"
+
+  - name: "Outreach Sending"
+    description: "Send approved messages via SMTP; enforce daily cap and approval gate"
+    expected_tools:
+      - "check_gate"
+      - "fetch_approved_messages"
+      - "send"
+      - "log_event"
+      - "update_message_status"
+      - "increment_send_count"
+    required_side_effect_tools:
+      - "send"
+      - "log_event"
+    priority: "medium"
+
+  - name: "Follow-up Scheduling"
+    description: "Schedule and dispatch follow-up messages for non-responding leads"
+    expected_tools:
+      - "load_followup_schedule"
+      - "send"
+      - "log_event"
+    required_side_effect_tools:
+      - "send"
+      - "log_event"
+    priority: "low"

@@ -305,3 +305,111 @@ class TestFromYamlFailLoud:
         ctx = BusinessContext.from_yaml(ctx_file)
         assert ctx.agent_name == "Good Agent"
         assert len(ctx.operations) == 1
+
+
+# ───────────────────────── Day 5: excluded_tools ─────────────────────────────
+
+
+class TestExcludedTools:
+    """Day 5: excluded_tools field — schema, validation, default."""
+
+    def test_excluded_tools_loads_from_dict(self) -> None:
+        """excluded_tools field must be parsed from the YAML dict."""
+        data = {
+            "agent_name": "Test",
+            "agent_description": "test",
+            "operations": [
+                {
+                    "name": "Research",
+                    "description": "read-only",
+                    "expected_tools": ["Read", "Grep", "Bash"],
+                    "required_side_effect_tools": ["Read"],
+                    "excluded_tools": ["Edit", "Write"],
+                }
+            ],
+        }
+        ctx = BusinessContext.from_dict(data)
+        assert ctx.operations[0].excluded_tools == ["Edit", "Write"]
+
+    def test_excluded_tools_defaults_to_empty(self) -> None:
+        """Operations without excluded_tools must default to []."""
+        data = {
+            "agent_name": "Test",
+            "agent_description": "test",
+            "operations": [{"name": "Op", "description": "no exclusions"}],
+        }
+        ctx = BusinessContext.from_dict(data)
+        assert ctx.operations[0].excluded_tools == []
+
+    def test_excluded_tools_overlap_with_expected_raises(self) -> None:
+        """excluded_tools ∩ expected_tools must raise ValueError at load time."""
+        data = {
+            "agent_name": "Test",
+            "agent_description": "test",
+            "operations": [
+                {
+                    "name": "Bad Op",
+                    "description": "conflict",
+                    "expected_tools": ["Read", "Edit", "Write"],
+                    "required_side_effect_tools": ["Read"],
+                    "excluded_tools": ["Edit"],
+                }
+            ],
+        }
+        with pytest.raises(ValueError, match="excluded_tools"):
+            BusinessContext.from_dict(data)
+
+    def test_excluded_tools_overlap_error_names_operation(self) -> None:
+        """The ValueError from excluded/expected overlap must name the operation."""
+        data = {
+            "agent_name": "Test",
+            "agent_description": "test",
+            "operations": [
+                {
+                    "name": "MySpecialOp",
+                    "description": "conflict",
+                    "expected_tools": ["Read", "Edit"],
+                    "required_side_effect_tools": ["Read"],
+                    "excluded_tools": ["Edit"],
+                }
+            ],
+        }
+        with pytest.raises(ValueError, match="MySpecialOp"):
+            BusinessContext.from_dict(data)
+
+    def test_excluded_tools_no_overlap_is_valid(self) -> None:
+        """excluded_tools that don't overlap with expected_tools must load cleanly."""
+        data = {
+            "agent_name": "Test",
+            "agent_description": "test",
+            "operations": [
+                {
+                    "name": "Research",
+                    "description": "read-only",
+                    "expected_tools": ["Read", "Grep", "Bash"],
+                    "required_side_effect_tools": ["Read"],
+                    "excluded_tools": ["Edit", "Write"],
+                }
+            ],
+        }
+        # Must not raise — Edit and Write are not in expected_tools.
+        ctx = BusinessContext.from_dict(data)
+        assert ctx.operations[0].excluded_tools == ["Edit", "Write"]
+
+    def test_normative_context_yaml_loads(self) -> None:
+        """The Day 5 normative context.yaml must load without errors."""
+        from pathlib import Path
+
+        # The context.yaml lives in config/ relative to the repo root.
+        repo_root = Path(__file__).parent.parent.parent
+        ctx_path = repo_root / "config" / "context.yaml"
+        if not ctx_path.exists():
+            pytest.skip(f"context.yaml not found at {ctx_path}")
+        ctx = BusinessContext.from_yaml(ctx_path)
+        assert len(ctx.operations) == 4
+        op_names = {op.name for op in ctx.operations}
+        assert "Code Implementation" in op_names
+        assert "Codebase Research" in op_names
+        # Codebase Research must declare excluded_tools.
+        research = next(op for op in ctx.operations if op.name == "Codebase Research")
+        assert set(research.excluded_tools) == {"Edit", "Write"}

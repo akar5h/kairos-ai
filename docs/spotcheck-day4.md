@@ -1,6 +1,6 @@
 # Spot-check — Day 4 Exit Gate
 
-Generated: 2026-06-12 04:35 UTC
+Generated: 2026-06-12 04:55 UTC
 Window: last 168h
 Phoenix: http://localhost:6006 / project: default
 Context: /Users/akarshgajbhiye/kairos-ai/config/context.yaml
@@ -9,10 +9,10 @@ Context: /Users/akarshgajbhiye/kairos-ai/config/context.yaml
 
 | Stratum | Available | Sampled | Target |
 |---------|-----------|---------|--------|
-| fail | 182 | 10 | 10 |
-| pass | 148 | 5 | 5 |
+| fail | 200 | 10 | 10 |
+| pass | 138 | 5 | 5 |
 | escalated | 0 | 5 | 5 |
-| **total** | 330 | **20** | 20 |
+| **total** | 338 | **20** | 20 |
 
 **Stratum notes:**
 - escalated stratum short by 5 (only 0 available); filling from fail/pass.
@@ -23,26 +23,26 @@ Owner: fill the **AGREE?** column (Y = engine correct, N = engine wrong, ? = uns
 
 | Trace | Primary workflow | Verdict | Failure reason | Evidence step | Status source | Last tools | AGREE? |
 |-------|-----------------|---------|---------------|--------------|--------------|-----------|--------|
-| [2860b1c082620f10…](http://localhost:6006/projects/default/traces/2860b1c082620f107b0d62c7807b4875) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash |  |
-| [1abd38cfb4a9a5b8…](http://localhost:6006/projects/default/traces/1abd38cfb4a9a5b83ff6ea242de96844) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
-| [2de5a083fec3943a…](http://localhost:6006/projects/default/traces/2de5a083fec3943a92e5ef62cf49952f) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash, Bash |  |
-| [cb3b334015d5082f…](http://localhost:6006/projects/default/traces/cb3b334015d5082fed0f819ebc54cff2) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash |  |
+| [2860b1c082620f10…](http://localhost:6006/projects/default/traces/2860b1c082620f107b0d62c7807b4875) | unmapped | fail | missing_side_effect |  |  | Bash |  |
+| [1abd38cfb4a9a5b8…](http://localhost:6006/projects/default/traces/1abd38cfb4a9a5b83ff6ea242de96844) | unmapped | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [2de5a083fec3943a…](http://localhost:6006/projects/default/traces/2de5a083fec3943a92e5ef62cf49952f) | unmapped | fail | missing_side_effect |  |  | Bash, Bash |  |
+| [cb3b334015d5082f…](http://localhost:6006/projects/default/traces/cb3b334015d5082fed0f819ebc54cff2) | unmapped | fail | missing_side_effect |  |  | Bash |  |
+| [8f0780364da8cbff…](http://localhost:6006/projects/default/traces/8f0780364da8cbffa1f0544951ecce44) | Code Implementation | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
 | [dda0a79707d1591d…](http://localhost:6006/projects/default/traces/dda0a79707d1591d5e980e1be62eb416) | unmapped | fail | missing_side_effect |  |  | (none) |  |
-| [f2a736380b567ff7…](http://localhost:6006/projects/default/traces/f2a736380b567ff7b4e00617afd1ba2a) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash, Bash |  |
-| [4673ac8f1c33052e…](http://localhost:6006/projects/default/traces/4673ac8f1c33052e0ccc62477949c2b6) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash |  |
-| [4df0af9172cd9017…](http://localhost:6006/projects/default/traces/4df0af9172cd90177bd813db029f8f1b) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash, Bash, Edit |  |
-| [abc2b5be66235c90…](http://localhost:6006/projects/default/traces/abc2b5be66235c90197a54a53b8fe27a) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash, Bash |  |
-| [7d44d731153c49f8…](http://localhost:6006/projects/default/traces/7d44d731153c49f8300082c21e3d230c) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [f2a736380b567ff7…](http://localhost:6006/projects/default/traces/f2a736380b567ff7b4e00617afd1ba2a) | unmapped | fail | missing_side_effect |  |  | Bash, Bash |  |
+| [4673ac8f1c33052e…](http://localhost:6006/projects/default/traces/4673ac8f1c33052e0ccc62477949c2b6) | unmapped | fail | missing_side_effect |  |  | Bash |  |
+| [4df0af9172cd9017…](http://localhost:6006/projects/default/traces/4df0af9172cd90177bd813db029f8f1b) | unmapped | fail | missing_side_effect |  |  | Bash, Bash, Edit |  |
+| [abc2b5be66235c90…](http://localhost:6006/projects/default/traces/abc2b5be66235c90197a54a53b8fe27a) | unmapped | fail | missing_side_effect |  |  | Bash, Bash |  |
 | [8fe79bb7a022ad93…](http://localhost:6006/projects/default/traces/8fe79bb7a022ad93fae87166a0c50fd8) | Codebase Research | pass |  |  |  | Bash, Bash, Bash |  |
 | [21ae18d63b6335e8…](http://localhost:6006/projects/default/traces/21ae18d63b6335e8a8e7329d68d2e2f0) | Code Implementation | pass |  |  |  | Bash, Bash, Bash |  |
 | [a9c229dd1b993134…](http://localhost:6006/projects/default/traces/a9c229dd1b9931346048c646ecce4f93) | Paperclip Coordination | pass |  |  |  | Bash, Bash, Bash |  |
 | [656619f5b3e13b8c…](http://localhost:6006/projects/default/traces/656619f5b3e13b8c57a8ef4970e0c90f) | Code Implementation | pass |  |  |  | Bash, Bash, Bash |  |
 | [1984809abfa7d3a7…](http://localhost:6006/projects/default/traces/1984809abfa7d3a7da2b2db4566ecc02) | Paperclip Coordination | pass |  |  |  | Bash, Bash, Bash |  |
-| [55b62d8963107794…](http://localhost:6006/projects/default/traces/55b62d8963107794d135a0fa46c6fc7e) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
-| [0f9121f02658793e…](http://localhost:6006/projects/default/traces/0f9121f02658793e111918a04a0a367e) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash |  |
-| [2719d88a0cd75d52…](http://localhost:6006/projects/default/traces/2719d88a0cd75d5282708a61cbb27bcb) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash |  |
-| [56126763de4fee62…](http://localhost:6006/projects/default/traces/56126763de4fee6216b7b9214924a1ee) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash |  |
-| [d5663ba42e8c54ba…](http://localhost:6006/projects/default/traces/d5663ba42e8c54baa862a3835b4d6c01) | Paperclip Coordination | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [7d44d731153c49f8…](http://localhost:6006/projects/default/traces/7d44d731153c49f8300082c21e3d230c) | unmapped | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [55b62d8963107794…](http://localhost:6006/projects/default/traces/55b62d8963107794d135a0fa46c6fc7e) | unmapped | fail | missing_side_effect |  |  | Bash, Bash, Bash |  |
+| [0f9121f02658793e…](http://localhost:6006/projects/default/traces/0f9121f02658793e111918a04a0a367e) | unmapped | fail | missing_side_effect |  |  | Bash |  |
+| [2719d88a0cd75d52…](http://localhost:6006/projects/default/traces/2719d88a0cd75d5282708a61cbb27bcb) | unmapped | fail | missing_side_effect |  |  | Bash |  |
+| [56126763de4fee62…](http://localhost:6006/projects/default/traces/56126763de4fee6216b7b9214924a1ee) | unmapped | fail | missing_side_effect |  |  | Bash |  |
 
 ---
 

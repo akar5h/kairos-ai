@@ -84,6 +84,9 @@ class WorkflowSummary:
     Carried so build_analysis_view can resolve per-trace status_source_of_evidence
     for the outcome_rows table without a second pass through the engine.
     """
+    secondary_membership_count: int = 0
+    primary_trace_ids: set[str] = field(default_factory=set)
+    """Trace IDs for which this workflow is the primary (deduplicated) label."""
 
     @property
     def mapped_trace_count(self) -> int:
@@ -136,6 +139,13 @@ def classify_membership(
     if not op.expected_tools or not envelope.tool_sequence:
         return WorkflowMembership(op.name, MembershipKind.NONE, 0.0)
 
+    # excluded_tools gate: any successful call of an excluded tool → NONE
+    if op.excluded_tools:
+        excluded_set = set(op.excluded_tools)
+        for step in envelope.steps:
+            if step.tool_name in excluded_set and step.status == StepStatus.OK and not step.error_message:
+                return WorkflowMembership(op.name, MembershipKind.NONE, 0.0)
+
     required_tools = set(op.required_side_effect_tools)
 
     # Ops without a signature tool are utility patterns, not workflows —
@@ -177,6 +187,41 @@ def map_envelope_multilabel(
     """Return zero-or-more memberships, one per op where membership != NONE."""
     memberships = [classify_membership(envelope, op) for op in operations]
     return [m for m in memberships if m.kind != MembershipKind.NONE]
+
+
+_PRIORITY_RANK: dict[str, int] = {"high": 2, "medium": 1, "low": 0}
+
+
+def _priority_rank(op: BusinessOperation) -> int:
+    return _PRIORITY_RANK.get(op.priority, 1)
+
+
+def _primary_workflow(
+    memberships: list[WorkflowMembership],
+    op_by_name: dict[str, BusinessOperation],
+) -> WorkflowMembership | None:
+    """Select the primary workflow for a trace from its memberships.
+
+    Tiebreak order (descending priority):
+      1. FULL beats ATTEMPTED
+      2. Higher recall wins
+      3. Higher op priority rank wins
+      4. Op name lexicographic (ascending) — deterministic final tiebreak
+    """
+    if not memberships:
+        return None
+    full_members = [m for m in memberships if m.kind == MembershipKind.FULL]
+    candidates = full_members if full_members else memberships
+
+    def _key(m: WorkflowMembership) -> tuple[float, int, str]:
+        op = op_by_name.get(m.operation_name)
+        rank = _priority_rank(op) if op else 1
+        return (m.recall, rank, m.operation_name)
+
+    # max by recall and rank; min by name (negate name via negated string comparison not possible — sort instead)
+    # Sort descending by (recall, rank), ascending by name
+    sorted_candidates = sorted(candidates, key=lambda m: (-_key(m)[0], -_key(m)[1], _key(m)[2]))
+    return sorted_candidates[0]
 
 
 def validate_taxonomy(context: BusinessContext) -> list[str]:
@@ -329,11 +374,30 @@ def run_pipeline(
     reliability = _preflight_check(envelopes)
 
     operations = list(context.operations)
+    op_by_name: dict[str, BusinessOperation] = {op.name: op for op in operations}
 
     # Step 1: classify every envelope against every operation.
     memberships_per_envelope: dict[str, list[WorkflowMembership]] = {
         env.trace_id: map_envelope_multilabel(env, operations) for env in envelopes
     }
+
+    # Step 2: compute primary workflow per trace (deterministic tiebreak).
+    def _primary_name(memberships: list[WorkflowMembership]) -> str | None:
+        pw = _primary_workflow(memberships, op_by_name)
+        return pw.operation_name if pw is not None else None
+
+    primary_per_trace: dict[str, str | None] = {
+        trace_id: _primary_name(memberships)
+        for trace_id, memberships in memberships_per_envelope.items()
+    }
+
+    # Step 3: count secondary memberships per trace (memberships that are not the primary).
+    secondary_count_per_op: dict[str, int] = {op.name: 0 for op in operations}
+    for trace_id, memberships in memberships_per_envelope.items():
+        primary_name = primary_per_trace.get(trace_id)
+        for m in memberships:
+            if m.operation_name != primary_name:
+                secondary_count_per_op[m.operation_name] += 1
 
     # Pre-index members by op name (avoids O(N²) loop).
     op_full: dict[str, list[TraceEnvelope]] = {op.name: [] for op in operations}
@@ -344,6 +408,24 @@ def run_pipeline(
                 op_full[m.operation_name].append(env)
             elif m.kind == MembershipKind.ATTEMPTED:
                 op_attempted[m.operation_name].append(env)
+
+    # Step 4: compute per-workflow medians for detection (primary workflow's median).
+    op_median_steps: dict[str, float] = {}
+    for op in operations:
+        all_members = op_full[op.name] + op_attempted[op.name]
+        op_median_steps[op.name] = float(median(t.step_count for t in all_members)) if all_members else 0.0
+
+    # Step 5: run tier-1 detection ONCE per trace, attributed to its primary workflow.
+    # CHANGELOG: cluster_median_steps is now the primary workflow's median (was per-op).
+    # Slight behavior change: traces with primary in a small workflow use that workflow's
+    # median rather than the larger pool. Covered by Day 7 labeling.
+    per_trace_findings: dict[str, list[Finding]] = {}
+    for env in envelopes:
+        primary_name = primary_per_trace.get(env.trace_id)
+        if primary_name is None:
+            continue
+        cluster_median = op_median_steps.get(primary_name, 0.0)
+        per_trace_findings[env.trace_id] = detect_tier1([env], cluster_median)
 
     workflows: list[WorkflowSummary] = []
 
@@ -359,9 +441,13 @@ def run_pipeline(
             memberships=memberships_per_envelope,
         )
 
-        cluster_median_steps = float(median(t.step_count for t in all_members)) if all_members else 0.0
-
-        deterministic_findings = detect_tier1(all_members, cluster_median_steps)
+        # Findings: only from traces whose primary workflow is this op.
+        deterministic_findings = [
+            f
+            for trace_id, findings in per_trace_findings.items()
+            if primary_per_trace.get(trace_id) == op.name
+            for f in findings
+        ]
 
         divergences = detect_workflow_divergence(all_members, reference) if enable_divergence else []
 
@@ -378,10 +464,12 @@ def run_pipeline(
                 divergences=divergences,
                 top_pattern_names=top_patterns,
                 member_envelopes=all_members,
+                secondary_membership_count=secondary_count_per_op[op.name],
+                primary_trace_ids={tid for tid, name in primary_per_trace.items() if name == op.name},
             )
         )
 
-    # Step 4: unmapped = traces with zero memberships across all ops.
+    # Step 6: unmapped = traces with zero memberships across all ops.
     mapped_trace_ids: set[str] = {trace_id for trace_id, memberships in memberships_per_envelope.items() if memberships}
     unmapped_envelopes = [e for e in envelopes if e.trace_id not in mapped_trace_ids]
     unmapped = _summarize_unmapped(unmapped_envelopes)

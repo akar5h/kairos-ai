@@ -437,16 +437,18 @@ class TestPipelineIntegration:
         traces = [t_short, t_mid, t_long]
         with patch("kairos.engine.pipeline.detect_tier1", return_value=[]) as mock_detect:
             run_week1_pipeline(traces, ctx, llm_client=None)
-        # Should have been called once per workflow (1 here)
-        assert mock_detect.call_count == 1
-        kwargs = mock_detect.call_args.kwargs
-        # Either keyword or positional second arg
-        if "cluster_median_steps" in kwargs:
-            assert kwargs["cluster_median_steps"] == 4
-        else:
-            args = mock_detect.call_args.args
-            assert len(args) >= 2
-            assert args[1] == 4
+        # Day 5: detect_tier1 is called ONCE PER TRACE (not once per workflow).
+        # All 3 traces map to the same "Candidate Screening" workflow, so 3 calls.
+        assert mock_detect.call_count == 3
+        # Every call must use cluster_median_steps = 4 (the workflow's median: median(3,4,6)=4)
+        for call in mock_detect.call_args_list:
+            kwargs = call.kwargs
+            if "cluster_median_steps" in kwargs:
+                assert kwargs["cluster_median_steps"] == 4
+            else:
+                args = call.args
+                assert len(args) >= 2
+                assert args[1] == 4
 
     def test_top_pattern_names_sorted_by_affected_count_desc(self) -> None:
         ctx = _hr_context()
@@ -1039,3 +1041,205 @@ class TestWorkflowSummaryShape:
         )
         assert ws.mapped_trace_count == 7
         assert ws.mapped_trace_count == ws.full_trace_count + ws.attempted_trace_count
+
+
+# ── Day 5: W4 test matrix rows ────────────────────────────────────────
+
+
+def _coding_context() -> BusinessContext:
+    """4-op coding context matching the normative context.yaml from Day 5."""
+    code_impl = BusinessOperation(
+        name="Code Implementation",
+        description="Writing and editing source code",
+        expected_tools=["Read", "Edit", "Write", "Bash", "Grep", "Glob"],
+        required_side_effect_tools=["Edit", "Write"],
+        priority="high",
+    )
+    research = BusinessOperation(
+        name="Codebase Research",
+        description="Read-only exploration",
+        expected_tools=["Read", "Grep", "Glob", "Bash"],
+        required_side_effect_tools=["Read"],
+        excluded_tools=["Edit", "Write"],
+        priority="medium",
+    )
+    orchestration = BusinessOperation(
+        name="Multi-Agent Orchestration",
+        description="Spawning subagents",
+        expected_tools=["Agent", "Bash", "Read"],
+        required_side_effect_tools=["Agent"],
+        priority="high",
+    )
+    coordination = BusinessOperation(
+        name="Paperclip Coordination",
+        description="Issue/comment updates via Skill",
+        expected_tools=["Bash", "Skill"],
+        required_side_effect_tools=["Skill"],
+        priority="high",
+    )
+    return BusinessContext(
+        agent_name="Xero Platform",
+        agent_description="Coding agents",
+        operations=[code_impl, research, orchestration, coordination],
+    )
+
+
+class TestDay5MembershipDedup:
+    """W4 test matrix: excluded_tools gate, primary label, finding dedup, disjointness."""
+
+    def test_edit_heavy_trace_matches_code_impl_not_research(self) -> None:
+        """W4 row 1: edit-heavy trace → Code Implementation, NOT Codebase Research."""
+        ctx = _coding_context()
+        # Trace uses Read + Edit + Write → has excluded tools for Research → Research NONE.
+        trace = _trace("t-edit", ["Read", "Bash", "Edit", "Write"])
+        result = run_week1_pipeline([trace], ctx, llm_client=None)
+
+        ws_by_name = {ws.operation_name: ws for ws in result.workflows}
+        # Code Implementation must have the trace.
+        assert "Code Implementation" in ws_by_name
+        assert ws_by_name["Code Implementation"].mapped_trace_count == 1
+        # Codebase Research must NOT have the trace (Edit is excluded).
+        if "Codebase Research" in ws_by_name:
+            assert ws_by_name["Codebase Research"].mapped_trace_count == 0
+        # Unmapped must be empty.
+        assert result.unmapped.trace_count == 0
+
+    def test_read_only_trace_matches_research_not_code_impl(self) -> None:
+        """W4 row 2: read-only trace → Codebase Research, NOT Code Implementation."""
+        ctx = _coding_context()
+        # Trace uses Read + Grep + Bash, NO Edit/Write → no required_side_effect for Code Impl.
+        trace = _trace("t-read-only", ["Read", "Grep", "Bash"])
+        result = run_week1_pipeline([trace], ctx, llm_client=None)
+
+        ws_by_name = {ws.operation_name: ws for ws in result.workflows}
+        # Codebase Research must have the trace.
+        assert "Codebase Research" in ws_by_name
+        assert ws_by_name["Codebase Research"].mapped_trace_count == 1
+        # Code Implementation must NOT have the trace (no Edit/Write).
+        if "Code Implementation" in ws_by_name:
+            assert ws_by_name["Code Implementation"].mapped_trace_count == 0
+
+    def test_finding_appears_once_under_primary(self) -> None:
+        """W4 row 3: same trace in 2 ops pre-dedup → finding appears once, under primary."""
+        # Build two ops that can both match the same trace (no excluded_tools conflict).
+        op_a = BusinessOperation(
+            name="Op A",
+            description="first",
+            expected_tools=["tool_x", "tool_a"],
+            required_side_effect_tools=["tool_a"],
+            priority="high",
+        )
+        op_b = BusinessOperation(
+            name="Op B",
+            description="second",
+            expected_tools=["tool_x", "tool_b"],
+            required_side_effect_tools=["tool_b"],
+            priority="medium",
+        )
+        ctx = BusinessContext(agent_name="x", agent_description="", operations=[op_a, op_b])
+        # Trace hits both ops.
+        trace = _trace("t-both", ["tool_x", "tool_a", "tool_b"])
+
+        # Inject a synthetic finding for this trace.
+        synthetic_finding = Finding(
+            pattern_name="redundant_execution",
+            tier=1,
+            trace_id="t-both",
+            confidence=0.9,
+            severity="warning",
+        )
+        with patch("kairos.engine.pipeline.detect_tier1", return_value=[synthetic_finding]):
+            result = run_week1_pipeline([trace], ctx, llm_client=None)
+
+        # Total finding count across all workflows must be exactly 1 (deduplicated).
+        total_findings = sum(len(ws.deterministic_findings) for ws in result.workflows)
+        assert total_findings == 1, f"Expected 1 finding total, got {total_findings}"
+
+        # The finding must be under exactly one workflow (the primary).
+        workflows_with_finding = [ws for ws in result.workflows if ws.deterministic_findings]
+        assert len(workflows_with_finding) == 1
+
+    def test_excluded_expected_overlap_raises(self) -> None:
+        """W4 row 4: excluded_tools ∩ expected_tools → hard error at load."""
+        import textwrap
+
+        yaml_content = textwrap.dedent("""\
+            agent_name: "Bad Config"
+            agent_description: "conflicts"
+            operations:
+              - name: "Bad Op"
+                description: "excluded overlaps expected"
+                expected_tools: [Read, Edit, Write]
+                required_side_effect_tools: [Read]
+                excluded_tools: [Edit]
+        """)
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+            f.write(yaml_content)
+            tmp_path = f.name
+
+        from kairos.taxonomy.business_context import BusinessContext
+        with pytest.raises(ValueError, match="excluded_tools"):
+            BusinessContext.from_yaml(tmp_path)
+
+    def test_code_impl_and_research_disjoint_by_construction(self) -> None:
+        """W4 row 5: Code Implementation and Codebase Research are disjoint (excluded_tools).
+
+        Any trace that qualifies for Code Implementation (has Edit or Write success) must NOT
+        qualify for Codebase Research (excluded_tools=[Edit, Write]).
+        Any trace that qualifies for Research (has Read but no Edit/Write) cannot qualify for
+        Code Implementation (no Edit/Write → required_side_effect not met).
+        Assert both directions hold — by construction, no trace can be in both.
+        """
+        ctx = _coding_context()
+
+        # 10 edit-heavy traces, 10 read-only traces.
+        edit_traces = [_trace(f"e-{i}", ["Read", "Edit", "Bash"]) for i in range(10)]
+        read_traces = [_trace(f"r-{i}", ["Read", "Grep", "Bash"]) for i in range(10)]
+        all_traces = edit_traces + read_traces
+
+        result = run_week1_pipeline(all_traces, ctx, llm_client=None)
+        ws_by_name = {ws.operation_name: ws for ws in result.workflows}
+
+        code_impl_ids = {e.trace_id for e in ws_by_name.get("Code Implementation", _make_empty_ws()).member_envelopes}
+        research_ids = {e.trace_id for e in ws_by_name.get("Codebase Research", _make_empty_ws()).member_envelopes}
+
+        overlap = code_impl_ids & research_ids
+        assert overlap == set(), (
+            f"Code Implementation and Codebase Research share traces: {overlap}. "
+            "excluded_tools=[Edit, Write] should make them disjoint by construction."
+        )
+
+
+def _make_empty_ws():
+    """Return a stub WorkflowSummary with no member_envelopes for safe set access."""
+    from kairos.analysis.outcome_metric import WorkflowOutcomeSummary
+    from kairos.analysis.reference_behavior import ReferenceCohort, ReferenceConfidence
+
+    outcome = WorkflowOutcomeSummary(
+        workflow_name="stub",
+        total_traces=0,
+        computable_count=0,
+        passed_count=0,
+        outcome_rate=None,
+        pending_reason=None,
+    )
+    ref = ReferenceCohort(
+        eligible_traces=[],
+        reference_traces=[],
+        confidence=ReferenceConfidence.NONE,
+        reference_dfg=None,
+        reference_edges=set(),
+        reference_path=[],
+        step_budget_p75=None,
+        token_budget_p75=None,
+    )
+    return WorkflowSummary(
+        operation_name="stub",
+        full_trace_count=0,
+        attempted_trace_count=0,
+        outcome=outcome,
+        reference=ref,
+        deterministic_findings=[],
+        divergences=[],
+    )
