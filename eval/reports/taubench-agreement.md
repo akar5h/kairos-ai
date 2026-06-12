@@ -99,3 +99,55 @@ context.yaml that uses read tools as the signature (e.g. `required_side_effect_t
 - **Abstention**: Kairos returning `non_computable` is a tracked metric, not an error.
 - **Tuning policy**: no outcome logic was tuned to improve kappa. Only loader bugs are eligible for fixes.
 
+## Rework + structural ceiling (Day 7 morning — budgeted rework slot)
+
+> NOTE: this section was appended after the rework experiment; rerunning
+> `eval/run_agreement.py` regenerates the sections above but not this one.
+> Both runs below were measured on the identical 161-trace corpus and loader.
+
+### Both runs (tuning-log requirement)
+
+| Run | a | b | c | d | κ | FAIL precision | FAIL recall |
+|---|---|---|---|---|---|---|---|
+| Committed (4-op config) | 58 | 67 | 7 | 29 | **0.1692** | 29/36 = **0.806** | 29/96 = 0.302 |
+| Experimental (+ inquiry op, **REJECTED**) | 65 | 96 | 0 | 0 | 0.0000 | undefined (0 FAIL verdicts) | 0/96 = 0.000 |
+
+### Observational-equivalence finding
+
+The proposed FN fix — a read-only inquiry operation (read tools as signature,
+`side_effect_match: any`, write tools excluded) — flipped **36 verdicts, not 7**:
+the 7 intended FNs (reward=1.0, read-only task done right) AND all 29 correct
+FAILs (reward=0.0, agent never performed the requested write). Verified cause:
+every tool shape occurring in the 7-FN group also occurs in the 29-TN group
+(e.g. `{get_reservation_details}` alone: 3 pass / 1 fail). **Read-only-done-right
+and write-never-performed are indistinguishable at the deterministic layer.**
+Separating them requires knowing whether a write was *required* — that is ground
+truth (tau-bench `expected_actions`) or a tier-2 judge call, never a taxonomy rule.
+
+### Ceiling analysis
+
+- **67 FPs** = wrong-args successes: the write tool succeeded structurally with
+  incorrect kwargs (`r_actions=0.0`). Undetectable from contract completion.
+- **7 FNs** = read-only tasks: structurally cannot pass an outcome logic that
+  demands a side effect, and cannot be carved out without ground truth (above).
+- Both classes are **irreducible for the deterministic layer on this corpus**.
+  κ ≥ 0.7 against full semantic reward is unreachable here; closing the gap is
+  the tier-2 judge's job (Days 8–14), not W3's.
+- The deterministic claim that DOES hold: **FAIL verdicts have 0.81 precision** —
+  *when Kairos says fail, believe it; when it says pass, semantics are unverified.*
+
+### Tuning log
+
+| # | Change | Result | Status |
+|---|---|---|---|
+| 1 | Inquiry op added to eval/corpus/taubench/context.yaml (read-tool signature, match=any, writes excluded) | 7 intended FN fixes / 29 collateral TN→FP flips; κ 0.1692 → 0.0000; FAIL detector eliminated | **REJECTED — reverted, never committed** |
+
+This corpus has now been examined while iterating: it is a **development corpus**,
+not a neutral benchmark. The roadmap W8 injection harness (regenerated fresh)
+is the durable benchmark artifact.
+
+### Decision-tree outcome
+
+Day 7 proceeds to labeling. The κ<0.7 outcome-iteration rework slot is consumed
+by this analysis; the semantic gap (wrong-args FPs + read-only FNs) is routed
+to tier-2 (Days 8–14).

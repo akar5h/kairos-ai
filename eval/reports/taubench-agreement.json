@@ -138,5 +138,51 @@
       "mode": "memory_cascade",
       "note": "false-positive: Kairos says PASS but tau-bench reward=0 (wrong action or wrong args)"
     }
-  ]
+  ],
+  "rework_structural_ceiling": {
+    "appended": "2026-06-13",
+    "runs": {
+      "committed_4op": {
+        "confusion_matrix": {
+          "a": 58,
+          "b": 67,
+          "c": 7,
+          "d": 29
+        },
+        "cohens_kappa": 0.1692,
+        "fail_precision": 0.806,
+        "fail_recall": 0.302,
+        "status": "ACTIVE"
+      },
+      "experimental_inquiry_op": {
+        "confusion_matrix": {
+          "a": 65,
+          "b": 96,
+          "c": 0,
+          "d": 0
+        },
+        "cohens_kappa": 0.0,
+        "fail_precision": null,
+        "fail_precision_note": "undefined - zero FAIL verdicts",
+        "fail_recall": 0.0,
+        "status": "REJECTED - reverted, never committed"
+      }
+    },
+    "verdict_flips": {
+      "intended_fn_fixes": 7,
+      "collateral_tn_to_fp": 29,
+      "total": 36
+    },
+    "finding": "read-only-done-right vs write-never-performed are observationally equivalent at the deterministic layer; separation requires knowing whether a write was required (ground truth or tier-2 judge)",
+    "ceiling": "67 FPs (wrong-args successes) + 7 FNs (read-only tasks) are irreducible for the deterministic layer on this corpus; kappa>=0.7 vs full semantic reward unreachable; deterministic claim that holds: FAIL verdicts have 0.81 precision",
+    "tuning_log": [
+      {
+        "change": "inquiry op added to eval/corpus/taubench/context.yaml",
+        "result": "7 intended / 29 collateral flips; kappa 0.1692 -> 0.0",
+        "status": "REJECTED"
+      }
+    ],
+    "corpus_status": "development corpus (examined during iteration), not a neutral benchmark",
+    "decision_tree_outcome": "Day 7 proceeds to labeling; rework slot consumed by this analysis; semantic gap routed to tier-2 (Days 8-14)"
+  }
 }
