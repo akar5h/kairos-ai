@@ -23,7 +23,9 @@ Default context: /Users/akarshgajbhiye/kairos-ai/config/context.yaml
 from __future__ import annotations
 
 import argparse
+import glob
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -98,9 +100,18 @@ def _resolve_project_id(endpoint: str, project_name: str) -> str:
 
 def _fetch_root_trace_ids(
     endpoint: str, project_id: str, start_iso: str, end_iso: str
-) -> list[str]:
-    """Paginate root spans and collect unique trace IDs."""
+) -> tuple[list[str], dict[str, dict[str, str | None]]]:
+    """Paginate root spans; collect unique trace IDs + per-trace root-span meta.
+
+    Root ``claude_code.interaction`` spans carry top-level ``session.id``,
+    ``paperclip.{issue,agent_id}``, and ``service.name`` attributes — exactly
+    what the transcript digest needs. One pass, no extra queries.
+
+    Returns (trace_ids, meta_by_trace) where meta values are
+    {"session_id", "issue", "agent"} (any may be None when absent).
+    """
     trace_ids: list[str] = []
+    meta_by_trace: dict[str, dict[str, str | None]] = {}
     seen: set[str] = set()
     cursor: str | None = None
 
@@ -111,7 +122,7 @@ def _fetch_root_trace_ids(
             f'spans(first: 100{after_clause}, rootSpansOnly: true, '
             f'timeRange: {{start: "{start_iso}", end: "{end_iso}"}}) {{ '
             f'pageInfo {{ hasNextPage endCursor }} '
-            f'edges {{ node {{ context {{ traceId }} }} }} '
+            f'edges {{ node {{ context {{ traceId }} attributes }} }} '
             f'}} }} }} }}'
         )
         data = _gql(endpoint, query)
@@ -125,13 +136,37 @@ def _fetch_root_trace_ids(
             if tid and tid not in seen:
                 seen.add(tid)
                 trace_ids.append(tid)
+                meta_by_trace[tid] = _root_span_meta(node.get("attributes"))
 
         page_info = spans_data.get("pageInfo", {})
         if not page_info.get("hasNextPage") or not page_info.get("endCursor"):
             break
         cursor = page_info["endCursor"]
 
-    return trace_ids
+    return trace_ids, meta_by_trace
+
+
+def _root_span_meta(raw_attributes: str | None) -> dict[str, str | None]:
+    """Extract session_id / paperclip issue / agent service name from a root span."""
+    meta: dict[str, str | None] = {"session_id": None, "issue": None, "agent": None}
+    if not raw_attributes:
+        return meta
+    try:
+        attrs = json.loads(raw_attributes)
+    except (json.JSONDecodeError, TypeError):
+        return meta
+    if not isinstance(attrs, dict):
+        return meta
+    session = attrs.get("session")
+    if isinstance(session, dict) and session.get("id"):
+        meta["session_id"] = str(session["id"])
+    paperclip = attrs.get("paperclip")
+    if isinstance(paperclip, dict) and paperclip.get("issue"):
+        meta["issue"] = str(paperclip["issue"])
+    service = attrs.get("service")
+    if isinstance(service, dict) and service.get("name"):
+        meta["agent"] = str(service["name"])
+    return meta
 
 
 # ── Membership + primary workflow ─────────────────────────────────────────────
@@ -191,6 +226,159 @@ def _last_tool_summary(envelope: TraceEnvelope, n: int = 3) -> str:
     return ", ".join(tail)
 
 
+# ── Transcript digest (F10 workaround) ────────────────────────────────────────
+# Phoenix spans are skeletons (tool_name + timing + success only — no args or
+# outputs). A human cannot judge verdicts from the Phoenix UI alone, so the
+# spotcheck doc carries a redacted transcript digest per sampled trace.
+
+_TRANSCRIPT_GLOB = "/Users/akarshgajbhiye/.claude/projects/*/{session_id}.jsonl"
+_DIGEST_TOOL_COUNT = 8
+_DIGEST_ARG_CHARS = 110
+_DIGEST_FINAL_TEXT_CHARS = 250
+
+# Applied in order to ALL digest text before it is written (the doc gets
+# committed). Aggressive by design: a false redaction is cheap, a leaked
+# credential is not.
+_REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"(?i)(api[_-]?key|token|secret|password|authorization|bearer)\s*[=:]\s*\S+"), "[REDACTED]"),
+    (re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/-]{8,}=*"), "[REDACTED]"),  # "Bearer <tok>" without separator
+    (re.compile(r"sk-[A-Za-z0-9-]{20,}"), "[REDACTED]"),
+    (re.compile(r"\b[A-Za-z0-9+/]{40,}={0,2}\b"), "[REDACTED]"),
+    (re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"), "[REDACTED]"),
+    (re.compile(r"postgres(ql)?://\S+"), "[REDACTED]"),
+]
+
+
+def _redact(text: str) -> str:
+    """Apply all redaction patterns. Idempotent; safe on already-clean text."""
+    for pattern, replacement in _REDACTION_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def _find_transcript(session_id: str) -> Path | None:
+    """Locate the Claude Code session transcript for a session id, or None."""
+    matches = glob.glob(_TRANSCRIPT_GLOB.format(session_id=glob.escape(session_id)))
+    return Path(matches[0]) if matches else None
+
+
+def _one_line(text: str, limit: int) -> str:
+    """Collapse whitespace/newlines to single spaces and truncate."""
+    flat = " ".join(text.split())
+    return flat[:limit] + "…" if len(flat) > limit else flat
+
+
+def _summarize_tool_input(tool_input: Any) -> str:
+    """One-line arg summary: command > file_path > compact JSON of the input."""
+    if not isinstance(tool_input, dict):
+        return _one_line(str(tool_input), _DIGEST_ARG_CHARS)
+    for key in ("command", "file_path", "skill", "prompt", "pattern", "query"):
+        if tool_input.get(key):
+            return _one_line(str(tool_input[key]), _DIGEST_ARG_CHARS)
+    return _one_line(json.dumps(tool_input, default=str), _DIGEST_ARG_CHARS)
+
+
+def _digest_transcript(path: Path) -> dict[str, Any]:
+    """Parse a session jsonl into digest material.
+
+    Same parse pattern as insight-report-0: each line carries
+    ``message.content[]`` with {type: "tool_use", name, input} items,
+    {type: "tool_result", is_error} items, and assistant {type: "text"} items.
+
+    Returns {"tool_uses": [(name, arg_summary)], "error_count": int,
+             "error_samples": [str], "final_text": str | None}.
+    """
+    tool_uses: list[tuple[str, str]] = []
+    error_count = 0
+    error_samples: list[str] = []
+    final_text: str | None = None
+
+    with path.open(encoding="utf-8", errors="replace") as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            msg = rec.get("message")
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "tool_use":
+                    tool_uses.append((str(item.get("name", "?")), _summarize_tool_input(item.get("input"))))
+                elif item.get("type") == "tool_result" and item.get("is_error"):
+                    error_count += 1
+                    if len(error_samples) < 2:
+                        error_samples.append(_one_line(str(item.get("content", "")), _DIGEST_ARG_CHARS))
+                elif item.get("type") == "text" and rec.get("type") == "assistant":
+                    text = item.get("text", "")
+                    if text.strip():
+                        final_text = text
+
+    return {
+        "tool_uses": tool_uses[-_DIGEST_TOOL_COUNT:],
+        "error_count": error_count,
+        "error_samples": error_samples,
+        "final_text": final_text,
+    }
+
+
+def _digest_block(
+    trace_id: str,
+    meta: dict[str, str | None],
+) -> list[str]:
+    """Render one '### digest-<short12>' block (≤25 lines) for a sampled trace.
+
+    All free text passes through _redact before it lands in the doc.
+    """
+    short = trace_id[:12]
+    lines: list[str] = [f"### digest-{short}", ""]
+
+    issue = meta.get("issue") or "unknown"
+    agent = meta.get("agent") or "unknown"
+    session_id = meta.get("session_id")
+    lines.append(f"**Issue:** {_redact(issue)} · **Agent:** {_redact(agent)}")
+
+    if not session_id:
+        lines.append("")
+        lines.append("_No session.id on the root span — transcript not resolvable._")
+        lines.append("")
+        return lines
+
+    transcript = _find_transcript(session_id)
+    if transcript is None:
+        lines.append(f"**Session:** `{session_id}`")
+        lines.append("")
+        lines.append("_Transcript not found in ~/.claude/projects/._")
+        lines.append("")
+        return lines
+
+    digest = _digest_transcript(transcript)
+    lines.append(f"**Session:** `{session_id}` (session-level digest — trace is one interaction within it)")
+    lines.append("")
+    lines.append(f"Last {len(digest['tool_uses'])} tool calls:")
+    lines.append("")
+    for name, arg in digest["tool_uses"]:
+        lines.append(f"- `{name}`: {_redact(arg)}")
+    lines.append("")
+    if digest["error_count"]:
+        first_err = _redact(digest["error_samples"][0]) if digest["error_samples"] else ""
+        lines.append(f"Tool errors in session: {digest['error_count']}. First: {first_err}")
+        lines.append("")
+    if digest["final_text"]:
+        lines.append(f"Final assistant message: {_redact(_one_line(digest['final_text'], _DIGEST_FINAL_TEXT_CHARS))}")
+    else:
+        lines.append("Final assistant message: _(none found)_")
+    lines.append("")
+    return lines
+
+
 # ── Markdown table ────────────────────────────────────────────────────────────
 
 
@@ -220,7 +408,11 @@ def _md_row(
     fr = failure_reason or ""
     ev = str(evidence_step) if evidence_step is not None else ""
     ss = status_source or ""
-    return f"| [{short_id}]({url}) | {primary_workflow} | {verdict} | {fr} | {ev} | {ss} | {last_tools} |  |"
+    digest_link = f"[↓ digest](#digest-{trace_id[:12]})"
+    return (
+        f"| [{short_id}]({url}) | {primary_workflow} | {verdict} "
+        f"| {fr} | {ev} | {ss} | {last_tools} | {digest_link} |  |"
+    )
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -265,6 +457,7 @@ def main() -> None:
     hours_used = args.hours
     widened = False
     trace_ids: list[str] = []
+    meta_by_trace: dict[str, dict[str, str | None]] = {}
 
     for attempt_hours in [args.hours, args.hours * 2, args.hours * 4]:
         now = datetime.now(tz=UTC)
@@ -275,7 +468,7 @@ def main() -> None:
         print(
             f"Fetching root trace IDs: last {attempt_hours}h ...", file=sys.stderr
         )
-        trace_ids = _fetch_root_trace_ids(args.endpoint, project_id, start_iso, end_iso)
+        trace_ids, meta_by_trace = _fetch_root_trace_ids(args.endpoint, project_id, start_iso, end_iso)
         print(f"  {len(trace_ids)} trace IDs found.", file=sys.stderr)
 
         if len(trace_ids) >= 20:
@@ -445,10 +638,18 @@ def main() -> None:
     lines.append(f"Owner: fill the **AGREE?** column (Y = engine correct, N = engine wrong, ? = unsure).")
     lines.append(f"")
     lines.append(
-        "| Trace | Primary workflow | Verdict | Failure reason | Evidence step | Status source | Last tools | AGREE? |"
+        f"**Judge from the digest** (linked per row, below the table); the Phoenix link is "
+        f"supplementary — spans carry no args/outputs (F10 emitter limitation), so the "
+        f"Phoenix UI alone cannot support a verdict judgment."
+    )
+    lines.append(f"")
+    lines.append(
+        "| Trace | Primary workflow | Verdict | Failure reason | Evidence step "
+        "| Status source | Last tools | Digest | AGREE? |"
     )
     lines.append(
-        "|-------|-----------------|---------|---------------|--------------|--------------|-----------|--------|"
+        "|-------|-----------------|---------|---------------|--------------"
+        "|--------------|-----------|--------|--------|"
     )
 
     for (trace_id, primary, verdict, failure_reason, evidence_step, status_source, last_tools) in all_sampled:
@@ -457,12 +658,38 @@ def main() -> None:
             _md_row(trace_id, url, primary, verdict, failure_reason, evidence_step, status_source, last_tools)
         )
 
+    # ── Transcript digests ────────────────────────────────────────────────────
     lines.append(f"")
+    lines.append(f"## Transcript digests")
+    lines.append(f"")
+    lines.append(
+        f"One block per sampled trace. Source: Claude Code session transcripts "
+        f"(`~/.claude/projects/*/<session_id>.jsonl`), resolved via the root span's "
+        f"`session.id` attribute. All text is redacted before writing."
+    )
+    lines.append(f"")
+
+    transcripts_found = 0
+    transcripts_missing = 0
+    for (trace_id, _primary, _verdict, _fr, _ev, _ss, _lt) in all_sampled:
+        meta = meta_by_trace.get(trace_id, {"session_id": None, "issue": None, "agent": None})
+        block = _digest_block(trace_id, meta)
+        if any("Transcript not found" in ln or "not resolvable" in ln for ln in block):
+            transcripts_missing += 1
+        else:
+            transcripts_found += 1
+        lines.extend(block)
+
     lines.append(f"---")
     lines.append(f"")
     lines.append(f"*Generated by `scripts/export_spotcheck.py`. Re-run to refresh.*")
 
     out_path.write_text("\n".join(lines) + "\n")
+    print(
+        f"Transcript digests: {transcripts_found} found, {transcripts_missing} missing "
+        f"(of {len(all_sampled)} sampled).",
+        file=sys.stderr,
+    )
     print(f"Wrote {len(all_sampled)} rows to {out_path}", file=sys.stderr)
     print(str(out_path))
 
