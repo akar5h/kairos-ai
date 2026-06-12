@@ -97,3 +97,8 @@ markers = [
     "integration: marks tests that hit real external services",
     "real_llm: marks tests that hit a real LLM provider (requires OPENROUTER_API_KEY)",
 ]
+
+[dependency-groups]
+dev = [
+    "streamlit>=1.58.0",
+]

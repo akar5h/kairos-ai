@@ -45,6 +45,10 @@ traces/
 # labels.jsonl and context.yaml are committed; raw trace JSONs are not.
 eval/corpus/taubench/*.json
 
+# Review queue and answers (regenerable / local reviewer data — never commit)
+eval/review/queue.json
+eval/review/answers.jsonl
+
 # Editor / OS
 .idea/
 .vscode/
