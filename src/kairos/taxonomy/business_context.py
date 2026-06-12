@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 
@@ -27,6 +27,7 @@ class BusinessOperation:
     reliability_metric: str | None = None
     bad_run_means: str | None = None
     required_side_effect_tools: list[str] = field(default_factory=list)
+    side_effect_match: Literal["all", "any"] = "all"
     excluded_tools: list[str] = field(default_factory=list)
     correctness_criteria: list[str] = field(default_factory=list)
     membership_recall_threshold: float | None = None
@@ -99,6 +100,13 @@ class BusinessContext:
             if "name" not in op_data:
                 msg = "Each operation must have a 'name' field"
                 raise ValueError(msg)
+            match_mode = op_data.get("side_effect_match", "all")
+            if match_mode not in ("all", "any"):
+                msg = (
+                    f"Operation '{op_data['name']}': side_effect_match must be "
+                    f"'all' or 'any', got {match_mode!r}."
+                )
+                raise ValueError(msg)
             excluded = op_data.get("excluded_tools", [])
             conflict = set(excluded) & set(op_data.get("expected_tools", []))
             if conflict:
@@ -117,6 +125,7 @@ class BusinessContext:
                     reliability_metric=op_data.get("reliability_metric"),
                     bad_run_means=op_data.get("bad_run_means"),
                     required_side_effect_tools=op_data.get("required_side_effect_tools", []),
+                    side_effect_match=match_mode,
                     excluded_tools=op_data.get("excluded_tools", []),
                     correctness_criteria=op_data.get("correctness_criteria", []),
                     membership_recall_threshold=op_data.get("membership_recall_threshold"),

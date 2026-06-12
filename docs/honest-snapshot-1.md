@@ -1,16 +1,16 @@
 # Honest Snapshot 1
 
-**Date:** 2026-06-12 17:29 UTC  **Config SHA:** `a0cfc85b`  **Engine:** `0.1.0`
+**Date:** 2026-06-12 20:18 UTC  **Config SHA:** `83886c35`  **Engine:** `0.1.0`
 
 **Window:** last 168h  **Phoenix:** http://localhost:6006 / project: `default`
 
 | Metric | Value |
 |---|---|
-| traces analyzed | 345 |
-| unmapped | 187 (54.2%) |
-| mean memberships/trace (global) | 0.70 |
+| traces analyzed | 344 |
+| unmapped | 187 (54.4%) |
+| mean memberships/trace (global) | 0.69 |
 
-> Exit bar: mean memberships/trace = 0.70 ≤ 1.5 ✓
+> Exit bar: mean memberships/trace = 0.69 ≤ 1.5 ✓
 
 ## Per-workflow breakdown
 
@@ -18,31 +18,25 @@
 
 | Field | Value |
 |---|---|
-| full | 33 |
-| attempted | 34 |
+| full | 67 |
+| attempted | 0 |
 | total members | 67 |
 | computable | 24 |
-| passed | 10 |
-| outcome_rate | 0.42 |
+| passed | 24 |
+| outcome_rate | 1.00 |
 | human_escalation_rate | 0.00 |
 | deduped finding count | 0 (detection runs in full pipeline) |
 | token waste total | n/a (requires full pipeline) |
-
-**Failure reasons:**
-
-| reason | count |
-|---|---|
-| missing_side_effect | 14 |
 
 ### Codebase Research
 
 | Field | Value |
 |---|---|
-| full | 60 |
+| full | 59 |
 | attempted | 1 |
-| total members | 61 |
-| computable | 30 |
-| passed | 30 |
+| total members | 60 |
+| computable | 29 |
+| passed | 29 |
 | outcome_rate | 1.00 |
 | human_escalation_rate | 0.00 |
 | deduped finding count | 0 (detection runs in full pipeline) |

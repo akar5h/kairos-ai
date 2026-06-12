@@ -129,9 +129,11 @@ def classify_membership(
 
     Tiers:
       FULL      — at least one distinctive tool present, recall >= threshold,
-                  and every distinctive tool succeeded at least once
+                  and the distinctive tools satisfied per ``side_effect_match``:
+                  "all" → every distinctive tool succeeded at least once;
+                  "any" → at least one distinctive tool succeeded
       ATTEMPTED — at least one distinctive tool present, recall >= threshold,
-                  but one or more distinctive tools are missing or failed
+                  but the side_effect_match requirement is not met
       NONE      — op has no distinctive tools declared (utility pattern),
                   no distinctive tool touched, recall below threshold,
                   op has no expected tools, or envelope has no tools
@@ -173,8 +175,11 @@ def classify_membership(
         if step.tool_name in required_tools and step.status == StepStatus.OK and not step.error_message:
             required_success_counts[step.tool_name] += 1
 
-    all_required_succeeded = all(count > 0 for count in required_success_counts.values())
-    if all_required_succeeded:
+    if op.side_effect_match == "any":
+        required_satisfied = any(count > 0 for count in required_success_counts.values())
+    else:
+        required_satisfied = all(count > 0 for count in required_success_counts.values())
+    if required_satisfied:
         return WorkflowMembership(op.name, MembershipKind.FULL, recall)
 
     return WorkflowMembership(op.name, MembershipKind.ATTEMPTED, recall)

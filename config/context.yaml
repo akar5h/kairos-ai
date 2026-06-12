@@ -12,6 +12,10 @@ operations:
     description: "Writing and editing source code to implement features or fix bugs"
     expected_tools: [Read, Edit, Write, Bash, Grep, Glob]
     required_side_effect_tools: [Edit, Write]
+    # any: a real coding session typically uses Edit OR Write, rarely both.
+    # Demanding both failed every Edit-only/Write-only trace (spot-check Day 4,
+    # 7/7 owner-disputed N rows were exactly this).
+    side_effect_match: any
     priority: high
 
   - name: "Codebase Research"

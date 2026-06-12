@@ -203,76 +203,120 @@ def _step_is_output_failed(step: Step) -> bool:
     return _textual_failure(output_str)
 
 
+@dataclass
+class _ToolVerdict:
+    """Per-tool side-effect verdict: one of satisfied / unknown / failed."""
+
+    status: str  # "satisfied" | "unknown" | "failed"
+    failure_reason: FailureReason | None = None
+    evidence: OutcomeEvidence = field(default_factory=OutcomeEvidence)
+
+
+def _evaluate_side_effect_tool(trace: TraceEnvelope, tool_name: str) -> _ToolVerdict:
+    """Evaluate one required side-effect tool against the trace.
+
+    Returns:
+      satisfied — at least one successful call with a clean readable output,
+                  or structured evidence (rungs 1–3) with no readable output
+      unknown   — calls exist but carry no evidence either way (non-computable)
+      failed    — no successful call (MISSING_SIDE_EFFECT), or every readable
+                  output carries a failure marker (SIDE_EFFECT_OUTPUT_FAILED —
+                  text contradicts structured OK; surface it)
+    """
+    successful_calls = [step for step in trace.steps if _is_successful_tool_step(step, tool_name)]
+    if not successful_calls:
+        # Any attempted calls? A call with missing status is non-computable.
+        attempts = [step for step in trace.steps if step.tool_name == tool_name]
+        if attempts and all(step.tool_output is None and step.status == StepStatus.OK for step in attempts):
+            return _ToolVerdict("unknown")
+        evidence = OutcomeEvidence(
+            step_index=attempts[0].step_index if attempts else None,
+            rung=None,
+        )
+        return _ToolVerdict("failed", FailureReason.MISSING_SIDE_EFFECT, evidence)
+
+    # Structured evidence (rungs 1–3): a successful call whose status_source is
+    # ATTR_SUCCESS / OTEL_STATUS / KAIROS_OUTCOME / ADAPTER already carries a
+    # verified OK verdict — readable output is NOT required to confirm it.
+    # Live claude_code spans carry no tool_output; without this, pass is
+    # structurally impossible on live data (healthy traces → non-computable).
+    has_structured_ok = any(call.status_source in _STRUCTURED_STATUS_SOURCES for call in successful_calls)
+
+    # Multi-call any-of over readable outputs: the side-effect passes if at
+    # least one successful call has a clean tool_output. Readable outputs can
+    # DOWNGRADE structured evidence: if outputs exist and every readable output
+    # carries a failure marker, fail with side_effect_output_failed.
+    any_clean = False
+    any_readable = False
+    failing_step: Step | None = None
+    for call in successful_calls:
+        if call.tool_output is None:
+            continue
+        any_readable = True
+        if not _step_is_output_failed(call):
+            any_clean = True
+            break
+        elif failing_step is None:
+            failing_step = call
+
+    if any_clean:
+        return _ToolVerdict("satisfied")
+    if any_readable:
+        evidence = OutcomeEvidence(
+            step_index=failing_step.step_index if failing_step is not None else None,
+            rung=4,
+        )
+        return _ToolVerdict("failed", FailureReason.SIDE_EFFECT_OUTPUT_FAILED, evidence)
+    # No readable outputs at all:
+    if has_structured_ok:
+        return _ToolVerdict("satisfied")
+    # Successful calls exist but status_source is NONE everywhere and no output
+    # is readable — genuinely no evidence either way → non-computable.
+    return _ToolVerdict("unknown")
+
+
 def _side_effect_result(
     trace: TraceEnvelope,
     side_effect_tools: list[str],
+    match: str = "all",
 ) -> tuple[bool, bool, str | None, FailureReason | None, OutcomeEvidence]:
     """Evaluate the final required side-effect condition.
+
+    ``match`` semantics:
+      "all" — every required tool must be satisfied; first non-satisfied tool
+              (in declaration order) decides the verdict.
+      "any" — pass if at least one tool is satisfied; non-computable if none
+              is satisfied but at least one tool's evidence is unknown; else
+              fail (SIDE_EFFECT_OUTPUT_FAILED when a succeeded-but-text-
+              contradicted tool exists, else MISSING_SIDE_EFFECT).
 
     Returns ``(passed, computable, reason, failure_reason, evidence)``.
     """
     if not side_effect_tools:
         return True, True, None, None, OutcomeEvidence()
 
-    for tool_name in side_effect_tools:
-        successful_calls = [step for step in trace.steps if _is_successful_tool_step(step, tool_name)]
-        if not successful_calls:
-            # Any attempted calls? A call with missing status is non-computable.
-            attempts = [step for step in trace.steps if step.tool_name == tool_name]
-            if attempts and all(step.tool_output is None and step.status == StepStatus.OK for step in attempts):
-                return False, False, "side effect computability unknown", None, OutcomeEvidence()
-            evidence = OutcomeEvidence(
-                step_index=attempts[0].step_index if attempts else None,
-                rung=None,
-            )
-            return False, True, "missing_side_effect", FailureReason.MISSING_SIDE_EFFECT, evidence
+    verdicts = [_evaluate_side_effect_tool(trace, tool_name) for tool_name in side_effect_tools]
 
-        # Structured evidence (rungs 1–3): a successful call whose status_source is
-        # ATTR_SUCCESS / OTEL_STATUS / KAIROS_OUTCOME / ADAPTER already carries a
-        # verified OK verdict — readable output is NOT required to confirm it.
-        # Live claude_code spans carry no tool_output; without this, pass is
-        # structurally impossible on live data (healthy traces → non-computable).
-        has_structured_ok = any(call.status_source in _STRUCTURED_STATUS_SOURCES for call in successful_calls)
+    if match == "any":
+        if any(v.status == "satisfied" for v in verdicts):
+            return True, True, None, None, OutcomeEvidence()
+        if any(v.status == "unknown" for v in verdicts):
+            return False, False, "side effect computability unknown", None, OutcomeEvidence()
+        # All failed: a text-contradicted success is stronger evidence than
+        # plain absence — surface it preferentially.
+        output_failed = next(
+            (v for v in verdicts if v.failure_reason == FailureReason.SIDE_EFFECT_OUTPUT_FAILED),
+            None,
+        )
+        worst = output_failed or verdicts[0]
+        return False, True, "missing_side_effect", worst.failure_reason, worst.evidence
 
-        # Multi-call any-of over readable outputs: the side-effect passes if at
-        # least one successful call has a clean tool_output. Readable outputs can
-        # DOWNGRADE structured evidence: if outputs exist and every readable output
-        # carries a failure marker, fail with side_effect_output_failed.
-        any_clean = False
-        any_readable = False
-        failing_step: Step | None = None
-        for call in successful_calls:
-            if call.tool_output is None:
-                continue
-            any_readable = True
-            if not _step_is_output_failed(call):
-                any_clean = True
-                break
-            elif failing_step is None:
-                failing_step = call
-
-        if any_clean:
-            continue  # at least one clean readable output → satisfied
-        if any_readable:
-            # Outputs exist and ALL readable outputs failed → downgrade, even
-            # when structured evidence said OK (text contradicts; surface it).
-            evidence = OutcomeEvidence(
-                step_index=failing_step.step_index if failing_step is not None else None,
-                rung=4,
-            )
-            return (
-                False,
-                True,
-                "missing_side_effect",
-                FailureReason.SIDE_EFFECT_OUTPUT_FAILED,
-                evidence,
-            )
-        # No readable outputs at all:
-        if has_structured_ok:
-            continue  # structured OK (rungs 1–3) is sufficient evidence → satisfied
-        # Successful calls exist but status_source is NONE everywhere and no output
-        # is readable — genuinely no evidence either way → non-computable.
-        return False, False, "side effect computability unknown", None, OutcomeEvidence()
+    # "all" mode: first non-satisfied tool in declaration order decides.
+    for verdict in verdicts:
+        if verdict.status == "unknown":
+            return False, False, "side effect computability unknown", None, OutcomeEvidence()
+        if verdict.status == "failed":
+            return False, True, "missing_side_effect", verdict.failure_reason, verdict.evidence
 
     return True, True, None, None, OutcomeEvidence()
 
@@ -349,7 +393,10 @@ def evaluate_outcome(trace: TraceEnvelope, operation: BusinessOperation) -> Outc
     # is the broader context signal (used for recall-based membership); the outcome
     # check only requires that every declared distinctive tool actually succeeded.
     # Optional/utility tools like memory persistence don't gate outcome here.
-    if operation.required_side_effect_tools:
+    # Skipped under side_effect_match == "any": demanding full coverage would fail
+    # e.g. Edit-only traces before condition 4 ever runs; condition 4 handles the
+    # none-succeeded case with better evidence (per-tool verdicts).
+    if operation.required_side_effect_tools and operation.side_effect_match != "any":
         coverage = _required_tool_coverage(trace, operation.required_side_effect_tools)
         if coverage < 1.0:
             return OutcomeResult(
@@ -362,7 +409,7 @@ def evaluate_outcome(trace: TraceEnvelope, operation: BusinessOperation) -> Outc
 
     # Condition 4: final required side-effect
     side_passed, side_computable, side_reason, side_failure_reason, side_evidence = _side_effect_result(
-        trace, operation.required_side_effect_tools
+        trace, operation.required_side_effect_tools, operation.side_effect_match
     )
     if not side_computable:
         return OutcomeResult(
