@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 import urllib.error
 import urllib.request
@@ -43,6 +42,17 @@ from kairos.models.enums import StepStatus, StepType  # noqa: E402
 from kairos.readers.phoenix import PhoenixReader  # noqa: E402
 from kairos.taxonomy.business_context import BusinessContext  # noqa: E402
 
+# Transcript aligner (same directory) — also the single source of redaction.
+sys.path.insert(0, str(_HERE))
+from transcript_align import (  # noqa: E402
+    NO_MATCH,
+    TranscriptCall,
+    align_trace_to_transcript,
+    call_args_digest,
+    call_output_digest,
+    redact,
+)
+
 if TYPE_CHECKING:
     from kairos.models.trace import Step, TraceEnvelope
 
@@ -58,26 +68,6 @@ _COLLAPSE_RUN_MIN = 4
 # Digest length limits
 _ARGS_DIGEST_CHARS = 160
 _OUTPUT_DIGEST_CHARS = 240
-
-# Transcript glob (same as export_spotcheck.py)
-_TRANSCRIPT_GLOB = "/Users/akarshgajbhiye/.claude/projects/*/{session_id}.jsonl"
-
-# Redaction patterns (identical to export_spotcheck.py)
-_REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"(?i)(api[_-]?key|token|secret|password|authorization|bearer)\s*[=:]\s*\S+"), "[REDACTED]"),
-    (re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/-]{8,}=*"), "[REDACTED]"),
-    (re.compile(r"sk-[A-Za-z0-9-]{20,}"), "[REDACTED]"),
-    (re.compile(r"\b[A-Za-z0-9+/]{40,}={0,2}\b"), "[REDACTED]"),
-    (re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"), "[REDACTED]"),
-    (re.compile(r"postgres(ql)?://\S+"), "[REDACTED]"),
-]
-
-
-def redact(text: str) -> str:
-    """Apply all redaction patterns. Idempotent; safe on already-clean text."""
-    for pattern, replacement in _REDACTION_PATTERNS:
-        text = pattern.sub(replacement, text)
-    return text
 
 
 def _one_line(text: str, limit: int) -> str:
@@ -260,7 +250,7 @@ def _membership_kind_str(envelope: TraceEnvelope, context: BusinessContext) -> s
 
 
 def _summarize_args(step: Step) -> str:
-    """Build a redacted ≤160ch one-line summary of tool args."""
+    """Redacted ≤160ch summary of span-carried tool args (usually empty — F10)."""
     if step.step_type != StepType.TOOL_CALL:
         if step.llm_input:
             return redact(_one_line(step.llm_input, _ARGS_DIGEST_CHARS))
@@ -275,7 +265,7 @@ def _summarize_args(step: Step) -> str:
 
 
 def _summarize_output(step: Step) -> str:
-    """Build a redacted ≤240ch one-line summary of tool output."""
+    """Redacted ≤240ch summary of span-carried tool output (usually empty — F10)."""
     raw: str | None = None
     if step.step_type == StepType.TOOL_CALL:
         raw = step.tool_output
@@ -284,6 +274,29 @@ def _summarize_output(step: Step) -> str:
     if not raw:
         return ""
     return redact(_one_line(str(raw), _OUTPUT_DIGEST_CHARS))
+
+
+def _step_args_digest(step: Step, transcript_map: dict[int, TranscriptCall | None]) -> str:
+    """args_digest for a step: transcript call first, span attrs second, NO_MATCH last.
+
+    Tool steps without a transcript match get the explicit ``(no transcript
+    match)`` marker — never a guess across tool names.
+    """
+    if step.step_type == StepType.TOOL_CALL:
+        call = transcript_map.get(step.step_index)
+        if call is not None:
+            return call_args_digest(call, _ARGS_DIGEST_CHARS)
+        return _summarize_args(step) or NO_MATCH
+    return _summarize_args(step)
+
+
+def _step_output_digest(step: Step, transcript_map: dict[int, TranscriptCall | None]) -> str:
+    """output_digest for a step: transcript tool_result first, span output second."""
+    if step.step_type == StepType.TOOL_CALL:
+        call = transcript_map.get(step.step_index)
+        if call is not None:
+            return call_output_digest(call, _OUTPUT_DIGEST_CHARS)
+    return _summarize_output(step)
 
 
 def _tool_label(step: Step) -> str:
@@ -301,57 +314,83 @@ def _tool_label(step: Step) -> str:
 
 
 def build_step_list(
-    steps: list[Step], evidence_step_index: int | None
+    steps: list[Step],
+    evidence_step_index: int | None,
+    transcript_map: dict[int, TranscriptCall | None] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Build the step list and collapsed_runs list from a TraceEnvelope's steps.
+
+    ``transcript_map`` (step_index → TranscriptCall | None) supplies the real
+    args/outputs from the session transcript; Phoenix spans carry none (F10).
+    Tool steps with no transcript match get args_digest = "(no transcript match)".
+
+    Run detection treats LLM steps as TRANSPARENT: live claude_code traces
+    interleave an llm_request span between every tool call, so a strictly
+    consecutive rule would never fire on real data (the owner's 47× Bash case).
+    An LLM step between two same-tool collapsible steps joins the run; count
+    counts tool steps only.
 
     Returns (step_entries, collapsed_runs).
 
     step_entries: one dict per step with keys:
         index, tool, status, status_source, args_digest, output_digest, is_evidence, collapsed
 
-    collapsed_runs: entries for consecutive same-tool runs >= _COLLAPSE_RUN_MIN:
+    collapsed_runs: entries for same-tool runs >= _COLLAPSE_RUN_MIN:
         {tool, count, first_index, last_index, first_args_digest, last_args_digest}
     """
+    if transcript_map is None:
+        transcript_map = {}
     collapsed_indices: set[int] = set()
     collapsed_runs: list[dict[str, Any]] = []
+
+    def _collapsible(s: Step, tool: str) -> bool:
+        return (
+            s.step_type == StepType.TOOL_CALL
+            and s.status == StepStatus.OK
+            and s.step_index != evidence_step_index
+            and _tool_label(s) == tool
+        )
 
     i = 0
     while i < len(steps):
         step = steps[i]
         tool = _tool_label(step)
-        # Only collapse tool calls (not LLM), not error steps, not evidence step
-        if (
-            step.step_type == StepType.TOOL_CALL
-            and step.status == StepStatus.OK
-            and step.step_index != evidence_step_index
-        ):
+        if _collapsible(step, tool):
+            run_positions = [i]  # positions of tool steps in the run
             j = i + 1
-            while (
-                j < len(steps)
-                and _tool_label(steps[j]) == tool
-                and steps[j].step_type == StepType.TOOL_CALL
-                and steps[j].status == StepStatus.OK
-                and steps[j].step_index != evidence_step_index
-            ):
-                j += 1
-            run_len = j - i
-            if run_len >= _COLLAPSE_RUN_MIN:
-                first_step = steps[i]
-                last_step = steps[j - 1]
+            while j < len(steps):
+                if _collapsible(steps[j], tool):
+                    run_positions.append(j)
+                    j += 1
+                    continue
+                if steps[j].step_type == StepType.LLM:
+                    # LLM steps are transparent IF a same-tool collapsible
+                    # step follows the LLM block; otherwise the run ends here.
+                    k = j + 1
+                    while k < len(steps) and steps[k].step_type == StepType.LLM:
+                        k += 1
+                    if k < len(steps) and _collapsible(steps[k], tool):
+                        j = k
+                        continue
+                break
+            if len(run_positions) >= _COLLAPSE_RUN_MIN:
+                first_step = steps[run_positions[0]]
+                last_step = steps[run_positions[-1]]
                 collapsed_runs.append(
                     {
                         "tool": tool,
-                        "count": run_len,
+                        "count": len(run_positions),
                         "first_index": first_step.step_index,
                         "last_index": last_step.step_index,
-                        "first_args_digest": _summarize_args(first_step),
-                        "last_args_digest": _summarize_args(last_step),
+                        "first_args_digest": _step_args_digest(first_step, transcript_map),
+                        "last_args_digest": _step_args_digest(last_step, transcript_map),
                     }
                 )
-                for k in range(i, j):
+                # Collapse everything from first to last tool step, including
+                # interleaved LLM steps (skeleton spans, no content to show).
+                for k in range(run_positions[0], run_positions[-1] + 1):
                     collapsed_indices.add(steps[k].step_index)
-                i = j
+                i = run_positions[-1] + 1
                 continue
         i += 1
 
@@ -364,8 +403,8 @@ def build_step_list(
                 "tool": _tool_label(step),
                 "status": step.status.value,
                 "status_source": step.status_source.value,
-                "args_digest": _summarize_args(step),
-                "output_digest": _summarize_output(step),
+                "args_digest": _step_args_digest(step, transcript_map),
+                "output_digest": _step_output_digest(step, transcript_map),
                 "is_evidence": is_evidence,
                 "collapsed": step.step_index in collapsed_indices,
             }
@@ -417,6 +456,35 @@ def _aggregate_tokens(envelope: TraceEnvelope) -> dict[str, int]:
     }
 
 
+# ── Session id + trace window helpers ─────────────────────────────────────────
+
+
+def _session_id_from_steps(envelope: TraceEnvelope) -> str | None:
+    """Extract ``session.id`` from tool-span attrs (it lives on tool spans, not roots)."""
+    for step in envelope.steps:
+        if step.attrs and step.attrs.get("session.id"):
+            return str(step.attrs["session.id"])
+    return None
+
+
+def _trace_window(envelope: TraceEnvelope) -> tuple[datetime | None, datetime | None]:
+    """Trace start/end from the envelope, falling back to step timestamps."""
+    start = envelope.started_at
+    end = envelope.ended_at
+    if start is None or end is None:
+        starts: list[datetime] = [s.started_at for s in envelope.steps if s.started_at is not None]
+        ends: list[datetime] = []
+        for s in envelope.steps:
+            candidate = s.ended_at or s.started_at
+            if candidate is not None:
+                ends.append(candidate)
+        if start is None and starts:
+            start = min(starts)
+        if end is None and ends:
+            end = max(ends)
+    return start, end
+
+
 # ── Main queue-entry builder ──────────────────────────────────────────────────
 
 
@@ -438,7 +506,14 @@ def build_entry(
     failure_reason = result.failure_reason.value if result.failure_reason else None
     evidence_step_index = result.evidence.step_index if result.evidence else None
 
-    step_entries, collapsed_runs = build_step_list(envelope.steps, evidence_step_index)
+    # Per-step transcript alignment: real args/outputs come from the session
+    # JSONL (Phoenix spans carry none — F10). Ordinal per-tool-name matching
+    # inside the trace's ±60s time window.
+    session_id = _session_id_from_steps(envelope) or meta.get("session_id")
+    start, end = _trace_window(envelope)
+    transcript_map = align_trace_to_transcript(envelope.steps, session_id, start, end)
+
+    step_entries, collapsed_runs = build_step_list(envelope.steps, evidence_step_index, transcript_map)
 
     phoenix_url = f"{endpoint.rstrip('/')}/projects/{project_node_id}/traces/{trace_id}"
 

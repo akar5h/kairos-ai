@@ -106,6 +106,45 @@ class TestCollapsedRuns:
         tools = {cr["tool"] for cr in collapsed_runs}
         assert tools == {"Bash", "Read"}
 
+    def test_llm_steps_transparent_in_run(self) -> None:
+        """Live claude_code traces interleave LLM steps between tool calls —
+        Bash/LLM/Bash/LLM/... must still collapse as one Bash run."""
+        steps = []
+        for i in range(8):
+            if i % 2 == 0:
+                steps.append(_make_step(i, "Bash"))
+            else:
+                steps.append(_make_step(i, "x", step_type="llm"))
+        step_entries, collapsed_runs = bq.build_step_list(steps, evidence_step_index=None)
+        assert len(collapsed_runs) == 1
+        assert collapsed_runs[0]["tool"] == "Bash"
+        assert collapsed_runs[0]["count"] == 4  # tool steps only, LLM not counted
+        assert collapsed_runs[0]["first_index"] == 0
+        assert collapsed_runs[0]["last_index"] == 6
+        # Interleaved LLM steps inside the run are collapsed too
+        inner_llm = [s for s in step_entries if s["index"] in (1, 3, 5)]
+        assert all(s["collapsed"] for s in inner_llm)
+
+    def test_trailing_llm_step_not_swallowed(self) -> None:
+        """An LLM step after the last tool call of a run stays visible."""
+        steps = [_make_step(i, "Bash") for i in range(4)]
+        steps.append(_make_step(4, "x", step_type="llm"))
+        step_entries, collapsed_runs = bq.build_step_list(steps, evidence_step_index=None)
+        assert len(collapsed_runs) == 1
+        assert collapsed_runs[0]["last_index"] == 3
+        trailing = next(s for s in step_entries if s["index"] == 4)
+        assert not trailing["collapsed"]
+
+    def test_llm_transparency_does_not_bridge_different_tools(self) -> None:
+        """Bash LLM Read LLM Bash LLM Read must not collapse across tool names."""
+        spec: list[str | None] = ["Bash", None, "Read", None, "Bash", None, "Read", None]
+        steps = [
+            _make_step(i, t, step_type="tool_call") if t else _make_step(i, "x", step_type="llm")
+            for i, t in enumerate(spec)
+        ]
+        _, collapsed_runs = bq.build_step_list(steps, evidence_step_index=None)
+        assert collapsed_runs == []
+
 
 # ── question generation ───────────────────────────────────────────────────────
 
