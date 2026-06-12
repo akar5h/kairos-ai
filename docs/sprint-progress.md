@@ -6,7 +6,11 @@
 
 ## Where we are
 
-**Phase 1 (Truth, Days 1–5): code-complete.** Exit gate (owner 20-trace spot-check) ran once, failed honestly at 11Y/7N/2?, root cause found and fix dispatched (in flight, see below). Expect gate to clear on re-tally without another owner review round.
+**Phase 1 (Truth, Days 1–5): CLOSED 2026-06-13, owner decision (a).** Exit gate ran once (11Y/7N/2?), root cause = all-of side-effect bug, fixed (`30090a9`), rerun flipped all 7 disputed rows. 5 owner-confirmed fails also flipped (loop/bad-recovery class — outcome formula measures contract completion, not session quality). Owner accepted option (a): those 5 are tier-2 detector targets (Days 8–14), outcome metric scoped to contract completion. Code Implementation outcome_rate now 1.00 — discrimination for coding sessions must come from tier-2 mechanisms; recorded as known property, not a bug.
+
+**Phase 2 (Trust, Days 6–7): IN PROGRESS.**
+- **Day 6 DONE** (`5f2b7a9`, `c226576`, `b65f8f7`): 161/162 tau-bench pairs, 0% abstention. κ=0.1692 — gate (0.7) failed STRUCTURALLY, not buggy: 67 FPs = wrong-args successes (tool OK, kwargs wrong — invisible to contract completion), 7 FNs = read-only tasks (write-never-performed vs read-only-done-right observationally equivalent at deterministic layer). Inquiry-op fix measured and REJECTED (would zero the FAIL detector: κ→0.0, 29 collateral flips); tuning log in eval/reports/taubench-agreement.md §Rework. Surviving deterministic claim: **FAIL verdicts 0.806 precision / 0.302 recall** — "Kairos FAIL = trustworthy alarm; Kairos PASS = contract done, semantics unverified." Semantic gap formally routed to tier-2 judge (Days 8–14) — now backed by TWO independent ground truths (owner spot-check Y-rows + tau rewards) converging on the same completion≠correctness boundary.
+- **Day 7 next:** owner labeling via NEW review app (Streamlit, one-trace-per-screen QA flow, executor building — eval/review/). Then redundancy redefinition per spec (needs transcript-sourced args).
 
 **Operating model:** Sonnet executor agents implement from spec sections; Fable (this thread) reviews every diff, runs live verification, dispatches fixes. Five review catches so far — all measurement-layer bugs that would have poisoned the loop's reward signal:
 1. F10 loop guard per-trace instead of per-run (fixed `f9edfee`)
