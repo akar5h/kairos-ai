@@ -21,7 +21,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
-from kairos.models.enums import OutputType, StepStatus, TerminalStatus
+from kairos.models.enums import OutputType, StepStatus, StepStatusSource, TerminalStatus
 
 
 class _Envelope(BaseModel):
@@ -106,6 +106,7 @@ class LLMCall(_Envelope):
     started_at: datetime
     ended_at: datetime
     status: StepStatus = StepStatus.OK
+    status_source: StepStatusSource = StepStatusSource.NONE
     error_message: str | None = None
 
 
@@ -117,9 +118,12 @@ class ToolCall(_Envelope):
     args: dict[str, Any] = Field(default_factory=dict)
     output: str | dict[str, Any] | None = None
     status: StepStatus = StepStatus.OK
+    status_source: StepStatusSource = StepStatusSource.NONE
     error_message: str | None = None
     started_at: datetime
     ended_at: datetime
+    attrs: dict[str, Any] | None = None
+    """Raw OTel span attributes — present only on the live OTel path."""
 
 
 class Retrieval(_Envelope):

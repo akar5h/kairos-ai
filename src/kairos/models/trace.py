@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from kairos.models.enums import (  # noqa: TCH001
     OutputType,
     StepStatus,
+    StepStatusSource,
     StepType,
     TerminalStatus,
 )
@@ -62,7 +63,21 @@ class Step(BaseModel):
 
     # Status
     status: StepStatus = StepStatus.OK
+    status_source: StepStatusSource = StepStatusSource.NONE
+    """Which rung of the evidence ladder set the step status.
+
+    "attr_success"  — claude_code.tool.execution ``success`` attribute
+    "otel_status"   — OTel span StatusCode (ERROR/OK)
+    "adapter"       — per-agent adapter extractor (step_outcome hook)
+    "textual"       — rung 4 word-boundary marker scan (last resort)
+    "none"          — no signal; status defaulted to OK
+    """
     error_message: str | None = None
+
+    # Raw span attributes — preserved for the adapter extractor hook (step_outcome).
+    # Only populated on the live OTel path (genai_mapping.py); None on transcript
+    # adapters where attributes come through structured fields instead.
+    attrs: dict[str, Any] | None = None
 
     # Hierarchy
     parent_step_index: int | None = None

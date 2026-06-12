@@ -34,6 +34,10 @@ from typing import TYPE_CHECKING, Any
 
 from kairos.models.enums import OutputType, StepStatus, TerminalStatus
 from kairos.normalization.agents.base import AgentTranscriptNormalizer, parse_ts
+
+if TYPE_CHECKING:
+    from kairos.models.trace import Step
+
 from kairos.normalization.events import (
     AnyEvent,
     LLMCall,
@@ -47,6 +51,15 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
 _PROVIDER = "anthropic"
+
+# Harness error prefixes anchored at character 0 of tool_output.
+# These are the strings Claude Code's harness injects at the very start of a
+# tool result when the invocation itself fails (not the tool's own error output).
+_HARNESS_ERROR_PREFIXES: tuple[str, ...] = (
+    "Error:",
+    "InputValidationError",
+    "PermissionError:",
+)
 
 
 def _blocks(message: Mapping[str, Any]) -> list[Any]:
@@ -100,6 +113,34 @@ class ClaudeCodeNormalizer(AgentTranscriptNormalizer):
     """Normalize a Claude Code ``*.jsonl`` session transcript."""
 
     source = "claude_code"
+
+    def step_outcome(self, step: Step) -> StepStatus | None:
+        """Rung 3 adapter extractor for Claude Code steps.
+
+        Checks, in order:
+          1. ``exit_code`` attribute on Bash tool steps — 0 → OK, non-zero → ERROR.
+             NOTE: live claude_code.tool spans do NOT carry ``exit_code`` in the
+             current emitter version (2026-06-12); this check is wired for
+             forward-compatibility and will silently skip when the attribute is absent.
+          2. Harness error prefixes anchored at char 0 of tool_output.
+             These indicate the harness itself failed to invoke the tool.
+
+        Returns None when neither signal is present (no opinion).
+        """
+        # Check exit_code from raw span attrs (Bash tool, forward-compat).
+        raw_attrs = step.attrs or {}
+        exit_code_raw = raw_attrs.get("exit_code")
+        if exit_code_raw is not None:
+            try:
+                return StepStatus.OK if int(exit_code_raw) == 0 else StepStatus.ERROR
+            except (TypeError, ValueError):
+                pass
+
+        # Harness error prefixes at char 0 of tool_output.
+        if step.tool_output and step.tool_output.startswith(_HARNESS_ERROR_PREFIXES):
+            return StepStatus.ERROR
+
+        return None
 
     def to_events(self, records: Sequence[Mapping[str, Any]]) -> list[AnyEvent]:
         # Pair tool_use_id → its tool_result (content / error / timestamp).

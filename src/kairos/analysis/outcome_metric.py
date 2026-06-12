@@ -3,15 +3,25 @@
 Evaluates a single trace against a BusinessOperation using a 4-condition
 pass/fail formula, and aggregates results across a population into a
 WorkflowOutcomeSummary.
+
+Evidence ladder (per-step, ordered and short-circuiting):
+  Rung 1  kairos.outcome attr — explicit override (set in genai_mapping / StepStatusSource.KAIROS_OUTCOME)
+  Rung 2  OTel / success attr — primary structured signal (StepStatusSource.ATTR_SUCCESS / OTEL_STATUS)
+  Rung 3  adapter extractor   — per-agent hook (StepStatusSource.ADAPTER)
+  Rung 4  textual last resort — word-boundary regex on last 500 chars ONLY when status_source==NONE
+
+Rung 4 NEVER overrides rungs 1–3. A step with status_source != NONE is taken
+as-is and textual scanning is skipped entirely.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from kairos.log import get_logger
-from kairos.models.enums import StepStatus, TerminalStatus
+from kairos.models.enums import FailureReason, StepStatus, StepStatusSource, TerminalStatus
 
 if TYPE_CHECKING:
     from kairos.models.trace import Step, TraceEnvelope
@@ -25,16 +35,50 @@ _TERMINAL_FAILURE_STATUSES: frozenset[TerminalStatus] = frozenset(
     {TerminalStatus.ERROR, TerminalStatus.TIMEOUT},
 )
 
-# Failure markers in tool_output that imply the side-effect call actually failed.
-_SIDE_EFFECT_FAILURE_MARKERS: tuple[str, ...] = (
-    "failure",
-    "failed",
-    "error",
-    "exception",
-    "denied",
-    "not submitted",
-    "validation failed",
+# ─── Rung 4: textual last-resort markers ─────────────────────────────────────
+# Applied ONLY to the last 500 chars of tool_output when status_source == NONE.
+# Word-boundary anchored so "error" in "no errors found" is masked by _NEGATED_RE.
+
+_MARKER_RE: re.Pattern[str] = re.compile(
+    r"\b(failed|failure|error|exception|denied|validation failed|not submitted)\b",
+    re.IGNORECASE,
 )
+
+# Negation phrases: "no errors", "0 errors", "zero failures", "without error", etc.
+# These are deleted from the tail string BEFORE _MARKER_RE runs.
+_NEGATED_RE: re.Pattern[str] = re.compile(
+    r"\b(no|0|zero|without)\s+(errors?|failures?)\b",
+    re.IGNORECASE,
+)
+
+_TEXTUAL_TAIL_CHARS: int = 500
+
+
+def _textual_failure(output: str) -> bool:
+    """Return True when the last 500 chars of *output* contain an unmasked failure marker.
+
+    Algorithm (spec-normative):
+      1. Take the last 500 chars.
+      2. Delete all negation phrases (e.g. "no errors") so they can't be false-positives.
+      3. Run _MARKER_RE on the result.
+
+    This is rung 4 — ONLY consulted when status_source == NONE.
+    Binary/non-UTF8 inputs: caller is responsible for passing a str; non-UTF8
+    decoding failures in the pipeline should skip rung 4 entirely (no textual opinion).
+    """
+    tail = output[-_TEXTUAL_TAIL_CHARS:]
+    # Mask negated phrases by replacing with spaces of equal length (preserves other word positions).
+    masked = _NEGATED_RE.sub(lambda m: " " * len(m.group()), tail)
+    return bool(_MARKER_RE.search(masked))
+
+
+@dataclass
+class OutcomeEvidence:
+    """Pointer to the specific step that caused a failure."""
+
+    step_index: int | None = None
+    rung: int | None = None
+    """Which evidence-ladder rung produced the verdict (1–4)."""
 
 
 @dataclass
@@ -45,6 +89,10 @@ class OutcomeResult:
     outcome_pass: bool
     computable: bool
     reason: str | None
+    failure_reason: FailureReason | None = None
+    """Structured failure category — set when outcome_pass is False and computable is True."""
+    evidence: OutcomeEvidence = field(default_factory=OutcomeEvidence)
+    """Pointer to the step/rung that produced the verdict."""
 
 
 @dataclass
@@ -57,6 +105,13 @@ class WorkflowOutcomeSummary:
     passed_count: int
     outcome_rate: float | None
     pending_reason: str | None
+    human_escalation_rate: float | None = None
+    """Fraction of computable traces that ended in HUMAN_ESCALATION.
+
+    HUMAN_ESCALATION is pass-eligible — escalating correctly is a success mode.
+    This metric tracks the autonomy dial: high rate = agent escalates frequently.
+    None when computable_count == 0.
+    """
 
 
 def _is_successful_tool_step(step: Step, tool_name: str) -> bool:
@@ -105,6 +160,7 @@ def _has_critical_tool_error(
             continue
 
         # Recovery = any successful call of the same tool anywhere in the trace.
+        # PERF: O(n²) worst case on pathological traces — acceptable at current scale.
         recovered = any(j != i and _is_successful_tool_step(other, step.tool_name) for j, other in enumerate(steps))
         if not recovered:
             return True
@@ -112,16 +168,33 @@ def _has_critical_tool_error(
     return False
 
 
+def _step_is_output_failed(step: Step) -> bool:
+    """Return True when rung 4 (textual) signals failure on *step*.
+
+    Only consulted when status_source == NONE (no structured signal available).
+    """
+    if step.status_source != StepStatusSource.NONE:
+        return False
+    if step.tool_output is None:
+        return False
+    # Skip binary / non-decodable output — no textual opinion.
+    try:
+        output_str = step.tool_output if isinstance(step.tool_output, str) else str(step.tool_output)
+    except Exception:  # noqa: BLE001
+        return False
+    return _textual_failure(output_str)
+
+
 def _side_effect_result(
     trace: TraceEnvelope,
     side_effect_tools: list[str],
-) -> tuple[bool, bool, str | None]:
+) -> tuple[bool, bool, str | None, FailureReason | None, OutcomeEvidence]:
     """Evaluate the final required side-effect condition.
 
-    Returns ``(passed, computable, reason)``.
+    Returns ``(passed, computable, reason, failure_reason, evidence)``.
     """
     if not side_effect_tools:
-        return True, True, None
+        return True, True, None, None, OutcomeEvidence()
 
     for tool_name in side_effect_tools:
         successful_calls = [step for step in trace.steps if _is_successful_tool_step(step, tool_name)]
@@ -129,29 +202,45 @@ def _side_effect_result(
             # Any attempted calls? A call with missing status is non-computable.
             attempts = [step for step in trace.steps if step.tool_name == tool_name]
             if attempts and all(step.tool_output is None and step.status == StepStatus.OK for step in attempts):
-                return False, False, "side effect computability unknown"
-            return False, True, "missing_side_effect"
+                return False, False, "side effect computability unknown", None, OutcomeEvidence()
+            evidence = OutcomeEvidence(
+                step_index=attempts[0].step_index if attempts else None,
+                rung=None,
+            )
+            return False, True, "missing_side_effect", FailureReason.MISSING_SIDE_EFFECT, evidence
 
         # Multi-call any-of: the side-effect passes if at least one successful call
         # has a clean tool_output. It only fails when every successful call either
         # has a failure marker or an unreadable output.
         any_clean = False
         any_readable = False
+        failing_step: Step | None = None
         for call in successful_calls:
             if call.tool_output is None:
                 continue
             any_readable = True
-            output_lower = call.tool_output.lower()
-            if not any(marker in output_lower for marker in _SIDE_EFFECT_FAILURE_MARKERS):
+            if not _step_is_output_failed(call):
                 any_clean = True
                 break
+            elif failing_step is None:
+                failing_step = call
 
         if not any_readable:
-            return False, False, "side effect computability unknown"
+            return False, False, "side effect computability unknown", None, OutcomeEvidence()
         if not any_clean:
-            return False, True, "missing_side_effect"
+            evidence = OutcomeEvidence(
+                step_index=failing_step.step_index if failing_step is not None else None,
+                rung=4,
+            )
+            return (
+                False,
+                True,
+                "missing_side_effect",
+                FailureReason.SIDE_EFFECT_OUTPUT_FAILED,
+                evidence,
+            )
 
-    return True, True, None
+    return True, True, None, None, OutcomeEvidence()
 
 
 def evaluate_outcome(trace: TraceEnvelope, operation: BusinessOperation) -> OutcomeResult:
@@ -167,6 +256,7 @@ def evaluate_outcome(trace: TraceEnvelope, operation: BusinessOperation) -> Outc
             outcome_pass=False,
             computable=False,
             reason="terminal_status missing",
+            failure_reason=FailureReason.TERMINAL_UNKNOWN,
         )
 
     if trace.terminal_status in _TERMINAL_FAILURE_STATUSES:
@@ -175,15 +265,17 @@ def evaluate_outcome(trace: TraceEnvelope, operation: BusinessOperation) -> Outc
             outcome_pass=False,
             computable=True,
             reason="terminal_error",
+            failure_reason=FailureReason.TERMINAL_ERROR,
         )
 
-    # Terminal status must be COMPLETED (or HUMAN_ESCALATION) to pass.
-    if trace.terminal_status != TerminalStatus.COMPLETED:
+    # Terminal status must be COMPLETED or HUMAN_ESCALATION to continue.
+    if trace.terminal_status not in {TerminalStatus.COMPLETED, TerminalStatus.HUMAN_ESCALATION}:
         return OutcomeResult(
             trace_id=trace.trace_id,
             outcome_pass=False,
             computable=True,
             reason="terminal_error",
+            failure_reason=FailureReason.TERMINAL_ERROR,
         )
 
     # Condition 2: required tool coverage is computable
@@ -193,6 +285,7 @@ def evaluate_outcome(trace: TraceEnvelope, operation: BusinessOperation) -> Outc
             outcome_pass=False,
             computable=False,
             reason="tool status not computable",
+            failure_reason=FailureReason.TERMINAL_UNKNOWN,
         )
 
     # Condition 3: no critical tool error (checked before coverage so an
@@ -204,6 +297,7 @@ def evaluate_outcome(trace: TraceEnvelope, operation: BusinessOperation) -> Outc
             outcome_pass=False,
             computable=True,
             reason="critical_tool_error",
+            failure_reason=FailureReason.CRITICAL_TOOL_ERROR,
         )
 
     # Condition 2 continued: distinctive tool coverage must be 1.0. ``expected_tools``
@@ -218,10 +312,13 @@ def evaluate_outcome(trace: TraceEnvelope, operation: BusinessOperation) -> Outc
                 outcome_pass=False,
                 computable=True,
                 reason="missing_required_tool (coverage<1.0)",
+                failure_reason=FailureReason.MISSING_SIDE_EFFECT,
             )
 
     # Condition 4: final required side-effect
-    side_passed, side_computable, side_reason = _side_effect_result(trace, operation.required_side_effect_tools)
+    side_passed, side_computable, side_reason, side_failure_reason, side_evidence = _side_effect_result(
+        trace, operation.required_side_effect_tools
+    )
     if not side_computable:
         return OutcomeResult(
             trace_id=trace.trace_id,
@@ -235,6 +332,8 @@ def evaluate_outcome(trace: TraceEnvelope, operation: BusinessOperation) -> Outc
             outcome_pass=False,
             computable=True,
             reason=side_reason,
+            failure_reason=side_failure_reason,
+            evidence=side_evidence,
         )
 
     return OutcomeResult(
@@ -256,6 +355,18 @@ def compute_outcome_rate(
     passed_count = sum(1 for r in results if r.outcome_pass)
     total = len(traces)
 
+    # Human escalation rate: fraction of computable traces ending in HUMAN_ESCALATION.
+    # HUMAN_ESCALATION is pass-eligible, but tracked separately as an autonomy metric.
+    escalated = sum(
+        1
+        for t in traces
+        if t.terminal_status == TerminalStatus.HUMAN_ESCALATION
+        # Only count computable traces.
+        and next((r for r in results if r.trace_id == t.trace_id), None) is not None
+        and next(r for r in results if r.trace_id == t.trace_id).computable
+    )
+    human_escalation_rate = escalated / computable_count if computable_count > 0 else None
+
     if computable_count == 0:
         summary = WorkflowOutcomeSummary(
             workflow_name=operation.name,
@@ -264,6 +375,7 @@ def compute_outcome_rate(
             passed_count=passed_count,
             outcome_rate=None,
             pending_reason="no computable traces",
+            human_escalation_rate=None,
         )
     else:
         summary = WorkflowOutcomeSummary(
@@ -273,6 +385,7 @@ def compute_outcome_rate(
             passed_count=passed_count,
             outcome_rate=passed_count / computable_count,
             pending_reason=None,
+            human_escalation_rate=human_escalation_rate,
         )
 
     logger.info(
@@ -283,6 +396,7 @@ def compute_outcome_rate(
         passed_count=passed_count,
         outcome_rate=summary.outcome_rate,
         pending_reason=summary.pending_reason,
+        human_escalation_rate=summary.human_escalation_rate,
     )
 
     return summary

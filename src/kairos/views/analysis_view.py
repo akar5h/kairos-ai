@@ -126,6 +126,11 @@ METRIC_DESCRIPTIONS: dict[str, str] = {
     "outcome_rate": (
         "Fraction of sessions that produced a successful outcome (e.g., a task completed, a lead converted)."
     ),
+    "human_escalation_rate": (
+        "Fraction of computable sessions that ended with the agent waiting for human input. "
+        "HUMAN_ESCALATION is pass-eligible — the agent escalated correctly. "
+        "A high rate indicates the agent frequently defers to humans (autonomy dial)."
+    ),
     "extra_rate": (
         "Fraction of tool calls in a session that go beyond what the reference path expects — a proxy for wasted work."
     ),
@@ -211,6 +216,12 @@ class CorrectnessView(BaseModel):
     computable_count: int
     passed_count: int
     pending_reason: str | None
+    human_escalation_rate: float | None = None
+    """Fraction of computable traces that ended in HUMAN_ESCALATION.
+
+    None when computable_count == 0.  HUMAN_ESCALATION is pass-eligible —
+    this metric tracks the autonomy dial (high rate = escalates frequently).
+    """
     deterministic_findings: list[FindingRow]
 
 
@@ -394,6 +405,7 @@ def _correctness_view(summary: WorkflowSummary, findings: list[FindingRow]) -> C
         computable_count=outcome.computable_count,
         passed_count=outcome.passed_count,
         pending_reason=outcome.pending_reason,
+        human_escalation_rate=outcome.human_escalation_rate,
         deterministic_findings=findings,
     )
 

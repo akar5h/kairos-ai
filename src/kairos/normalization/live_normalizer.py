@@ -211,6 +211,7 @@ class LiveNormalizer:
                 tokens_instrumented=event.tokens_instrumented,
                 latency_ms=_latency_ms(event.started_at, event.ended_at),
                 status=event.status,
+                status_source=event.status_source,
                 error_message=event.error_message,
                 started_at=event.started_at,
                 ended_at=event.ended_at,
@@ -230,6 +231,7 @@ class LiveNormalizer:
                 tool_output=_serialize_output(event.output),
                 latency_ms=_latency_ms(event.started_at, event.ended_at),
                 status=event.status,
+                status_source=event.status_source,
                 error_message=event.error_message,
                 started_at=event.started_at,
                 ended_at=event.ended_at,
@@ -237,6 +239,7 @@ class LiveNormalizer:
                 parent_step_index=(
                     span_to_step.get(event.parent_span_id) if event.parent_span_id is not None else None
                 ),
+                attrs=event.attrs,
             )
 
         if isinstance(event, Retrieval):

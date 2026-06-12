@@ -29,7 +29,8 @@ from kairos.normalization.live_normalizer import LiveNormalizer
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from kairos.models.trace import TraceEnvelope
+    from kairos.models.enums import StepStatus
+    from kairos.models.trace import Step, TraceEnvelope
     from kairos.normalization.events import AnyEvent
 
 logger = get_logger(__name__)
@@ -49,6 +50,20 @@ class AgentTranscriptNormalizer(ABC):
 
     #: Stable IR ``source`` tag for this adapter (e.g. ``"claude_code"``).
     source: ClassVar[str]
+
+    def step_outcome(self, step: Step) -> StepStatus | None:
+        """Return the adapter's opinion on *step*'s outcome.
+
+        This is rung 3 of the evidence ladder: called after rungs 1 and 2
+        (kairos.outcome override and OTel/success attrs) have been tried.
+
+        Return ``StepStatus.OK`` or ``StepStatus.ERROR`` when the adapter has
+        a definitive verdict.  Return ``None`` when the adapter has no opinion
+        — the ladder continues to rung 4 (textual last resort).
+
+        The default implementation returns ``None`` (no opinion).
+        """
+        return None
 
     @abstractmethod
     def to_events(self, records: Sequence[Mapping[str, Any]]) -> list[AnyEvent]:

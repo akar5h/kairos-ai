@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from opentelemetry.trace import StatusCode
 
 from kairos.log import get_logger
-from kairos.models.enums import OutputType, StepStatus, TerminalStatus
+from kairos.models.enums import OutputType, StepStatus, StepStatusSource, TerminalStatus
 from kairos.normalization.events import (
     LLMCall,
     LLMMessage,
@@ -284,6 +284,46 @@ def _step_status(span: ReadableSpan) -> StepStatus:
     if code == StatusCode.ERROR:
         return StepStatus.ERROR
     return StepStatus.OK
+
+
+def _step_status_with_source(span: ReadableSpan, attrs: dict[str, Any]) -> tuple[StepStatus, StepStatusSource]:
+    """Resolve step status using the evidence ladder (rungs 1 and 2 only).
+
+    Rung 1: explicit ``kairos.outcome`` attribute override.
+    Rung 2a: ``success`` attribute (primary signal on claude_code tool spans).
+    Rung 2b: OTel span StatusCode.
+
+    Returns (status, source) so callers can record which signal fired.
+    Rung 3 (adapter extractor) and rung 4 (textual) are applied later in
+    the analysis layer, not here.
+    """
+    # Rung 1: explicit kairos.outcome override wins over everything.
+    kairos_outcome = attrs.get("kairos.outcome")
+    if isinstance(kairos_outcome, str):
+        if kairos_outcome.lower() in {"ok", "pass", "success", "true"}:
+            return StepStatus.OK, StepStatusSource.KAIROS_OUTCOME
+        if kairos_outcome.lower() in {"error", "fail", "failure", "false"}:
+            return StepStatus.ERROR, StepStatusSource.KAIROS_OUTCOME
+        logger.warning("unknown kairos.outcome value on span", value=kairos_outcome)
+
+    # Rung 2a: ``success`` attribute — observed on live claude_code.llm_request
+    # and claude_code.tool.execution spans (2026-06-12 discovery).
+    # NOTE: claude_code.tool spans do NOT carry this attribute in the current
+    # emitter version — they carry it only on the .execution child span.
+    # We extract it here for completeness; it will be absent on most tool spans.
+    success_attr = attrs.get("success")
+    if success_attr is not None:
+        if success_attr is False or success_attr == "false":
+            return StepStatus.ERROR, StepStatusSource.ATTR_SUCCESS
+        if success_attr is True or success_attr == "true":
+            return StepStatus.OK, StepStatusSource.ATTR_SUCCESS
+
+    # Rung 2b: OTel StatusCode.
+    code = _status_code(span)
+    if code == StatusCode.ERROR:
+        return StepStatus.ERROR, StepStatusSource.OTEL_STATUS
+
+    return StepStatus.OK, StepStatusSource.NONE
 
 
 def _exception_message(span: ReadableSpan) -> str | None:
@@ -558,7 +598,7 @@ def span_to_llm_call(span: ReadableSpan, *, step_index: int) -> LLMCall | None:
     content_out = attrs.get("llm.output_messages.0.message.content") or attrs.get("gen_ai.completion.0.content")
     tool_calls = _extract_tool_calls_emitted(attrs)
 
-    status = _step_status(span)
+    status, status_source = _step_status_with_source(span, attrs)
     err_msg = _error_message(span) if status == StepStatus.ERROR else None
 
     started_at = _ns_to_dt(getattr(span, "start_time", None))
@@ -586,6 +626,7 @@ def span_to_llm_call(span: ReadableSpan, *, step_index: int) -> LLMCall | None:
         started_at=started_at,
         ended_at=ended_at,
         status=status,
+        status_source=status_source,
         error_message=err_msg,
     )
 
@@ -650,7 +691,7 @@ def span_to_tool_call(span: ReadableSpan, *, step_index: int) -> ToolCall | None
     elif raw_out is not None:
         output = str(raw_out)
 
-    status = _step_status(span)
+    status, status_source = _step_status_with_source(span, attrs)
     err_msg = _error_message(span) if status == StepStatus.ERROR else None
 
     started_at = _ns_to_dt(getattr(span, "start_time", None))
@@ -669,9 +710,11 @@ def span_to_tool_call(span: ReadableSpan, *, step_index: int) -> ToolCall | None
         args=args,
         output=output,
         status=status,
+        status_source=status_source,
         error_message=err_msg,
         started_at=started_at,
         ended_at=ended_at,
+        attrs=attrs,
     )
 
 

@@ -27,6 +27,7 @@ from typing import Any
 from opentelemetry.trace import StatusCode  # noqa: TC002 — runtime use in adapter
 
 from kairos.log import get_logger
+from kairos.models.enums import TerminalStatus
 from kairos.models.trace import TraceEnvelope
 from kairos.normalization.events import AnyEvent  # noqa: TC001
 from kairos.normalization.live_normalizer import LiveNormalizer
@@ -145,6 +146,45 @@ def _phoenix_dict_to_span(d: dict[str, Any]) -> _PhoenixSpan:
 # ────────────────────── spans → envelope (pure) ─────────────────────────
 
 
+def _is_session_end_blocked_on_user(wrapped: list[Any]) -> bool:
+    """Return True when the session ended awaiting human input.
+
+    Conservative rule (spec §5): HUMAN_ESCALATION is mapped ONLY when the
+    literal final span of the trace (by end_time, excluding the task root) is
+    ``claude_code.tool.blocked_on_user`` AND no ``llm_request`` span has a
+    start_time after that blocked_on_user span ended.
+
+    Rationale: blocked_on_user appears on EVERY permission-phase interaction,
+    not just session ends.  Using end_time order + no-subsequent-llm guard
+    prevents false positives on mid-trace permission waits.
+
+    This is the conservative option from the spec:
+      "implement the conservative version (only map when the literal final span
+       of the trace is blocked_on_user AND no llm_request follows it)"
+    """
+    # Exclude task spans — they wrap the whole trace and always end last.
+    non_task = [s for s in wrapped if classify_span(s) != "task"]
+    if not non_task:
+        return False
+
+    # Sort by end_time descending to find the last non-task span.
+    by_end = sorted(non_task, key=lambda s: s.end_time, reverse=True)
+    last_span = by_end[0]
+
+    # The last span must be a blocked_on_user span.
+    span_name = getattr(last_span, "name", "")
+    if span_name != "claude_code.tool.blocked_on_user":
+        return False
+
+    # Guard: no llm_request span with start_time after the blocked_on_user end_time.
+    blocked_end = last_span.end_time
+    for span in non_task:
+        if getattr(span, "name", "") == "claude_code.llm_request" and span.start_time > blocked_end:
+            return False
+
+    return True
+
+
 def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
     """Convert a list of OTel-shaped spans (or Phoenix dicts) into a TraceEnvelope.
 
@@ -154,6 +194,11 @@ def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
     with synthesized TraceStart / TraceEnd events. Without a task root,
     the envelope is produced from whatever LLM / tool / retrieval spans
     exist.
+
+    Terminal status override: when the session ended awaiting human input
+    (conservative check: final non-task span is ``blocked_on_user`` AND no
+    subsequent ``llm_request``), the TraceEnd gets ``TerminalStatus.HUMAN_ESCALATION``
+    regardless of the task root's OTel status.  HUMAN_ESCALATION is pass-eligible.
     """
     if not spans:
         return TraceEnvelope(
@@ -170,6 +215,10 @@ def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
     wrapped.sort(key=lambda s: s.start_time)
 
     task_span: Any | None = next((s for s in wrapped if classify_span(s) == "task"), None)
+
+    # Detect session-end blocked state BEFORE building events, using all spans.
+    session_blocked = _is_session_end_blocked_on_user(wrapped)
+
     events: list[AnyEvent] = []
     step_index = 0
 
@@ -193,7 +242,11 @@ def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
             step_index += 1
 
     if task_span is not None:
-        events.append(span_to_trace_end(task_span, step_index=step_index))
+        trace_end = span_to_trace_end(task_span, step_index=step_index)
+        if session_blocked:
+            # Override terminal status: session ended awaiting human input.
+            trace_end = trace_end.model_copy(update={"terminal_status": TerminalStatus.HUMAN_ESCALATION})
+        events.append(trace_end)
 
     envelope = LiveNormalizer().normalize(events)
     logger.info(
@@ -202,6 +255,7 @@ def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
         span_count=len(wrapped),
         event_count=len(events),
         had_task_root=task_span is not None,
+        human_escalation=session_blocked,
     )
     return envelope
 
