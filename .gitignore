@@ -72,3 +72,8 @@ kairos-analysis-views/
 
 # MLO generated output
 .mlo/
+
+# Nightly loop output (generated; never commit)
+# Parquet fallback files written when Postgres is unavailable.
+output/loop_data/
+output/discovery_queue.json
