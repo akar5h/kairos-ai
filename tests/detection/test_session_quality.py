@@ -124,23 +124,23 @@ class TestUnrecoveredError:
         findings = detect_unrecovered_error(trace)
         assert len(findings) == 1
 
-    def test_severity_error_for_required_side_effect(self) -> None:
-        """Tool in required_side_effect_tools → severity error."""
+    def test_severity_always_info_required_side_effect(self) -> None:
+        """D1 always ships at info (deterministic ceiling ~0.62; owner 2026-06-13)."""
         op = _code_op(required=["Edit", "Write"])
         trace = _make_trace("t5", [
             _step(0, "Edit", StepStatus.ERROR, tool_args={"file_path": "/a.py"}),
         ])
         findings = detect_unrecovered_error(trace, operation=op)
-        assert findings[0].severity == "error"
+        assert findings[0].severity == "info"
 
-    def test_severity_warning_for_non_required_tool(self) -> None:
-        """Tool NOT in required_side_effect_tools → severity warning."""
+    def test_severity_always_info_non_required_tool(self) -> None:
+        """info regardless of whether the tool is a required side-effect tool."""
         op = _code_op(required=["Write"])  # Edit not in required
         trace = _make_trace("t6", [
             _step(0, "Edit", StepStatus.ERROR, tool_args={"file_path": "/a.py"}),
         ])
         findings = detect_unrecovered_error(trace, operation=op)
-        assert findings[0].severity == "warning"
+        assert findings[0].severity == "info"
 
     def test_session_restart_not_counted_as_recovery(self) -> None:
         """Recovery after a session-restart boundary is NOT counted → fires."""

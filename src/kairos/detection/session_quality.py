@@ -170,9 +170,13 @@ def detect_unrecovered_error(
     Session-restart boundaries do NOT count as recovery in either mode
     (haywire restarts look like recovery to over-loose rules).
 
-    Severity:
-      "error"   if the erroring tool is in required_side_effect_tools
-      "warning" otherwise
+    Severity: always "info".
+      Measured precision ~0.62 against owner labels (eval/reports/
+      session-quality-precision.md): D1 cannot deterministically separate
+      "error that mattered" from "benign error the agent moved past" — both
+      show later same-tool recovery. That distinction is semantic (deferred
+      to the LLM judge, Appendix A). D1 ships as an info-level SIGNAL that
+      feeds triage/discovery, never as an alarm. Owner decision 2026-06-13.
     """
     tool_steps = [s for s in trace.steps if s.step_type == StepType.TOOL_CALL and s.tool_name]
     required_side_effects: frozenset[str] = frozenset(
@@ -220,7 +224,9 @@ def detect_unrecovered_error(
                     break
 
         if not recovered:
-            severity = "error" if tool in required_side_effects else "warning"
+            # Always info: deterministic ceiling on "did this error matter" (see docstring).
+            # required_side_effects retained for evidence context, not severity.
+            severity = "info"
             findings.append(
                 Finding(
                     pattern_name="unrecovered_error",

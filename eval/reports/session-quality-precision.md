@@ -60,7 +60,12 @@ The args-enrichment fix (commit `9975ecf`) **resolved D2 and D3** — both were 
 
 **D1 is NOT a bug — it hits the deterministic ceiling.** Every D1 fire on the CLEAN traces has a later successful same-tool call (the agent recovered). But so does every D1 fire on the FIRE traces (verified: d38a760a steps 48/106/122/133/169, 0939a81a steps 7/30/36 — all have later same-tool OK within window 10). There is **no structural signal** separating "exit-1, never re-attempted, agent moved on" (owner: BAD) from "cat failed, agent moved on" (owner: FINE). The distinction is whether the failed command *mattered to the task* — semantic, not structural. D1's same-command-retry recovery rule misses real recovery (which changes args), and loosening it to status-based recovery would suppress the FIRE traces too (recall→0). **D1 cannot reach 0.7 deterministically.** This is the same boundary as Day 6 (tau wrong-args) — the empirical trigger for the deferred LLM judge (Appendix A build-trigger #2: a class provably invisible to deterministic rules).
 
-**Owner decision PENDING:** D1 → demote to `info` (honest signal, not alarm), OR D1 becomes the documented first job for the deferred LLM judge. D2 ships `warning`, D3/D4 ship `info`. Re-label of the *disagreements* is now moot for precision (the ceiling is proven deterministically) — but articulating WHY a FIRE error matters vs a CLEAN one would author the future judge's spec.
+**Owner decision (2026-06-13): D1 → `info`, LLM judge stays deferred.** D1 ships as an
+info-level signal (feeds triage/discovery features, never alarms) — code updated to always
+emit severity `info`. D1 is recorded as the documented first job for the deferred LLM judge
+(Appendix A). D2 ships `warning`, D3/D4 ship `info`. Final Day-8 detector slate: **D2 warning,
+D1/D3/D4 info.** The proven deterministic ceiling on D1 is a case-study result, not a failure —
+deterministic-first pushed to its honest limit, with the semantic boundary precisely located.
 
 ---
 
