@@ -27,7 +27,7 @@ from typing import Any
 from opentelemetry.trace import StatusCode  # noqa: TC002 — runtime use in adapter
 
 from kairos.log import get_logger
-from kairos.models.enums import TerminalStatus
+from kairos.models.enums import StepStatus, StepStatusSource, TerminalStatus
 from kairos.models.trace import TraceEnvelope
 from kairos.normalization.agents.base import apply_step_outcomes
 from kairos.normalization.agents.claude_code import ClaudeCodeNormalizer
@@ -41,6 +41,7 @@ from kairos.readers.genai_mapping import (
     span_to_trace_end,
     span_to_trace_start,
 )
+from kairos.readers.transcript_join import tool_errors_from_transcript
 
 logger = get_logger(__name__)
 
@@ -217,6 +218,64 @@ def _propagate_execution_success(wrapped: list[Any]) -> None:
             parent_attrs["success"] = success
 
 
+def _correct_tool_errors_from_transcript(
+    wrapped: list[Any],
+    envelope: TraceEnvelope,
+) -> int:
+    """Flip tool step status to ERROR for steps the transcript marks is_error=true.
+
+    Called AFTER the envelope is built and AFTER rung-3 adapter outcomes are
+    applied — only for claude_code-shaped traces (caller guards on is_claude_code).
+
+    The OTel emitter stamps ``success=true`` on ``claude_code.tool.execution``
+    child spans even when the harness returned ``is_error: true`` (e.g.
+    Edit/Write returning ``<tool_use_error>File has been modified since read…``).
+    This is Bug 1 (silent phantom side-effects).  The transcript's tool_result
+    ``is_error`` field is ground truth.
+
+    Provenance decision: corrected steps keep ``status_source == ATTR_SUCCESS``
+    (the signal that originally set them), not a new source value.  Rationale:
+    lowest blast-radius — no new enum value needed, downstream consumers that
+    key on ATTR_SUCCESS remain correct (the signal fired; the transcript overrode
+    its value).  The step's ``status`` is authoritative; ``status_source`` records
+    where the original structured signal came from.
+
+    TESTBED-SCOPED ENRICHMENT: the durable fix is emitter-side — the OTel emitter
+    should set success=false on tool.execution spans when is_error=true.  This
+    function exists only until that emitter fix ships.
+
+    Returns the number of steps corrected.
+    """
+    if not envelope.steps:
+        return 0
+
+    error_indices = tool_errors_from_transcript(wrapped, list(envelope.steps))
+    if not error_indices:
+        return 0
+
+    corrected = 0
+    for step in envelope.steps:
+        if step.step_index not in error_indices:
+            continue
+        # Only flip steps that were previously marked OK by a structured signal
+        # (ATTR_SUCCESS from the execution-child propagation, or NONE).
+        # Steps already ERROR are not touched — don't downgrade good signals.
+        if step.status is StepStatus.ERROR:
+            continue
+        step.status = StepStatus.ERROR
+        # Preserve the original status_source — see provenance decision above.
+        # If the step had no structured signal (NONE), stamp it ATTR_SUCCESS to
+        # indicate the correction came from the structured transcript is_error field.
+        if step.status_source is StepStatusSource.NONE:
+            step.status_source = StepStatusSource.ATTR_SUCCESS
+        corrected += 1
+
+    if corrected:
+        envelope.error_count = sum(1 for s in envelope.steps if s.status == StepStatus.ERROR)
+
+    return corrected
+
+
 def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
     """Convert a list of OTel-shaped spans (or Phoenix dicts) into a TraceEnvelope.
 
@@ -303,6 +362,28 @@ def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
     if is_claude_code:
         apply_step_outcomes(envelope, _CLAUDE_CODE_NORMALIZER)
 
+    # Bug 1 correction (transcript_join): for claude_code traces, enrich tool
+    # step status from the session transcript's tool_result.is_error field.
+    # The OTel emitter stamps success=true on tool.execution children even when
+    # the harness rejected the call (is_error=true) — e.g. Edit returning
+    # "<tool_use_error>File has been modified since read</tool_use_error>".
+    # transcript_join aligns steps by ordinal-per-tool-name and corrects them.
+    # Graceful degradation: missing transcript → no correction, no crash.
+    corrected_count = 0
+    if is_claude_code:
+        corrected_count = _correct_tool_errors_from_transcript(wrapped, envelope)
+        if corrected_count:
+            logger.info(
+                "transcript_join.corrected_tool_errors",
+                n=corrected_count,
+                trace_id=envelope.trace_id,
+            )
+        else:
+            logger.debug(
+                "transcript_join.no_corrections",
+                trace_id=envelope.trace_id,
+            )
+
     # Day 4: orphan/integrity check.
     # A span is an orphan when it has a parent_id that is not present in this trace's
     # span set AND it is not a root span (root = parent is None).
@@ -328,6 +409,7 @@ def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
         had_task_root=task_span is not None,
         human_escalation=session_blocked,
         adapter_outcomes_applied=is_claude_code,
+        transcript_corrected=corrected_count,
     )
     return envelope
 

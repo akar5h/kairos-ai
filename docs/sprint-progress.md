@@ -43,6 +43,7 @@
 | `514d068` | Phoenix deep links use project NODE id (`UHJvamVjdDox`), not name — name URLs 404 in Phoenix 15.x UI |
 | `4a1bd7c` | Spotcheck rows carry redacted transcript digests (spans are skeletons — F10; humans judge from digest) |
 | *(pending)* | side_effect_match any/all fix — executor in flight |
+| *(pending)* | Bug 1 fix: transcript_join testbed enrichment — `transcript_join.py` corrects phantom OK tool steps (is_error=true) on live-Phoenix path; 53 steps corrected across 28 traces in 7d window; outcome rates unchanged (rejected tools are mid-session retries, not contract tools). TESTBED SCOPE: durable fix is emitter-side (OTel emitter should set success=false on tool.execution when is_error=true). |
 
 Plugin repo (`Xero/kairos-analysis-views`, own git): `b30e7e2` (fail-loud guard, meta/null types) → `c630d60` (outcome rows table) → `8529e0e` (is_primary/secondary count types).
 
