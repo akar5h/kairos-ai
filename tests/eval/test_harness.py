@@ -7,6 +7,7 @@ from kairos.eval.harness import (
     MetricDiff,
     _classify_delta,
     _extract_metric_values,
+    _metric_tier,
     _panels_identical,
 )
 from kairos.eval.panel import DetectorMetrics, MetricPanel, OutcomeMetrics
@@ -84,56 +85,85 @@ def _make_panel(
     )
 
 
-# ── _classify_delta ───────────────────────────────────────────────────────────
+# ── _metric_tier (three-tier classification) ──────────────────────────────────
+
+
+def test_tier_gate_metrics():
+    """Grounded-quality metrics are GATE tier."""
+    for m in (
+        "outcome.owner_precision",
+        "outcome.owner_recall",
+        "outcome.tau_kappa",
+        "outcome.tau_fail_precision",
+        "outcome.tau_fail_recall",
+    ):
+        assert _metric_tier(m) == "gate", m
+
+
+def test_tier_review_metrics():
+    """Detector precision/recall vs labels are REVIEW tier."""
+    assert _metric_tier("detector.struggle_ratio.precision") == "review"
+    assert _metric_tier("detector.coordination_waste.recall") == "review"
+
+
+def test_tier_info_metrics():
+    """Volume / severity / abstention / aggregate metrics are INFO tier."""
+    for m in (
+        "detector.struggle_ratio.fire_count",
+        "detector.struggle_ratio.fire_rate",
+        "aggregate.total_findings",
+        "aggregate.severity_error",
+        "aggregate.severity_warning",
+        "aggregate.classes_covered",
+        "outcome.tau_abstention_rate",
+    ):
+        assert _metric_tier(m) == "info", m
+
+
+# ── _classify_delta (tier-aware) ──────────────────────────────────────────────
 
 
 def test_classify_delta_none_is_unknown():
     assert _classify_delta("outcome.tau_kappa", None) == "unknown"
 
 
-def test_classify_delta_zero_is_unchanged():
+def test_classify_delta_gate_zero_is_unchanged():
     assert _classify_delta("outcome.tau_kappa", 0.0) == "unchanged"
 
 
-def test_classify_delta_epsilon_is_unchanged():
-    """Delta below float epsilon is treated as unchanged."""
-    assert _classify_delta("outcome.tau_kappa", 1e-12) == "unchanged"
+def test_classify_delta_gate_within_epsilon_unchanged():
+    """A GATE delta within epsilon (0.01) is noise → unchanged."""
+    assert _classify_delta("outcome.owner_precision", 0.005) == "unchanged"
+    assert _classify_delta("outcome.owner_precision", -0.01) == "unchanged"
 
 
-def test_classify_delta_higher_is_better_positive():
-    """Higher-is-better metric with positive delta → improved."""
+def test_classify_delta_gate_drop_beyond_epsilon_regressed():
+    """A GATE drop beyond epsilon → regressed (fails the gate)."""
+    assert _classify_delta("outcome.owner_precision", -0.05) == "regressed"
+    assert _classify_delta("outcome.tau_fail_precision", -0.02) == "regressed"
+
+
+def test_classify_delta_gate_rise_beyond_epsilon_improved():
     assert _classify_delta("outcome.tau_kappa", 0.05) == "improved"
 
 
-def test_classify_delta_higher_is_better_negative():
-    """Higher-is-better metric with negative delta → regressed."""
-    assert _classify_delta("outcome.tau_kappa", -0.05) == "regressed"
+def test_classify_delta_review_precision_drop():
+    """REVIEW (detector precision) drop is directional but not gate-failing."""
+    assert _classify_delta("detector.struggle_ratio.precision", -0.1) == "regressed"
+    assert _classify_delta("detector.struggle_ratio.precision", 0.1) == "improved"
 
 
-def test_classify_delta_lower_is_better_negative():
-    """Lower-is-better (abstention_rate) with negative delta → improved."""
-    assert _classify_delta("outcome.tau_abstention_rate", -0.05) == "improved"
+def test_classify_delta_review_recall_drop():
+    assert _classify_delta("detector.coordination_waste.recall", -0.5) == "regressed"
 
 
-def test_classify_delta_lower_is_better_positive():
-    """Lower-is-better with positive delta → regressed."""
-    assert _classify_delta("outcome.tau_abstention_rate", 0.05) == "regressed"
-
-
-def test_classify_delta_neutral_metric():
-    """Neutral metrics (total_findings) → unchanged regardless of delta."""
+def test_classify_delta_info_never_regressed():
+    """INFO (volume) deltas are never 'regressed' — diagnostic only."""
+    assert _classify_delta("detector.struggle_ratio.fire_count", -54.0) == "unchanged"
+    assert _classify_delta("detector.struggle_ratio.fire_rate", -0.1) == "unchanged"
     assert _classify_delta("aggregate.total_findings", 10.0) == "unchanged"
     assert _classify_delta("aggregate.severity_warning", -5.0) == "unchanged"
-
-
-def test_classify_delta_fire_count_positive():
-    """Detector fire_count increase → improved (more detection coverage)."""
-    assert _classify_delta("detector.struggle_ratio.fire_count", 5.0) == "improved"
-
-
-def test_classify_delta_precision_regression():
-    """Precision decrease → regressed."""
-    assert _classify_delta("detector.struggle_ratio.precision", -0.1) == "regressed"
+    assert _classify_delta("outcome.tau_abstention_rate", 0.05) == "unchanged"
 
 
 # ── _panels_identical ─────────────────────────────────────────────────────────
@@ -207,12 +237,38 @@ def test_panels_identical_same_panel_passes():
     assert _panels_identical(p, p)
 
 
-# ── compare gate logic ────────────────────────────────────────────────────────
+# ── compare gate logic (three-tier) ───────────────────────────────────────────
 
 
-def _make_compare_result(diffs: list[MetricDiff], verdict: str) -> CompareResult:
-    regression = [d.name for d in diffs if d.verdict == "regressed"]
-    improved = [d.name for d in diffs if d.verdict == "improved"]
+def _diff(name: str, before: float, after: float) -> MetricDiff:
+    """Build a MetricDiff the way compare() does — tier + verdict from the helpers."""
+    delta = after - before
+    return MetricDiff(
+        name=name,
+        before=before,
+        after=after,
+        delta=delta,
+        verdict=_classify_delta(name, delta),
+        tier=_metric_tier(name),
+    )
+
+
+def _aggregate(diffs: list[MetricDiff]) -> CompareResult:
+    """Mirror compare()'s tier-based verdict aggregation for unit testing."""
+    regression = [d.name for d in diffs if d.tier == "gate" and d.verdict == "regressed"]
+    improved = [
+        d.name for d in diffs
+        if d.tier in {"gate", "review"} and d.verdict == "improved"
+    ]
+    review = [
+        d.name for d in diffs
+        if d.tier == "review" and d.verdict in {"regressed", "improved"}
+    ]
+    info = [
+        d.name for d in diffs
+        if d.tier == "info" and d.delta is not None and abs(d.delta) > 1e-9
+    ]
+    verdict = "REGRESSED" if regression else "PASS"
     return CompareResult(
         before_ref="before",
         after_ref="after",
@@ -224,44 +280,61 @@ def _make_compare_result(diffs: list[MetricDiff], verdict: str) -> CompareResult
         verdict=verdict,
         regression_metrics=regression,
         improved_metrics=improved,
+        review_metrics=review,
+        info_metrics=info,
     )
 
 
-def test_compare_gate_pass_no_regressions():
-    """No regressions → verdict PASS."""
+def test_gate_volume_only_change_is_pass():
+    """A volume-only drop (the F10 false-positive suppression) → PASS, INFO-only."""
     diffs = [
-        MetricDiff("outcome.tau_kappa", 0.5, 0.6, 0.1, "improved"),
-        MetricDiff("detector.struggle_ratio.precision", 0.7, 0.8, 0.1, "improved"),
+        _diff("detector.struggle_ratio.fire_count", 78.0, 24.0),
+        _diff("detector.coordination_waste.fire_count", 234.0, 162.0),
+        _diff("detector.struggle_ratio.fire_rate", 0.1538, 0.0473),
+        _diff("outcome.owner_precision", 0.464, 0.464),  # GATE flat
     ]
-    result = _make_compare_result(diffs, "PASS")
+    result = _aggregate(diffs)
     assert result.verdict == "PASS"
-    assert len(result.regression_metrics) == 0
+    assert result.regression_metrics == []
+    assert "detector.struggle_ratio.fire_count" in result.info_metrics
+    assert "detector.coordination_waste.fire_count" in result.info_metrics
 
 
-def test_compare_gate_regressed_if_any_regression():
-    """Any regression → verdict REGRESSED."""
+def test_gate_metric_drop_is_regressed():
+    """A GATE-metric drop beyond epsilon → REGRESSED."""
     diffs = [
-        MetricDiff("outcome.tau_kappa", 0.5, 0.7, 0.2, "improved"),
-        MetricDiff("outcome.owner_precision", 0.8, 0.6, -0.2, "regressed"),  # blast radius
+        _diff("outcome.owner_precision", 0.80, 0.60),   # GATE drop → fail
+        _diff("detector.struggle_ratio.fire_count", 10.0, 50.0),  # INFO rise
     ]
-    result = _make_compare_result(diffs, "REGRESSED")
+    result = _aggregate(diffs)
     assert result.verdict == "REGRESSED"
     assert "outcome.owner_precision" in result.regression_metrics
 
 
-def test_compare_gate_pass_on_pure_stability():
-    """No improvements, no regressions → still PASS (stability confirmed)."""
+def test_gate_detector_precision_drop_is_pass_with_review():
+    """A detector precision/recall drop → PASS but surfaced in REVIEW (human decides)."""
     diffs = [
-        MetricDiff("outcome.tau_kappa", 0.5, 0.5, 0.0, "unchanged"),
+        _diff("detector.coordination_waste.recall", 1.0, 0.5),  # REVIEW drop
+        _diff("outcome.tau_kappa", 0.169, 0.169),               # GATE flat
     ]
-    result = _make_compare_result(diffs, "PASS")
+    result = _aggregate(diffs)
     assert result.verdict == "PASS"
+    assert result.regression_metrics == []
+    assert "detector.coordination_waste.recall" in result.review_metrics
 
 
-def test_compare_result_regression_list_nonempty_on_regressed():
-    """regression_metrics is nonempty when verdict is REGRESSED."""
-    diffs = [
-        MetricDiff("outcome.tau_kappa", 0.5, 0.4, -0.1, "regressed"),
-    ]
-    result = _make_compare_result(diffs, "REGRESSED")
-    assert "outcome.tau_kappa" in result.regression_metrics
+def test_gate_within_epsilon_is_pass():
+    """A GATE move within epsilon is noise → PASS, no regression."""
+    diffs = [_diff("outcome.owner_precision", 0.464, 0.4645)]
+    result = _aggregate(diffs)
+    assert result.verdict == "PASS"
+    assert result.regression_metrics == []
+
+
+def test_gate_improvement_credited():
+    """A GATE rise beyond epsilon lands in improvements and keeps PASS."""
+    diffs = [_diff("detector.unrecovered_error.precision", 0.538, 0.583)]
+    result = _aggregate(diffs)
+    assert result.verdict == "PASS"
+    # detector precision is REVIEW tier → improvement surfaces in improved_metrics
+    assert "detector.unrecovered_error.precision" in result.improved_metrics

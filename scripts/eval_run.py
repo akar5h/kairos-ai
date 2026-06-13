@@ -139,21 +139,31 @@ def cmd_compare(args: argparse.Namespace) -> int:
     print(f"k={result.k} runs — nondeterminism check: PASS")
     print(f"\nVerdict: {result.verdict}")
 
-    if result.regression_metrics:
-        print("\nREGRESSIONS:")
-        for m in result.regression_metrics:
-            diff = next(d for d in result.diffs if d.name == m)
-            print(f"  {m}: {_fmt(diff.before)} → {_fmt(diff.after)} (Δ{_fmt(diff.delta)})")
+    by_name = {d.name: d for d in result.diffs}
 
-    if result.improved_metrics:
-        print("\nIMPROVEMENTS:")
-        for m in result.improved_metrics:
-            diff = next(d for d in result.diffs if d.name == m)
-            print(f"  {m}: {_fmt(diff.before)} → {_fmt(diff.after)} (Δ+{_fmt(diff.delta)})")
+    def _show(label: str, names: list[str], sign: bool = False) -> None:
+        if not names:
+            return
+        print(f"\n{label}:")
+        for m in names:
+            diff = by_name[m]
+            d = diff.delta
+            plus = "+" if (sign and d is not None and d > 0) else ""
+            print(f"  {m}: {_fmt(diff.before)} → {_fmt(diff.after)} (Δ{plus}{_fmt(d)})")
+
+    _show("GATE REGRESSIONS (gate FAILED)", result.regression_metrics)
+    _show("IMPROVEMENTS (GATE/REVIEW)", result.improved_metrics, sign=True)
+    _show("NEEDS HUMAN REVIEW (detector precision/recall)", result.review_metrics, sign=True)
+    _show("INFORMATIONAL (volume — not a regression)", result.info_metrics, sign=True)
 
     unchanged = [d for d in result.diffs if d.verdict == "unchanged"]
-    print(f"\n{len(unchanged)} metrics unchanged, {len(result.improved_metrics)} improved, "
-          f"{len(result.regression_metrics)} regressed.")
+    print(
+        f"\ntiers — gate-regressed={len(result.regression_metrics)}, "
+        f"improved={len(result.improved_metrics)}, "
+        f"review={len(result.review_metrics)}, "
+        f"info-deltas={len(result.info_metrics)}, "
+        f"unchanged={len(unchanged)}."
+    )
 
     # Store both runs if DB available
     if is_db_available():
@@ -212,14 +222,22 @@ def cmd_retro(args: argparse.Namespace) -> int:
             exit_code = 3
             continue
 
+        by_name = {d.name: d for d in result.diffs}
         print(f"    Verdict: {result.verdict}")
-        for m in result.improved_metrics:
-            diff = next(d for d in result.diffs if d.name == m)
-            print(f"    IMPROVED  {m}: {_fmt(diff.before)} → {_fmt(diff.after)}")
         for m in result.regression_metrics:
-            diff = next(d for d in result.diffs if d.name == m)
-            print(f"    REGRESSED {m}: {_fmt(diff.before)} → {_fmt(diff.after)}")
-        if not result.improved_metrics and not result.regression_metrics:
+            d = by_name[m]
+            print(f"    GATE-REGRESSED {m}: {_fmt(d.before)} → {_fmt(d.after)}")
+        for m in result.improved_metrics:
+            d = by_name[m]
+            print(f"    IMPROVED  {m}: {_fmt(d.before)} → {_fmt(d.after)}")
+        for m in result.review_metrics:
+            d = by_name[m]
+            print(f"    REVIEW    {m}: {_fmt(d.before)} → {_fmt(d.after)}")
+        for m in result.info_metrics:
+            d = by_name[m]
+            print(f"    INFO      {m}: {_fmt(d.before)} → {_fmt(d.after)}")
+        if not (result.improved_metrics or result.regression_metrics
+                or result.review_metrics or result.info_metrics):
             print("    No metric changes detected (corpus may lack coverage at these refs).")
         print()
         if result.verdict != "PASS":

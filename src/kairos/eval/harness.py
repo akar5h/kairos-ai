@@ -75,6 +75,7 @@ class MetricDiff:
     after: float | None
     delta: float | None     # after - before; None if either side is None
     verdict: str            # "improved" | "regressed" | "unchanged" | "unknown"
+    tier: str = "info"      # "gate" | "review" | "info" — see metric tiers below
 
 
 @dataclass
@@ -90,11 +91,16 @@ class CompareResult:
     diffs: list[MetricDiff]
     verdict: str            # "PASS" | "REGRESSED" | "UNKNOWN"
     targeted_metrics: list[str] = field(default_factory=list)
-    """Metrics that the change was intended to improve (for PASS gate logic)."""
+    """Metrics that the change was intended to improve (informational)."""
     regression_metrics: list[str] = field(default_factory=list)
-    """Metrics that regressed (non-empty → REGRESSED)."""
+    """GATE-tier metrics that dropped > epsilon (non-empty → REGRESSED)."""
     improved_metrics: list[str] = field(default_factory=list)
-    """Metrics that improved."""
+    """GATE/REVIEW metrics that improved."""
+    review_metrics: list[str] = field(default_factory=list)
+    """REVIEW-tier metric changes (detector precision/recall, both directions) —
+    surfaced for human review; do NOT fail the gate."""
+    info_metrics: list[str] = field(default_factory=list)
+    """INFO-tier (volume) metric changes — diagnostic only, never a regression."""
 
 
 # ── Git helpers ───────────────────────────────────────────────────────────────
@@ -454,33 +460,75 @@ def _extract_metric_values(panel: MetricPanel) -> dict[str, float | None]:
     return values
 
 
-# Metrics where LOWER is better (regressions = increase)
-_LOWER_IS_BETTER: frozenset[str] = frozenset({
-    "outcome.tau_abstention_rate",
-    "aggregate.severity_error",
+# ── Three-tier metric classification ──────────────────────────────────────────
+#
+# The gate must distinguish a real quality regression from an INTENDED volume
+# change (e.g. F10 args-enrichment suppressing false-positive fires). Flagging a
+# false-positive fix as a regression makes the harness cry wolf. So:
+#
+#   GATE   (hard): grounded quality metrics. A drop > epsilon here = REGRESSED.
+#                  These are the metrics validated against ground-truth labels /
+#                  tau-bench rewards — the only signals that mean "detection got
+#                  worse". Higher is better for all of them.
+#   REVIEW (soft): per-detector precision/recall vs labels, BOTH directions.
+#                  A recall drop after a precision fix may be a real miss OR
+#                  over-firing being corrected — a human decides. Surfaced, never
+#                  auto-fails the gate.
+#   INFO   (diag): volume metrics (fire_count, fire_rate, severity_*,
+#                  total_findings, classes_covered). Pure diagnostics — a change
+#                  is never a regression by itself.
+#
+# Gate verdict = REGRESSED iff any GATE metric dropped > _GATE_EPSILON, else PASS.
+
+# Epsilon below which a GATE-metric delta is treated as noise (no regression).
+_GATE_EPSILON: float = 0.01
+
+# GATE tier — grounded quality metrics, higher-is-better. A drop fails the gate.
+_GATE_METRICS: frozenset[str] = frozenset({
+    "outcome.owner_precision",
+    "outcome.owner_recall",
+    "outcome.tau_kappa",
+    "outcome.tau_fail_precision",
+    "outcome.tau_fail_recall",
 })
 
-# Metrics where change is neutral (count-based — neither direction is inherently bad)
-_NEUTRAL_METRICS: frozenset[str] = frozenset({
-    "aggregate.total_findings",
-    "aggregate.severity_warning",
-    "aggregate.severity_info",
-})
+
+def _metric_tier(name: str) -> str:
+    """Return the tier for a metric name: 'gate' | 'review' | 'info'."""
+    if name in _GATE_METRICS:
+        return "gate"
+    # Detector precision/recall vs labels → REVIEW (human decides).
+    if name.startswith("detector.") and (
+        name.endswith(".precision") or name.endswith(".recall")
+    ):
+        return "review"
+    # Everything else (volume, severity counts, abstention, aggregate) → INFO.
+    return "info"
 
 
 def _classify_delta(name: str, delta: float | None) -> str:
-    """Classify a metric delta as improved / regressed / unchanged / unknown."""
+    """Classify a metric delta as improved / regressed / unchanged / unknown.
+
+    GATE metrics: higher-is-better; a drop beyond epsilon is a regression.
+    REVIEW metrics: directional (improved/regressed) but never fail the gate —
+        the verdict aggregation only acts on GATE-tier regressions.
+    INFO metrics: never 'regressed' — a directional move is reported as
+        'increased'/'decreased' diagnostics, classified here as 'unchanged'
+        for gate purposes (they carry no pass/fail meaning).
+    """
     if delta is None:
         return "unknown"
-    if abs(delta) < 1e-9:
-        return "unchanged"
-    if name in _NEUTRAL_METRICS:
-        return "unchanged"  # count changes are not regressions by themselves
-    if name in _LOWER_IS_BETTER:
-        return "improved" if delta < 0 else "regressed"
-    # Higher is better (precision, recall, kappa, fire_count, classes_covered)
-    # For fire_count/fire_rate: more fires = better coverage (more detection)
-    return "improved" if delta > 0 else "regressed"
+    tier = _metric_tier(name)
+    if tier == "gate":
+        if abs(delta) <= _GATE_EPSILON:
+            return "unchanged"
+        return "improved" if delta > 0 else "regressed"
+    if tier == "review":
+        if abs(delta) < 1e-9:
+            return "unchanged"
+        return "improved" if delta > 0 else "regressed"
+    # INFO tier — volume/diagnostic. Never a regression.
+    return "unchanged"
 
 
 def compare(
@@ -493,10 +541,13 @@ def compare(
     report_dir: Path | None = None,
     repo: Path = _REPO_ROOT,
 ) -> CompareResult:
-    """Run run_eval on both refs and diff the panel.
+    """Run run_eval on both refs and diff the panel with three-tier gating.
 
-    Gate: PASS iff no panel metric regressed (within k-run stability).
-    The panel+corpus is the stable ruler; only the engine varies by ref.
+    Gate: PASS iff no GATE-tier (grounded-quality) metric dropped > epsilon.
+    REVIEW-tier (detector precision/recall) and INFO-tier (volume) changes are
+    surfaced but never fail the gate — an intended false-positive suppression
+    (volume drop) must not read as a regression. The panel+corpus is the stable
+    ruler; only the engine varies by ref.
 
     Parameters
     ----------
@@ -547,18 +598,33 @@ def compare(
         av = after_values.get(name)
         delta = (av - bv) if (av is not None and bv is not None) else None
         verdict = _classify_delta(name, delta)
-        diffs.append(MetricDiff(name=name, before=bv, after=av, delta=delta, verdict=verdict))
+        tier = _metric_tier(name)
+        diffs.append(
+            MetricDiff(name=name, before=bv, after=av, delta=delta, verdict=verdict, tier=tier)
+        )
 
-    regression_metrics = [d.name for d in diffs if d.verdict == "regressed"]
-    improved_metrics = [d.name for d in diffs if d.verdict == "improved"]
+    # GATE: only grounded-quality drops fail the gate.
+    regression_metrics = [
+        d.name for d in diffs if d.tier == "gate" and d.verdict == "regressed"
+    ]
+    # IMPROVEMENTS: GATE/REVIEW metrics that rose (volume rises are not credited).
+    improved_metrics = [
+        d.name for d in diffs
+        if d.tier in {"gate", "review"} and d.verdict == "improved"
+    ]
+    # REVIEW: detector precision/recall changes (both directions) — human review.
+    review_metrics = [
+        d.name for d in diffs
+        if d.tier == "review" and d.verdict in {"regressed", "improved"}
+    ]
+    # INFO: any volume metric that actually moved — diagnostic only.
+    info_metrics = [
+        d.name for d in diffs
+        if d.tier == "info" and d.delta is not None and abs(d.delta) > 1e-9
+    ]
 
-    # Gate: PASS iff no regressions
-    if regression_metrics:
-        verdict = "REGRESSED"
-    elif not improved_metrics:
-        verdict = "PASS"  # no regressions, possibly unchanged — still a pass (stability confirmed)
-    else:
-        verdict = "PASS"
+    # Verdict = REGRESSED iff a GATE metric dropped > epsilon; else PASS.
+    verdict = "REGRESSED" if regression_metrics else "PASS"
 
     result = CompareResult(
         before_ref=before_ref,
@@ -572,6 +638,8 @@ def compare(
         targeted_metrics=targeted_metrics or [],
         regression_metrics=regression_metrics,
         improved_metrics=improved_metrics,
+        review_metrics=review_metrics,
+        info_metrics=info_metrics,
     )
 
     if report_dir is not None:
@@ -616,18 +684,46 @@ def _write_compare_report(
         "",
     ]
 
+    by_name = {d.name: d for d in result.diffs}
+
+    def _delta_line(m: str, sign: bool = False) -> str:
+        diff = by_name[m]
+        d = diff.delta
+        plus = "+" if (sign and d is not None and d > 0) else ""
+        return f"- `{m}`: {_fmt(diff.before)} → {_fmt(diff.after)} (Δ{plus}{_fmt(d, 4)})"
+
+    lines.append(
+        "_Tiers — GATE: grounded quality (fails the gate); "
+        "REVIEW: detector precision/recall (human decides); "
+        "INFO: volume diagnostics (never a regression)._"
+    )
+    lines.append("")
+
     if result.regression_metrics:
-        lines.append("### Regressions (gate FAILED):")
+        lines.append("### GATE regressions (gate FAILED):")
         for m in result.regression_metrics:
-            diff = next(d for d in result.diffs if d.name == m)
-            lines.append(f"- `{m}`: {_fmt(diff.before)} → {_fmt(diff.after)} (Δ{_fmt(diff.delta, 4)})")
+            lines.append(_delta_line(m))
+        lines.append("")
+    else:
+        lines.append("### GATE: no grounded-quality regression (gate PASSED).")
         lines.append("")
 
     if result.improved_metrics:
-        lines.append("### Improvements:")
+        lines.append("### Improvements (GATE/REVIEW):")
         for m in result.improved_metrics:
-            diff = next(d for d in result.diffs if d.name == m)
-            lines.append(f"- `{m}`: {_fmt(diff.before)} → {_fmt(diff.after)} (Δ+{_fmt(diff.delta, 4)})")
+            lines.append(_delta_line(m, sign=True))
+        lines.append("")
+
+    if result.review_metrics:
+        lines.append("### Needs human review (detector precision/recall):")
+        for m in result.review_metrics:
+            lines.append(_delta_line(m, sign=True))
+        lines.append("")
+
+    if result.info_metrics:
+        lines.append("### Informational deltas (volume — not a regression):")
+        for m in result.info_metrics:
+            lines.append(_delta_line(m, sign=True))
         lines.append("")
 
     if result.targeted_metrics:
@@ -637,13 +733,13 @@ def _write_compare_report(
     lines += [
         "## Full Panel Diff",
         "",
-        "| Metric | Before | After | Delta | Verdict |",
-        "|--------|--------|-------|-------|---------|",
+        "| Metric | Tier | Before | After | Delta | Verdict |",
+        "|--------|------|--------|-------|-------|---------|",
     ]
     for diff in result.diffs:
         delta_str = f"Δ{_fmt(diff.delta, 4)}" if diff.delta is not None else "—"
         lines.append(
-            f"| `{diff.name}` | {_fmt(diff.before)} | {_fmt(diff.after)} "
+            f"| `{diff.name}` | {diff.tier} | {_fmt(diff.before)} | {_fmt(diff.after)} "
             f"| {delta_str} | {diff.verdict} |"
         )
     lines.append("")

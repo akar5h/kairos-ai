@@ -8,41 +8,45 @@
 
 ## Verdict: **PASS**
 
+_Tiers — GATE: grounded quality (fails the gate); REVIEW: detector precision/recall (human decides); INFO: volume diagnostics (never a regression)._
+
+### GATE: no grounded-quality regression (gate PASSED).
+
 ## Full Panel Diff
 
-| Metric | Before | After | Delta | Verdict |
-|--------|--------|-------|-------|---------|
-| `aggregate.classes_covered` | 1.0000 | 1.0000 | Δ0.0000 | unchanged |
-| `aggregate.severity_error` | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
-| `aggregate.severity_info` | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
-| `aggregate.severity_warning` | 234.0000 | 234.0000 | Δ0.0000 | unchanged |
-| `aggregate.total_findings` | 234.0000 | 234.0000 | Δ0.0000 | unchanged |
-| `detector.coordination_waste.fire_count` | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
-| `detector.coordination_waste.fire_rate` | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
-| `detector.coordination_waste.precision` | — | — | — | unknown |
-| `detector.coordination_waste.recall` | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
-| `detector.redundant_execution.fire_count` | 49.0000 | 49.0000 | Δ0.0000 | unchanged |
-| `detector.redundant_execution.fire_rate` | 0.0966 | 0.0966 | Δ0.0000 | unchanged |
-| `detector.redundant_execution.precision` | — | — | — | unknown |
-| `detector.redundant_execution.recall` | — | — | — | unknown |
-| `detector.struggle_ratio.fire_count` | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
-| `detector.struggle_ratio.fire_rate` | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
-| `detector.struggle_ratio.precision` | — | — | — | unknown |
-| `detector.struggle_ratio.recall` | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
-| `detector.unrecovered_error.fire_count` | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
-| `detector.unrecovered_error.fire_rate` | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
-| `detector.unrecovered_error.precision` | — | — | — | unknown |
-| `detector.unrecovered_error.recall` | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
-| `detector.work_to_talk_ratio.fire_count` | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
-| `detector.work_to_talk_ratio.fire_rate` | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
-| `detector.work_to_talk_ratio.precision` | — | — | — | unknown |
-| `detector.work_to_talk_ratio.recall` | — | — | — | unknown |
-| `outcome.owner_precision` | 0.4640 | 0.4640 | Δ0.0000 | unchanged |
-| `outcome.owner_recall` | 0.8923 | 0.8923 | Δ0.0000 | unchanged |
-| `outcome.tau_abstention_rate` | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
-| `outcome.tau_fail_precision` | 0.8056 | 0.8056 | Δ0.0000 | unchanged |
-| `outcome.tau_fail_recall` | 0.3021 | 0.3021 | Δ0.0000 | unchanged |
-| `outcome.tau_kappa` | 0.1692 | 0.1692 | Δ0.0000 | unchanged |
+| Metric | Tier | Before | After | Delta | Verdict |
+|--------|------|--------|-------|-------|---------|
+| `aggregate.classes_covered` | info | 1.0000 | 1.0000 | Δ0.0000 | unchanged |
+| `aggregate.severity_error` | info | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
+| `aggregate.severity_info` | info | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
+| `aggregate.severity_warning` | info | 234.0000 | 234.0000 | Δ0.0000 | unchanged |
+| `aggregate.total_findings` | info | 234.0000 | 234.0000 | Δ0.0000 | unchanged |
+| `detector.coordination_waste.fire_count` | info | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
+| `detector.coordination_waste.fire_rate` | info | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
+| `detector.coordination_waste.precision` | review | — | — | — | unknown |
+| `detector.coordination_waste.recall` | review | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
+| `detector.redundant_execution.fire_count` | info | 49.0000 | 49.0000 | Δ0.0000 | unchanged |
+| `detector.redundant_execution.fire_rate` | info | 0.0966 | 0.0966 | Δ0.0000 | unchanged |
+| `detector.redundant_execution.precision` | review | — | — | — | unknown |
+| `detector.redundant_execution.recall` | review | — | — | — | unknown |
+| `detector.struggle_ratio.fire_count` | info | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
+| `detector.struggle_ratio.fire_rate` | info | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
+| `detector.struggle_ratio.precision` | review | — | — | — | unknown |
+| `detector.struggle_ratio.recall` | review | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
+| `detector.unrecovered_error.fire_count` | info | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
+| `detector.unrecovered_error.fire_rate` | info | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
+| `detector.unrecovered_error.precision` | review | — | — | — | unknown |
+| `detector.unrecovered_error.recall` | review | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
+| `detector.work_to_talk_ratio.fire_count` | info | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
+| `detector.work_to_talk_ratio.fire_rate` | info | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
+| `detector.work_to_talk_ratio.precision` | review | — | — | — | unknown |
+| `detector.work_to_talk_ratio.recall` | review | — | — | — | unknown |
+| `outcome.owner_precision` | gate | 0.4640 | 0.4640 | Δ0.0000 | unchanged |
+| `outcome.owner_recall` | gate | 0.8923 | 0.8923 | Δ0.0000 | unchanged |
+| `outcome.tau_abstention_rate` | info | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
+| `outcome.tau_fail_precision` | gate | 0.8056 | 0.8056 | Δ0.0000 | unchanged |
+| `outcome.tau_fail_recall` | gate | 0.3021 | 0.3021 | Δ0.0000 | unchanged |
+| `outcome.tau_kappa` | gate | 0.1692 | 0.1692 | Δ0.0000 | unchanged |
 
 ## Outcome Detail
 

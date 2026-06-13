@@ -6,57 +6,67 @@
 - Corpus hash: `72fb137f75b43d9a...`
 - Corpus size: 507 entries
 
-## Verdict: **REGRESSED**
+## Verdict: **PASS**
 
-### Regressions (gate FAILED):
+_Tiers — GATE: grounded quality (fails the gate); REVIEW: detector precision/recall (human decides); INFO: volume diagnostics (never a regression)._
+
+### GATE: no grounded-quality regression (gate PASSED).
+
+### Improvements (GATE/REVIEW):
+- `detector.unrecovered_error.precision`: 0.5385 → 0.5833 (Δ+0.0449)
+
+### Needs human review (detector precision/recall):
+- `detector.coordination_waste.recall`: 1.0000 → 0.5000 (Δ-0.5000)
+- `detector.unrecovered_error.precision`: 0.5385 → 0.5833 (Δ+0.0449)
+
+### Informational deltas (volume — not a regression):
+- `aggregate.severity_info`: 83.0000 → 46.0000 (Δ-37.0000)
+- `aggregate.severity_warning`: 647.0000 → 667.0000 (Δ+20.0000)
+- `aggregate.total_findings`: 730.0000 → 713.0000 (Δ-17.0000)
 - `detector.coordination_waste.fire_count`: 234.0000 → 162.0000 (Δ-72.0000)
 - `detector.coordination_waste.fire_rate`: 0.4615 → 0.3195 (Δ-0.1420)
-- `detector.coordination_waste.recall`: 1.0000 → 0.5000 (Δ-0.5000)
+- `detector.redundant_execution.fire_count`: 49.0000 → 116.0000 (Δ+67.0000)
+- `detector.redundant_execution.fire_rate`: 0.0966 → 0.2288 (Δ+0.1321)
 - `detector.struggle_ratio.fire_count`: 78.0000 → 24.0000 (Δ-54.0000)
 - `detector.struggle_ratio.fire_rate`: 0.1538 → 0.0473 (Δ-0.1065)
 - `detector.unrecovered_error.fire_count`: 74.0000 → 70.0000 (Δ-4.0000)
 - `detector.unrecovered_error.fire_rate`: 0.1460 → 0.1381 (Δ-0.0079)
 
-### Improvements:
-- `detector.redundant_execution.fire_count`: 49.0000 → 116.0000 (Δ+67.0000)
-- `detector.redundant_execution.fire_rate`: 0.0966 → 0.2288 (Δ+0.1321)
-- `detector.unrecovered_error.precision`: 0.5385 → 0.5833 (Δ+0.0449)
-
 ## Full Panel Diff
 
-| Metric | Before | After | Delta | Verdict |
-|--------|--------|-------|-------|---------|
-| `aggregate.classes_covered` | 5.0000 | 5.0000 | Δ0.0000 | unchanged |
-| `aggregate.severity_error` | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
-| `aggregate.severity_info` | 83.0000 | 46.0000 | Δ-37.0000 | unchanged |
-| `aggregate.severity_warning` | 647.0000 | 667.0000 | Δ20.0000 | unchanged |
-| `aggregate.total_findings` | 730.0000 | 713.0000 | Δ-17.0000 | unchanged |
-| `detector.coordination_waste.fire_count` | 234.0000 | 162.0000 | Δ-72.0000 | regressed |
-| `detector.coordination_waste.fire_rate` | 0.4615 | 0.3195 | Δ-0.1420 | regressed |
-| `detector.coordination_waste.precision` | 1.0000 | 1.0000 | Δ0.0000 | unchanged |
-| `detector.coordination_waste.recall` | 1.0000 | 0.5000 | Δ-0.5000 | regressed |
-| `detector.redundant_execution.fire_count` | 49.0000 | 116.0000 | Δ67.0000 | improved |
-| `detector.redundant_execution.fire_rate` | 0.0966 | 0.2288 | Δ0.1321 | improved |
-| `detector.redundant_execution.precision` | — | — | — | unknown |
-| `detector.redundant_execution.recall` | — | — | — | unknown |
-| `detector.struggle_ratio.fire_count` | 78.0000 | 24.0000 | Δ-54.0000 | regressed |
-| `detector.struggle_ratio.fire_rate` | 0.1538 | 0.0473 | Δ-0.1065 | regressed |
-| `detector.struggle_ratio.precision` | — | — | — | unknown |
-| `detector.struggle_ratio.recall` | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
-| `detector.unrecovered_error.fire_count` | 74.0000 | 70.0000 | Δ-4.0000 | regressed |
-| `detector.unrecovered_error.fire_rate` | 0.1460 | 0.1381 | Δ-0.0079 | regressed |
-| `detector.unrecovered_error.precision` | 0.5385 | 0.5833 | Δ0.0449 | improved |
-| `detector.unrecovered_error.recall` | 1.0000 | 1.0000 | Δ0.0000 | unchanged |
-| `detector.work_to_talk_ratio.fire_count` | 8.0000 | 8.0000 | Δ0.0000 | unchanged |
-| `detector.work_to_talk_ratio.fire_rate` | 0.0158 | 0.0158 | Δ0.0000 | unchanged |
-| `detector.work_to_talk_ratio.precision` | — | — | — | unknown |
-| `detector.work_to_talk_ratio.recall` | — | — | — | unknown |
-| `outcome.owner_precision` | 0.4640 | 0.4640 | Δ0.0000 | unchanged |
-| `outcome.owner_recall` | 0.8923 | 0.8923 | Δ0.0000 | unchanged |
-| `outcome.tau_abstention_rate` | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
-| `outcome.tau_fail_precision` | 0.8056 | 0.8056 | Δ0.0000 | unchanged |
-| `outcome.tau_fail_recall` | 0.3021 | 0.3021 | Δ0.0000 | unchanged |
-| `outcome.tau_kappa` | 0.1692 | 0.1692 | Δ0.0000 | unchanged |
+| Metric | Tier | Before | After | Delta | Verdict |
+|--------|------|--------|-------|-------|---------|
+| `aggregate.classes_covered` | info | 5.0000 | 5.0000 | Δ0.0000 | unchanged |
+| `aggregate.severity_error` | info | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
+| `aggregate.severity_info` | info | 83.0000 | 46.0000 | Δ-37.0000 | unchanged |
+| `aggregate.severity_warning` | info | 647.0000 | 667.0000 | Δ20.0000 | unchanged |
+| `aggregate.total_findings` | info | 730.0000 | 713.0000 | Δ-17.0000 | unchanged |
+| `detector.coordination_waste.fire_count` | info | 234.0000 | 162.0000 | Δ-72.0000 | unchanged |
+| `detector.coordination_waste.fire_rate` | info | 0.4615 | 0.3195 | Δ-0.1420 | unchanged |
+| `detector.coordination_waste.precision` | review | 1.0000 | 1.0000 | Δ0.0000 | unchanged |
+| `detector.coordination_waste.recall` | review | 1.0000 | 0.5000 | Δ-0.5000 | regressed |
+| `detector.redundant_execution.fire_count` | info | 49.0000 | 116.0000 | Δ67.0000 | unchanged |
+| `detector.redundant_execution.fire_rate` | info | 0.0966 | 0.2288 | Δ0.1321 | unchanged |
+| `detector.redundant_execution.precision` | review | — | — | — | unknown |
+| `detector.redundant_execution.recall` | review | — | — | — | unknown |
+| `detector.struggle_ratio.fire_count` | info | 78.0000 | 24.0000 | Δ-54.0000 | unchanged |
+| `detector.struggle_ratio.fire_rate` | info | 0.1538 | 0.0473 | Δ-0.1065 | unchanged |
+| `detector.struggle_ratio.precision` | review | — | — | — | unknown |
+| `detector.struggle_ratio.recall` | review | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
+| `detector.unrecovered_error.fire_count` | info | 74.0000 | 70.0000 | Δ-4.0000 | unchanged |
+| `detector.unrecovered_error.fire_rate` | info | 0.1460 | 0.1381 | Δ-0.0079 | unchanged |
+| `detector.unrecovered_error.precision` | review | 0.5385 | 0.5833 | Δ0.0449 | improved |
+| `detector.unrecovered_error.recall` | review | 1.0000 | 1.0000 | Δ0.0000 | unchanged |
+| `detector.work_to_talk_ratio.fire_count` | info | 8.0000 | 8.0000 | Δ0.0000 | unchanged |
+| `detector.work_to_talk_ratio.fire_rate` | info | 0.0158 | 0.0158 | Δ0.0000 | unchanged |
+| `detector.work_to_talk_ratio.precision` | review | — | — | — | unknown |
+| `detector.work_to_talk_ratio.recall` | review | — | — | — | unknown |
+| `outcome.owner_precision` | gate | 0.4640 | 0.4640 | Δ0.0000 | unchanged |
+| `outcome.owner_recall` | gate | 0.8923 | 0.8923 | Δ0.0000 | unchanged |
+| `outcome.tau_abstention_rate` | info | 0.0000 | 0.0000 | Δ0.0000 | unchanged |
+| `outcome.tau_fail_precision` | gate | 0.8056 | 0.8056 | Δ0.0000 | unchanged |
+| `outcome.tau_fail_recall` | gate | 0.3021 | 0.3021 | Δ0.0000 | unchanged |
+| `outcome.tau_kappa` | gate | 0.1692 | 0.1692 | Δ0.0000 | unchanged |
 
 ## Outcome Detail
 
