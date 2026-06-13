@@ -47,26 +47,20 @@ call counts). On `6a90e914` (and `d82c0771`, `ba036a1d` where owner says clean):
 D3 — empty-args guard: `_normalize_args_key` returns `None` for empty-args steps → excluded
 from identical-arg count → all-empty-arg Bash traces no longer false-fire D3.
 
-| Detector | recall (owner-FIRE) | false positives (owner-CLEAN) | **estimated precision after fix** | ship |
+**MEASURED by Fable live (NOT estimated) — args confirmed enriched (110/110, 153/153 steps filled):**
+
+| Detector | recall (owner-FIRE) | false positives (owner-CLEAN) | **measured precision** | verdict |
 |---|---|---|---|---|
-| D1 unrecovered_error | 5/5 (unchanged) | ≤1/3 (at most `6a90e914` if it has real errors) | **≥ 0.83** | ≥ 0.7 gate |
-| D2 struggle_ratio | 4/5 (unchanged: `0939a81a` still unmapped) | 0/3 (`6a90e914` Bash ratio now 0) | **~0.80** | ≥ 0.7 gate |
-| D3 coordination_waste | not estimable from labels | 0 (empty-args excluded) | n/a | `info` |
-| D4 work_to_talk_ratio | not estimable (no token labels) | — | n/a | `info` |
+| D1 unrecovered_error | 5/5 | **3/3 (still fires on all 3 clean)** | **~0.62** | DETERMINISTIC CEILING — see below |
+| D2 struggle_ratio | 1/5 (only `a1bd9de0`) | **0/3** | **1.0** (low recall, no FPs) | FIXED — ship `warning` |
+| D3 coordination_waste | fires `bc749219` only | 0/3 | n/a | FIXED — ship `info` |
+| D4 work_to_talk_ratio | not measurable (no token labels) | — | n/a | `info` |
 
-**Note**: post-fix precision numbers are estimated by applying the logical fix analysis
-to the 8-trace labeled set. Full re-run against live Phoenix data requires the nightly
-pipeline (Day 12). The `6a90e914` D1 disagreement remains: the transcript may show real
-Edit/Write errors with subsequent OK Edit calls (recovery) — post-fix D1 would detect
-that pattern and correctly NOT fire if recovery is present.
+The args-enrichment fix (commit `9975ecf`) **resolved D2 and D3** — both were empty-args bugs (D2 redundant 62→0 on `6a90e914`; D3 empty-key collapse). D2 now fires only on genuine high-struggle (`a1bd9de0`, 9 errors): precise, conservative, not dormant.
 
-**Owner decision (2026-06-13): re-label the disagreements first**
-(the flywheel's first turn) — re-judge with the actual error steps shown, then finalize
-severity on real ground truth instead of n=8 noise. Severities in code stay provisional
-(detectors are NOT yet wired into the nightly loop) until the re-label settles them.
+**D1 is NOT a bug — it hits the deterministic ceiling.** Every D1 fire on the CLEAN traces has a later successful same-tool call (the agent recovered). But so does every D1 fire on the FIRE traces (verified: d38a760a steps 48/106/122/133/169, 0939a81a steps 7/30/36 — all have later same-tool OK within window 10). There is **no structural signal** separating "exit-1, never re-attempted, agent moved on" (owner: BAD) from "cat failed, agent moved on" (owner: FINE). The distinction is whether the failed command *mattered to the task* — semantic, not structural. D1's same-command-retry recovery rule misses real recovery (which changes args), and loosening it to status-based recovery would suppress the FIRE traces too (recall→0). **D1 cannot reach 0.7 deterministically.** This is the same boundary as Day 6 (tau wrong-args) — the empirical trigger for the deferred LLM judge (Appendix A build-trigger #2: a class provably invisible to deterministic rules).
 
-Disagreement set to re-label: D1/D2 fired on owner-CLEAN {`6a90e914`, `d82c0771`,
-`ba036a1d`}; D2 failed to fire on owner-FIRE unmapped `0939a81a`.
+**Owner decision PENDING:** D1 → demote to `info` (honest signal, not alarm), OR D1 becomes the documented first job for the deferred LLM judge. D2 ships `warning`, D3/D4 ship `info`. Re-label of the *disagreements* is now moot for precision (the ceiling is proven deterministically) — but articulating WHY a FIRE error matters vs a CLEAN one would author the future judge's spec.
 
 ---
 
