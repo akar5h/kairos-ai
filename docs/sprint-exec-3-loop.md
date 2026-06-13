@@ -1,258 +1,247 @@
-# Sprint Execution Doc 3/3 — LOOP (Days 8–14), REVISED
+# Sprint Execution Doc 3/3 — LOOP (Days 8–14), REVISED v2
 
-*Child of `sprint-14day.md`. **Revised 2026-06-13** after Day 7 findings + owner strategy review. The original judge-centric plan is preserved verbatim in Appendix A (DEFERRED — post-sprint Phase 4). This revision reorders the wedge around three decisions the owner locked:*
+*Child of `sprint-14day.md`. **Revised 2026-06-13** after Day 7 findings + two owner strategy reviews. The original judge-centric plan is preserved in Appendix A (DEFERRED — post-sprint Phase 4). This v2 restructures the wedge around four decisions the owner locked:*
 
-1. **Deterministic-first.** Exhaust the cheap, reproducible, deterministic path *before* any LLM judge. Day 7 proved there is unspent deterministic ROI: the silent-failure fix (Bug 1, `4c30a62`) corrected 53 steps across 28 traces, and the *contract-completion* metric could not see any of it — that gap is a deterministic **session-quality** signal we have not built yet, with honest inputs now available.
-2. **Persist + delta + dashboard as the spine.** "Self-improving" requires memory of self. A nightly *report* is repeated snapshots; the thesis needs a **time series** with interventions as markers on a curve. Store = **ClickHouse (local Docker)**.
-3. **Generalize, don't couple.** "Issue-level outcome" is a special case of a generic **`correlation_key`** (a declared span attribute grouping traces into one logical unit of work). Paperclip binds `paperclip.issue`; a chat app binds `thread_id`. Engine stays domain-blind.
+1. **Deterministic-first.** Exhaust the cheap, reproducible, deterministic path *before* any LLM judge. Day 7 proved unspent deterministic ROI: the silent-failure fix (Bug 1, `4c30a62`) corrected 53 steps across 28 traces, and *contract-completion* could not see any of it — that gap is a deterministic **session-quality** signal, now buildable on honest step data.
 
-**The LLM judge is DEFERRED** (Appendix A). Reason: it is the only stage with circular-validation risk ("LLM judging LLM"), and we have not yet spent the deterministic budget that reduces what the judge must adjudicate. We build it after the deterministic loop is proven and persisted — at which point the judge inherits a measured error bar (validated against the owner's labels + tau rewards) instead of being trusted blind.
+2. **Single source of data.** No scatter. **One Postgres** is the source of truth for everything Kairos produces (findings, time series, labels, patterns, discovery queue). ClickHouse is *not* used now — we have not hit columnar-OLAP scale, Postgres is already running, and a second store is exactly the convolution we're removing. ClickHouse becomes a roadmap swap (portable schema) for when discovery aggregations span millions of rows.
+
+3. **Generalize, don't couple.** Unit-of-work outcome is a generic **`correlation_key`** (a declared, *optional*, documented span attribute grouping traces). Paperclip binds `paperclip.issue`; a chat app binds `thread_id`. Engine stays domain-blind. Expectations (which tools "should" appear) are **learned, never declared** — no config burden, no conflict-on-conflict.
+
+4. **Kairos improves *itself*, not the systems it observes.** The loop that closes is on **Kairos's own detection quality**, driven by the **discovery → label → detector flywheel** (the owner's real concern from week 1: "there is no eval system for Kairos itself"). Kairos *surfaces* agent problems with evidence (e.g. "CTO wastes 68% on coordination"); whether anyone *fixes the agent* is the user's governed decision and is **out of scope**. The original Day-13 "coordination diet" (rewriting Paperclip's CTO agent) was a category error — fixing the observed system, not improving Kairos — and is **cut**.
+
+**The LLM judge is DEFERRED** (Appendix A): it is the only stage with circular-validation risk, and we have not yet spent the deterministic budget that shrinks what it must adjudicate. Built later, it inherits a measured error bar (validated against the owner's labels + tau rewards) rather than blind trust.
 
 ---
 
-## 0. The nightly pipeline (revised — no LLM in the loop)
+## 0. The nightly pipeline (deterministic-only; zero LLM cost)
 
 ```
             03:00 local, launchd
                   │
    ┌──────────────▼──────────────────────────────────────────────────────────┐
-   │ nightly_loop.py            (deterministic-only; zero LLM cost)           │
+   │ nightly_loop.py            (deterministic-only; no LLM in the loop)      │
    │                                                                         │
    │  fetch (26h window) ──► dedupe vs seen_trace_ids                        │
-   │        │                                                                │
    │        ▼                                                                │
    │  TIER 1   kairos analyze (outcome + tier-1 detectors)        ~0 cost   │
-   │        │                                                                │
    │        ▼                                                                │
    │  TIER 1.5 session-quality detectors (Day 8)                  ~0 cost   │
-   │        │  struggle · unrecovered_error · mandatory_tool_missing ·      │
-   │        │  coordination_waste · work_to_talk                            │
+   │        │  struggle · unrecovered_error · coordination_waste · work_to_talk │
    │        ▼                                                                │
    │  ROLLUP   correlation_key group → unit-of-work outcome (Day 9)         │
-   │        │                                                                │
    │        ▼                                                                │
-   │  PERSIST  ClickHouse: raw findings + nightly aggregates (Day 10)       │
+   │  LEARN    per-workflow tool-presence base rates → expectation deltas    │
+   │        ▼                                                                │
+   │  PERSIST  Postgres: findings + nightly_rollup (Day 10)                 │
    │        │  idempotent by (night_id, trace_id / unit_id)                 │
    │        ▼                                                                │
-   │  DISCOVER anomaly surface → owner-label queue (Day 12)                 │
-   │        │                                                                │
+   │  DISCOVER anomaly + expectation-miss surface → owner-label queue (Day12)│
    │        ▼                                                                │
-   │  EMIT     daily report (md+json, template-filled, no prose-LLM)        │
-   │           + dashboard refresh + decision_ledger rows                   │
+   │  EMIT     daily report (template-filled, no LLM) + dashboard refresh    │
+   │           + decision_ledger rows (improvement.suggested)               │
    └─────────────────────────────────────────────────────────────────────────┘
-   Every box that can fail produces a VISIBLE artifact on failure
-   (skip-marker report / partial-coverage note). The loop never silently
-   skips a night — the F1 lesson applied to the loop itself.
+   Every box that can fail emits a VISIBLE artifact on failure (skip-marker
+   report / partial-coverage note). The loop never silently skips a night —
+   the F1 lesson applied to the loop itself.
 ```
 
-**Engine invariant (unchanged):** `KairosEngine.analyze()` never calls an LLM. Tier-1.5 detectors are deterministic and live in `src/kairos/detection/`. The loop, persistence, discovery, and dashboard live in `src/kairos/loop/` + `scripts/`. The CLAUDE.md dropped-modules list stays dropped — this is analysis tooling; the actuator is a human-approved PR.
+**Engine invariant (unchanged):** `KairosEngine.analyze()` never calls an LLM. Tier-1.5 detectors are deterministic, in `src/kairos/detection/`. Loop/persistence/discovery/dashboard live in `src/kairos/loop/` + `scripts/`. The actuator is always a human-gated PR; the loop only *surfaces*.
 
 ---
 
 ## Day 8 — Deterministic session-quality detectors (`src/kairos/detection/session_quality.py`)
 
-The contract-completion metric answers "did the unit of work's signature tool succeed." It is blind to *how badly the agent thrashed getting there*. These detectors fill that gap deterministically, using the now-honest step statuses (Bug 1). All are severity-tagged and measured for precision against the owner's Day-7 labels (`eval/review/answers.jsonl`) where applicable; a detector under 0.7 precision ships at severity `info`, same discipline as `redundant_execution`.
+Contract-completion answers "did the unit's signature tool succeed." It is blind to *how badly the agent thrashed*. These detectors fill that gap deterministically, on the now-honest step statuses (Bug 1). All severity-tagged; all measured for precision against the owner's labels (`eval/review/answers.jsonl` + `docs/spotcheck-day4.md`); **a detector under 0.7 precision ships at `info` or is cut — nothing ships dormant.**
 
 ```pseudocode
 # D1 — unrecovered_error  (sharpens the over-loose recovery rule)
-#   current _has_critical_tool_error: ANY same-tool success anywhere = recovered.
-#   too generous for ubiquitous tools (one Bash success absolves all Bash fails).
+#   current _has_critical_tool_error: ANY same-tool success anywhere = "recovered" —
+#   too generous (one Bash success absolves every Bash failure).
 fire when: step.status == ERROR
-       AND no later step with SAME tool AND jaccard(args_norm) >= 0.9   # same command, not just same tool
+       AND no later step with SAME tool AND jaccard(args_norm) >= 0.9     # same command, not just same tool
            within RECOVERY_WINDOW steps
-  severity: error if tool in op.required_side_effect_tools else warning
+       AND session-restart boundary is NOT counted as recovery (the haywire pattern)
+  severity: error if tool in required_side_effect_tools else warning
 
-# D2 — struggle_ratio  (the Bug-1 class, made visible)
-#   corrected/error+retry churn relative to productive work.
+# D2 — struggle_ratio  (the Bug-1 class, made visible at trace level)
 struggle = (error_steps + redundant_steps + rejected_tool_calls) / max(1, side_effect_successes)
-fire when: struggle >= STRUGGLE_T   # T tuned on labels; report distribution, don't guess one number
-  severity: warning ; attach the churn breakdown as evidence
+fire when: struggle >= STRUGGLE_T     # T from the label distribution; report the curve, don't guess one number
+  severity: warning ; evidence = the churn breakdown
 
-# D3 — mandatory_tool_missing  (Bug 3, GENERIC + deterministic — not a judgment call)
-#   context.yaml op gains:  mandatory_tools: [<tool/skill names>]
-#   a declared-required step that never fired (or fired but is_error) = contract violation.
-fire when: op.mandatory_tools present AND any m in mandatory_tools has no successful step
-  severity: error    # it's a declared contract; absence is unambiguous
+# D3 — coordination_waste  (insight-report-0 M1/M2; now computable with real args)
+fire when: >= REPEAT_T identical-arg calls of one tool (inbox poll / token re-derivation)
+       OR  fraction of Bash calls matching coordination-curl shapes >= CURL_T
+  severity: info→warning by count
+  # SURFACING ONLY — Kairos reports the waste; fixing the agent is the user's call.
 
-# D4 — coordination_waste  (insight-report-0 M1/M2, now computable: real args)
-fire when: >= REPEAT_T identical-arg calls of the same tool (poll/credential rituals)
-       OR  fraction of Bash calls matching known coordination-curl shapes >= CURL_T
-  severity: info→warning by count ; this is the Day-13 intervention's target metric
-
-# D5 — work_to_talk_ratio  (cost without progress)
+# D4 — work_to_talk_ratio  (cost without progress)
 ratio = side_effect_successes / max(1, llm_tokens_spent / 1000)
-fire when: ratio below WTT_T on a trace that is NOT pure research/coordination
-  severity: info ; a cost-efficiency signal, not a correctness one
+fire when: ratio below WTT_T on a trace that is NOT pure research/coordination (op-exempt)
+  severity: info
 ```
 
-**Config surface:** thresholds live per-op in `context.yaml` (reuse the Day-5 surface), never hardcoded; defaults in code with a comment citing the label distribution they came from. **Edge cases:** research/coordination ops are *expected* low work-to-talk → D5 exempt by op; D1 recovery window crossing a session-restart boundary (the haywire pattern) counts as *unrecovered* (the restart is not recovery); D3 with a mandatory tool that is itself optional in some modes → that's a context.yaml modelling error, fail loud at load.
+**Learned expectations (replaces the cut "mandatory_tools" declaration):** the LEARN stage computes, per workflow, each tool's presence rate across *clean* (outcome-pass, low-struggle) traces. A trace missing a tool whose presence rate ≥ `EXPECT_T` (e.g. 0.9) becomes an **expectation-miss candidate** — it is NOT a fired finding (unlabeled = unmeasured); it is surfaced to discovery for a one-click owner label. Confirmed → tracked as a per-workflow expectation in Postgres. **Zero user declaration, zero config conflict** — the doubt-driven-development silent-skip (trace `6071761a`) is caught this way, not by a hand-written rule.
 
-**Validation (blocking for severity ≥ warning):** measure each detector's precision on the owner's 15 labels + the 20 spot-check labels. Record in `eval/reports/session-quality-precision.md`. This is the deterministic analogue of the judge's validation gate — a detector that cries wolf gets demoted, not shipped loud.
+**Config surface:** detector thresholds live per-op in `context.yaml` (reuse the Day-5 surface) with code defaults commented to the label distribution they came from. **Edge cases:** research/coordination ops are expected low work-to-talk → D4 op-exempt; D1's window crossing a session restart = unrecovered (restart ≠ recovery); a workflow with too few clean traces to learn an expectation (n < `EXPECT_MIN_N`) emits no expectation-miss candidates and says so (no guessing from thin data).
+
+**Validation (blocking for severity ≥ warning):** per-detector precision on the owner's 15 + 20 labels → `eval/reports/session-quality-precision.md`. Demote-or-cut on < 0.7. The deterministic analogue of the judge's validation gate.
 
 ---
 
-## Day 9 — Correlation-key rollup (generic unit-of-work outcome)
+## Day 9 — Correlation-key rollup (generic, documented, optional)
 
 ```pseudocode
-# context.yaml gains a top-level optional key:
-#   correlation_key: "paperclip.issue"     # Paperclip; chat app would use "thread_id"
-# The engine reads the named attr off spans (tool spans carry it; root may not — read tool spans).
-# When absent from config, the unit IS the trace (today's behavior) — backward compatible.
+# context.yaml gains an OPTIONAL top-level key (documented in the Kairos config guide):
+#   correlation_key: "paperclip.issue"    # chat app → "thread_id"; pipeline → "run_id"
+# Absent → the unit IS the trace (today's behavior, fully backward compatible).
 
-group traces by correlation_key value:
-    unit_outcome  = outcome of the LAST computable trace in the group (chronological)
-                    # intermediate fails on an ultimately-green unit are progress, not failure
-    unit_findings = UNION of findings across the group
-    unit_cost     = SUM tokens / SUM struggle across the group
-    unit_span     = first_trace.start .. last_trace.end
-orphans (no key value) → reported under "unattributed", scored per-trace
+group traces by correlation_key value (read from TOOL spans; root often lacks it):
+    unit_outcome  = outcome of the LAST computable trace (chronological) — intermediate
+                    fails on an ultimately-green unit are progress, not failure
+    unit_findings = UNION over the group
+    unit_cost     = SUM tokens / SUM struggle
+orphans (no key value) → "unattributed", scored per-trace
 ```
 
-**Why this is generic, not Paperclip-coupled:** the engine never references "issue." It references a configured attribute name and groups by its value. Multi-trace units are universal in agent systems (a chat = many request-traces under one thread; a pipeline = many step-traces under one run_id). Paperclip is one binding of a generic feature — exactly as `business_context.yaml` is generic with Paperclip as one tenant. Rollup mode is `last-wins` by default; `any-fail` / `all-pass` selectable per-context later (do not build until needed — YAGNI).
-
-**Output:** `UnitOutcomeSummary` alongside the existing per-trace summary; both flow to persistence. The dashboard can show outcome at trace OR unit granularity.
+**Generic, not coupled:** the engine references a *configured attribute name*, never "issue." Multi-trace units are universal in agent systems. Rollup mode = `last-wins` default; `any-fail`/`all-pass` are per-context, build-when-needed (YAGNI). **Documentation requirement (owner-flagged):** the Kairos config guide MUST state plainly that `correlation_key`, the operation definitions, and detector thresholds are user-provided configuration — what each does, when it's required, and the safe default when omitted. No hidden assumptions.
 
 ---
 
-## Day 10 — Persistence: ClickHouse (local Docker)
+## Day 10 — Persistence: single Postgres source (`src/kairos/loop/persist.py`)
 
-**Decision:** ClickHouse, self-hosted in Docker locally for the sprint. Rationale: (a) these traces carry live tokens in Bash args — local keeps the redaction surface local, no cloud egress; (b) one container beside Phoenix, no signup/auth/latency; (c) columnar OLAP is the correct substrate for the 100k-trace vision (discovery-mode aggregations over millions of rows); (d) schema kept cloud-portable → ClickHouse Cloud / Tinybird later is a connection-string swap. Free-cloud reality logged: ClickHouse Cloud is trial-credits not forever-free; Tinybird (ClickHouse-based) has a real free tier if managed-free becomes a hard requirement post-sprint — but revisit only once data is redaction-clean by construction.
+**Decision:** one Postgres, the single source of truth for all Kairos-produced data. A dedicated `kairos` database (new `kairos-pg` container, or a `kairos` DB on an existing PG instance — owner's infra call). Reasons: Postgres is already running; the nightly series is KB/night (no OLAP need); one store removes the scatter; secrets stay local. Schema kept ANSI-portable so a later ClickHouse swap (at discovery-scale) is a connection-string change, not a rewrite.
 
+```sql
+-- raw findings (grows with traffic; partition by night when it gets big)
+CREATE TABLE findings (
+  night_id date, trace_id text, unit_id text, workflow text, agent text,
+  detector text, severity text, evidence_steps int[], tokens int,
+  struggle real, outcome text, config_hash text, ingested_at timestamptz,
+  PRIMARY KEY (night_id, trace_id, detector)          -- idempotent upsert (ON CONFLICT DO UPDATE)
+);
+-- the time series the dashboard reads (small)
+CREATE TABLE nightly_rollup (
+  night_id date, workflow text, agent text,
+  units int, traces int, outcome_rate real,
+  struggle_p50 real, struggle_p90 real, coordination_waste_rate real,
+  tokens_per_unit real, finding_counts jsonb, config_hash text,
+  PRIMARY KEY (night_id, workflow, agent)
+);
+-- the flywheel's memory
+CREATE TABLE labels        (id text PRIMARY KEY, trace_id text, question text, answer text,
+                            verdict text, label_class text, ts timestamptz);  -- owner labels persisted
+CREATE TABLE expectations  (workflow text, tool text, presence_rate real, confirmed bool,
+                            first_seen date, PRIMARY KEY (workflow, tool));
+CREATE TABLE discovery_queue (id text PRIMARY KEY, night_id date, kind text,  -- 'anomaly'|'expectation_miss'
+                            trace_id text, features jsonb, labeled bool DEFAULT false);
 ```
-deploy: docker compose service `clickhouse` (ports 8123 http / 9000 native), volume-backed,
-        same compose file / pattern as deploy-phoenix. Env: CLICKHOUSE_DSN (names→.env.example).
 
-Two-tier schema (raw + aggregate):
-
-  TABLE findings  (raw, grows with traffic — ClickHouse's job)
-    night_id Date, trace_id String, unit_id String, workflow LowCardinality(String),
-    detector LowCardinality(String), severity Enum, evidence_steps Array(UInt32),
-    tokens UInt32, struggle Float32, outcome Enum('pass','fail','noncomputable'),
-    config_hash String, agent LowCardinality(String), ingested_at DateTime
-    ENGINE = MergeTree ORDER BY (night_id, workflow, detector)
-    -- idempotent reload: ReplacingMergeTree keyed on (night_id, trace_id, detector)
-
-  TABLE nightly_rollup  (small, the time series the dashboard reads)
-    night_id Date, workflow LowCardinality(String), agent LowCardinality(String),
-    units UInt32, traces UInt32,
-    outcome_rate Float32, struggle_p50 Float32, struggle_p90 Float32,
-    coordination_waste_rate Float32, tokens_per_unit Float32,
-    finding_counts Map(String, UInt32),
-    config_hash String,
-    intervention_marker String DEFAULT ''   -- set on nights an intervention applied to `agent`
-    ENGINE = ReplacingMergeTree ORDER BY (night_id, workflow, agent)
-```
-
-**Ingest** (`src/kairos/loop/persist.py`): write raw findings then the computed rollup; idempotent by (night_id, trace/unit) so re-running a night never double-counts (the ledger-cursor discipline). **config_hash gate:** deltas are only computed within the same config_hash; a config change appends a `baseline_break` marker row so the dashboard renders a visible discontinuity instead of a fake trend. **Backfill:** one-shot loader replays the last 7 days of live traces into ClickHouse so the dashboard opens with history, not an empty chart.
+**Idempotency:** `ON CONFLICT … DO UPDATE` keyed as above — re-running a night never double-counts (ledger-cursor discipline). **config_hash gate:** deltas computed only within one hash; a config change writes a `baseline_break` row so the dashboard shows a visible discontinuity, never a fake trend. **Backfill:** one-shot loader replays the last 7 days of live traces so the dashboard opens with history. **Migration:** plain SQL files in `migrations/`, applied idempotently; no ORM heaviness for four tables.
 
 ---
 
 ## Day 11 — Delta engine + minimal dashboard (`src/kairos/loop/delta.py`, `eval/dashboard/app.py`)
 
 ```pseudocode
-delta(metric, agent, window_before, window_after, same config_hash):
+delta(metric, scope, window_before, window_after, same config_hash):
     return mean(after) - mean(before), with n each side and the raw points
-    # interventions annotated from nightly_rollup.intervention_marker
-guardrail_check(primary_metric_improved, guardrails=[outcome_rate, escalation_rate]):
-    primary improves + any guardrail degrades = REGRESSION (report as such, never hide)
+guardrail_check(primary_improved, guardrails=[outcome_rate, escalation_rate]):
+    primary improves + any guardrail degrades = REGRESSION (reported, never hidden)
 ```
 
-**Dashboard — minimal, one page (Streamlit, reuse the Day-7 app stack):**
-- Top: outcome_rate per workflow over time (line). Intervention markers as vertical rules with labels.
-- Mid: struggle_p50/p90 and coordination_waste_rate over time, **split by agent** (CTO vs controls) — this is where the Day-13 intervention must show as a bend for CTO only.
-- Bottom: finding-volume trend by detector; tokens_per_unit trend.
-- Sidebar: config_hash timeline (baseline-break markers), unit vs trace granularity toggle.
-- **No write actions, no auth, no charts beyond these.** It reads `nightly_rollup`. The owner types takeaways; the dashboard shows curves.
-
-The dashboard *is* the thesis artifact: Day 14's "did it work" is read off it — CTO's coordination/struggle curves bend down after the marker, controls flat, outcome guardrail unbroken.
+**Dashboard — one page (Streamlit, reuse the Day-7 stack), reads `nightly_rollup`:**
+- Outcome_rate per workflow over time; baseline-break markers as vertical rules.
+- Struggle p50/p90, coordination_waste_rate over time, split by agent (the surfacing view).
+- **Kairos's own detection curve** (the self-improvement view): failure-classes-covered and precision-vs-labels over the sprint — this is the thesis artifact.
+- Finding-volume by detector; tokens_per_unit trend.
+- Sidebar: config_hash timeline; unit-vs-trace granularity toggle.
+- No write actions, no auth, nothing beyond these curves. Owner types takeaways; the dashboard shows trends.
 
 ---
 
 ## Day 12 — Discovery mode + nightly runner
 
-### Discovery (`src/kairos/loop/discover.py`) — the flywheel
+### Discovery (`src/kairos/loop/discover.py`) — the flywheel engine
 
 ```pseudocode
-# Deterministic anomaly surfacing: find what NO detector was told to look for.
-features per trace: tool-sequence shape, token z-score, latency z-score,
-                    coverage, struggle, depth, restart-count
-outliers = traces in the tail of any feature distribution (robust z > 3) OR
-           rare tool-sequence n-grams (frequency < 1%)
-cluster the outliers (cheap: by tool-signature + dominant feature)
-emit eval/review/discovery_queue.json  → the SAME review app (Day 7)
-owner labels them → confirmed clusters become next round's targeted detector (Day 8 surface)
+# Surfaces what NO detector was told to look for + expectation misses (Day 8 LEARN stage).
+features per trace: tool-sequence shape, token z, latency z, coverage, struggle, depth, restart-count
+candidates = traces in the tail of any feature (robust z > 3)
+           ∪ rare tool-sequence n-grams (freq < 1%)
+           ∪ expectation_miss candidates (a near-universal tool absent)
+cluster cheaply (tool-signature + dominant feature) → eval/review/discovery_queue.json + Postgres
+owner labels them in the SAME review app (Day 7) → confirmed clusters become:
+    - a new targeted detector (Day-8 surface), OR
+    - a confirmed expectation (expectations table)
 ```
 
-This closes the loop the owner asked for: today's discovery → tomorrow's label → next week's deterministic rule. Discovery never fires findings on its own (unlabeled = unmeasured); it only *proposes candidates for labeling*. Honesty: it `log()`s how many outliers were dropped by any cap — no silent truncation.
+Discovery never fires findings itself (unlabeled = unmeasured); it only proposes candidates. It `log()`s anything dropped by a cap — no silent truncation. **This is the loop the owner asked for:** today's discovery → tomorrow's label → next week's deterministic rule.
 
 ### Runner (`scripts/nightly_loop.py` + launchd) — deterministic, cannot thrash
 
 ```pseudocode
 STATE_MACHINE (each transition logs a line):
-  FETCH    phoenix 26h, dedupe vs seen_trace_ids; retry 3×/30min → skip-marker report, EXIT 0
+  FETCH    phoenix 26h, dedupe; retry 3×/30min → skip-marker report, EXIT 0 (don't crash launchd)
   ANALYZE  kairos analyze (outcome + tier-1 + tier-1.5); 0 traces → "quiet night" report (valid)
-  ROLLUP   correlation_key grouping; key attr absent → per-trace mode + coverage note (degrade)
-  PERSIST  ClickHouse write (raw + rollup), atomic, idempotent; DB down → write local parquet
-           fallback + WARN, never lose the night
-  DISCOVER anomaly surface → discovery_queue (best-effort; failure = empty queue + note)
-  EMIT     report file + dashboard data refresh + decision_ledger rows (improvement.suggested)
+  ROLLUP   correlation_key grouping; key absent → per-trace mode + note (degrade, don't die)
+  LEARN    per-workflow presence rates → expectation deltas
+  PERSIST  Postgres upserts (findings + rollup); DB down → local parquet fallback + WARN, never lose the night
+  DISCOVER anomaly + expectation-miss → discovery_queue (best-effort)
+  EMIT     report + dashboard refresh + decision_ledger rows (improvement.suggested)
 ANY unexpected exception → traceback to log + skip-marker report. The night is never silent.
 ```
 
-Env (`.env`, names→`.env.example`): `KAIROS_CONTEXT_PATH`, `KAIROS_PHOENIX_ENDPOINT/PROJECT`, `CLICKHOUSE_DSN`, `LEDGER_API_URL`, `PAPERCLIP_DB_URL` (ledger_ro fallback for the key join), `KAIROS_LOOP_DATA_DIR`, `KAIROS_LOOP_DISABLED` (kill switch checked first). **No `ANTHROPIC_API_KEY` / `JUDGE_MODEL`** — the revised loop calls no LLM. **First supervised night runs Day 12**; owner skims log + dashboard next morning.
+Env (`.env`, names→`.env.example`): `KAIROS_CONTEXT_PATH`, `KAIROS_PHOENIX_ENDPOINT/PROJECT`, `KAIROS_PG_DSN`, `LEDGER_API_URL`, `KAIROS_LOOP_DATA_DIR`, `KAIROS_LOOP_DISABLED` (kill switch, checked first). **No LLM keys** — the loop calls no model. **First supervised night runs Day 12**; owner skims log + dashboard next morning.
 
 ---
 
-## Days 13–14 — Intervention + measurement (the thesis test)
+## Days 13–14 — The Kairos self-improvement proof (the thesis test)
 
-### Day 13 — the coordination diet (pre-selected, baseline in `insight-report-0.md`)
+The thesis is **not** "we fixed an agent." It is **"Kairos measurably got better at its own job, governed by human labels."** Days 13–14 run the flywheel once, end-to-end, on real traffic, and read the result off Kairos's own detection curve.
 
-Unchanged in substance from the original plan — it is the perfect deterministic-loop intervention because its target metric (`coordination_waste_rate`, D4) is now a first-class persisted series:
+### Day 13 — run the flywheel live
 
 ```
-I1: add paperclip MCP server to CTO agent session config (.mcp.json / adapter config)
-I2: rewrite CTO AGENTS.md coordination section:
-    - coordination via MCP tools, never curl
-    - never poll: inbox empty → end turn (orchestrator wakes you)
-    - never re-derive tokens: env provides them
-    - Grep/Glob/Read over Bash equivalents
-I1+I2 = ONE PR, CTO agent only; claudecoder/qaengineer untouched = CONTROLS
-on apply: stamp nightly_rollup.intervention_marker='coordination_diet' for agent=cto, this night
+flywheel iteration (live):
+  1. discovery surfaces an UNLABELED candidate class (something Day-8 detectors did not target)
+  2. owner labels the cluster in the review app (governed step — human decides what's real)
+  3. a new deterministic detector (or confirmed expectation) ships for that class,
+     validated to ≥0.7 precision on the labels
+  4. re-run analyze over the window → Kairos now catches a class it could not catch on Day 8
+  measure: classes-covered ↑, precision-vs-labels (held-out), recall on the owner-labeled set
 ```
 
-Selection criteria for intervention #2+ (and override test if discovery surfaces something stronger) are retained from Appendix A §Day-13.
+**Iteration 0 already happened — cite it as proof the flywheel turns:** Day 7, owner labeled the silent-failure class → the Bug-1 correction + struggle detector shipped (`4c30a62` + Day 8). Days 13–14 run iteration 1 *live and measured*. Candidate classes from discovery (likely): haywire-restart/stale-resume (owner-named, no detector yet), loop-that-looks-like-progress, degenerate-recovery. We do not pre-pick — that's the point; discovery surfaces, owner labels.
 
-### Day 14 — delta read off the dashboard
+### Day 14 — read Kairos's detection curve; case study
 
 ```pseudocode
-primary   = coordination_waste_rate(cto): mean(3 nights before) vs mean(nights after)
-            AND struggle_p50(cto) same windows
-control   = same metrics for claudecoder/qaengineer — MUST stay flat (attribution)
-guardrail = outcome_rate AND escalation_rate (cto) — PAIRED; primary improves + guardrail
-            degrades = REGRESSION, reported as such
-honesty: ~7 units/night × few nights = direction + magnitude, NOT p-values. No stats theater.
-confounds logged: model version, traffic shape, other PRs to cto instructions (git log).
+before/after (Kairos itself, Day 8 → Day 14, same corpus window):
+  classes_covered:      N → N+k
+  precision_vs_labels:  P → P'        (held-out labels, not the ones tuned on)
+  recall_on_labeled:    R → R'        (fraction of owner-confirmed failures Kairos now flags)
+honesty: small n → direction + magnitude, NOT p-values. Show the traces behind every number.
+confounds logged: config_hash changes in the window, traffic shape, model version.
 ```
 
-`docs/case-study-1.md` (written once ≥3 post-nights exist): pattern (evidence, linked traces) → intervention (the diff, PR link) → delta (dashboard screenshot + table, primary + guardrails, CTO vs controls) → confounds → verdict. **A null/negative result ships under the same template** — for a thesis about governed self-improvement, "we measured honestly, the curve didn't move, we rolled back" is itself a positive result about the *measurement*.
+`docs/case-study-1.md` (the self-improvement story): a class Kairos *missed* on Day 8 (evidence, linked traces) → discovery surfaced it → owner labeled it → detector shipped (the diff, validated precision) → Kairos's coverage/precision curve moved (dashboard screenshot). **A null/negative result ships under the same template** — "discovery surfaced nothing new this window" or "the new detector didn't beat 0.7, demoted" both prove the *measurement and governance* work, which is the thesis.
 
----
+**Two-layer claim:**
+- **Layer 1 (Kairos works as a product):** on real traffic, Kairos emits truthful, evidence-backed findings — silent failures (53 corrected steps), coordination waste (68%, surfaced not fixed), struggle — persisted as trends.
+- **Layer 2 (Kairos improves itself):** the governed flywheel ran end-to-end and Kairos's measured detection quality rose, driven by human labels, validated against ground truth. *That* is the self-improvement — honest because it's human-governed and measured, not self-asserted.
 
-## What the loop's before/after will be (the thesis claim)
-
-> Kairos deterministically detected a quantified coordination-waste pattern, surfaced a specific fix, a human applied it to one agent via PR, and the persisted ClickHouse time series shows that agent's coordination-waste and struggle curves dropping after the intervention marker while untouched control agents stayed flat — with no regression in outcome or escalation rate.
-
-Target deltas (CTO, from `insight-report-0.md` §4): Bash share 75%→<30%; identical-command repeats pervasive→~0; tool-calls/heartbeat ↓30–50%; struggle ↓; outcome/escalation flat (guardrail). **Deliberately NOT claimed in 14 days:** recall across all failure types, cross-org generalization, statistical significance (n=1 intervention), or the LLM-judge layer. Existence proof of a closed, governed, *persisted* self-improvement loop — a case study, and we say so.
+**Explicitly NOT claimed in 14 days:** fixing any agent, recall-completeness across all failure types, cross-org generalization, statistical significance, or the LLM-judge layer.
 
 ---
 
 ## Security & safety acceptance (blocks Day 12 go-live)
 
-- [ ] Redaction tests green (every pattern class + planted `.env` blob) — discovery queue + any persisted excerpt grep-audited.
-- [ ] ClickHouse holds **no raw secrets**: findings store evidence-step indices + redacted digests only, never full tool outputs; DSN via env; container not exposed beyond localhost.
+- [ ] Redaction tests green (every pattern class + planted `.env` blob); discovery queue + any persisted excerpt grep-audited.
+- [ ] Postgres holds **no raw secrets**: findings store evidence-step indices + redacted digests only, never full tool outputs; DSN via env; instance bound to localhost.
 - [ ] No secret in repo: runner config env-only; `.env.example` names-only.
-- [ ] Detector outputs are data: nothing parses a finding into a command; suggestions become PRs via human-gated executor, never direct writes.
-- [ ] Loop's own traces tagged (`actor_id: kairos-loop`) and excluded from intervention targeting.
+- [ ] Detector/finding outputs are data: nothing parses a finding into a command; suggestions become PRs via human-gated executor, never direct writes.
+- [ ] Loop's own traces tagged (`actor_id: kairos-loop`) and excluded from analysis targeting.
 - [ ] Kill switch `KAIROS_LOOP_DISABLED=1` checked first in the runner; documented in README.
 - [ ] config_hash discipline: deltas only within a hash; baseline-break rows rendered as discontinuities.
 
@@ -260,6 +249,4 @@ Target deltas (CTO, from `insight-report-0.md` §4): Bash share 75%→<30%; iden
 
 ## Appendix A — DEFERRED: LLM-judge tier-2 (post-sprint Phase 4)
 
-*The original Days 9–10 judge design is preserved here verbatim-in-intent for when the deterministic loop is proven and we choose to add semantic adjudication. It is deferred, not deleted. When built, it inherits a measured error bar: validated against the owner's labels + tau rewards (κ ≥ 0.7 gate), judges only deterministically-isolated evidence-cited questions, votes adversarially for action-driving findings, and never auto-acts. Build triggers: (1) deterministic detectors plateau on precision/recall against labels; (2) a class of failure (e.g. wrong-args-success — the tau-bench 67 FPs) is provably invisible to deterministic rules and worth the circular-validation risk to catch.*
-
-Key elements retained for that phase: triage scoring (`triage.py`), digest builder with versioned `DIGEST_V1` format + 150-char excerpts, redaction-before-egress, the injection-resistant judge prompt (`<<DATA>>…<<END DATA>>` untrusted-block contract, `injection_suspected` flag), the schema-and-evidence validation loop, and the κ≥0.7 validation gate on 50 stratified tau digests. The full original pseudocode lives in this file's git history (pre-2026-06-13 revision) and in `sprint-progress.md`'s commit ledger.
+*The original judge design is deferred, not deleted. When the deterministic detectors plateau on precision/recall against labels, OR a class is provably invisible to deterministic rules (e.g. wrong-args-success — the tau-bench 67 FPs), the judge is added with a measured error bar: validated against owner labels + tau rewards (κ ≥ 0.7 gate), judging only deterministically-isolated, evidence-cited questions, voting adversarially for action-driving findings, never auto-acting. Retained design elements (full pseudocode in this file's pre-2026-06-13 git history): triage scoring, versioned `DIGEST_V1` builder with 150-char excerpts, redaction-before-egress, the injection-resistant `<<DATA>>…<<END DATA>>` untrusted-block prompt + `injection_suspected` flag, schema-and-evidence validation loop, and the κ≥0.7 gate on 50 stratified tau digests.*

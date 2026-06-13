@@ -1,6 +1,6 @@
 # Sprint Progress — living continuation doc
 
-*Updated: 2026-06-13 (Day 5/6 boundary of the 14-day sprint). Purpose: full state capture so any session (human or agent) can resume gracefully. Companion docs: `sprint-14day.md` (mother plan), `sprint-exec-1/2/3-*.md` (execution specs), `insight-report-0.md` (baseline), `system-audit-and-self-improvement-roadmap.md` (findings F1–F10).*
+*Updated: 2026-06-13 (Phase 2 closed, Phase 3 reframed — about to start Day 8). Purpose: full state capture so any session (human or agent) can resume gracefully. Companion docs: `sprint-14day.md` (mother plan), `sprint-exec-1/2/3-*.md` (execution specs; exec-3 is v2 — deterministic-first, single-Postgres, Kairos-self-improvement), `insight-report-0.md` (baseline), `system-audit-and-self-improvement-roadmap.md` (findings F1–F10).*
 
 ---
 
@@ -10,7 +10,13 @@
 
 **Phase 2 (Trust, Days 6–7): IN PROGRESS.**
 - **Day 6 DONE** (`5f2b7a9`, `c226576`, `b65f8f7`): 161/162 tau-bench pairs, 0% abstention. κ=0.1692 — gate (0.7) failed STRUCTURALLY, not buggy: 67 FPs = wrong-args successes (tool OK, kwargs wrong — invisible to contract completion), 7 FNs = read-only tasks (write-never-performed vs read-only-done-right observationally equivalent at deterministic layer). Inquiry-op fix measured and REJECTED (would zero the FAIL detector: κ→0.0, 29 collateral flips); tuning log in eval/reports/taubench-agreement.md §Rework. Surviving deterministic claim: **FAIL verdicts 0.806 precision / 0.302 recall** — "Kairos FAIL = trustworthy alarm; Kairos PASS = contract done, semantics unverified." Semantic gap formally routed to tier-2 judge (Days 8–14) — now backed by TWO independent ground truths (owner spot-check Y-rows + tau rewards) converging on the same completion≠correctness boundary.
-- **Day 7 next:** owner labeling via NEW review app (Streamlit, one-trace-per-screen QA flow, executor building — eval/review/). Then redundancy redefinition per spec (needs transcript-sourced args).
+- **Day 7 DONE:** owner labeled 15 live traces in the new Streamlit review app (`eval/review/`, transcript-sourced step digests, 99.5% args coverage, secret-grep clean). Surfaced the #1 finding: **silent failures masked as success**. Split into 3 mechanisms; owner chose to fix Bug 1 deterministically (others → roadmap/learned). Bug 1 fix shipped (`4c30a62`): `transcript_join.py` corrects phantom-OK tool steps (`is_error=true`) on the live-Phoenix path — 53 steps / 28 traces corrected, **0 outcome verdicts flipped** (rejected tools were retried successfully). That zero IS the finding: contract-completion is structurally blind to session quality → motivates the Day-8 deterministic session-quality detectors. Labels persisted in `eval/review/answers.jsonl` = flywheel seed corpus.
+
+**Phase 3 (Loop, Days 8–14): REFRAMED 2026-06-13 (two owner strategy reviews). Spec rewritten: `sprint-exec-3-loop.md` v2.** Four locked decisions:
+1. **Deterministic-first** — exhaust deterministic ROI before any LLM judge (judge DEFERRED to Appendix A / post-sprint).
+2. **Single Postgres source** — no ClickHouse (premature; we have Postgres, no OLAP-scale need; one store kills the scatter). ClickHouse = roadmap swap, portable schema.
+3. **Generalize** — `correlation_key` (optional, documented) for unit-of-work rollup; expectations LEARNED not declared (no mandatory_tools config burden — discovery surfaces a near-universal tool's absence, owner labels once).
+4. **Kairos improves ITSELF, not the agents it observes.** The Day-13 "coordination diet" (rewriting Paperclip's CTO agent) was a category error and is CUT. The loop closes on Kairos's own detection quality via the discovery→label→detector flywheel. Kairos *surfaces* agent waste (a valid product output); fixing the agent is the user's governed call, out of scope.
 
 **Operating model:** Sonnet executor agents implement from spec sections; Fable (this thread) reviews every diff, runs live verification, dispatches fixes. Five review catches so far — all measurement-layer bugs that would have poisoned the loop's reward signal:
 1. F10 loop guard per-trace instead of per-run (fixed `f9edfee`)
@@ -42,16 +48,21 @@
 | `ef8108c` | Spotcheck: unmapped traces get no verdict (Fable direct fix) |
 | `514d068` | Phoenix deep links use project NODE id (`UHJvamVjdDox`), not name — name URLs 404 in Phoenix 15.x UI |
 | `4a1bd7c` | Spotcheck rows carry redacted transcript digests (spans are skeletons — F10; humans judge from digest) |
-| *(pending)* | side_effect_match any/all fix — executor in flight |
-| *(pending)* | Bug 1 fix: transcript_join testbed enrichment — `transcript_join.py` corrects phantom OK tool steps (is_error=true) on live-Phoenix path; 53 steps corrected across 28 traces in 7d window; outcome rates unchanged (rejected tools are mid-session retries, not contract tools). TESTBED SCOPE: durable fix is emitter-side (OTel emitter should set success=false on tool.execution when is_error=true). |
+| `30090a9` | side_effect_match any/all fix (3 call sites + 14 tests); rerun flipped all 7 disputed N rows |
+| `e639050` | Owner Day-4 spot-check labels committed (11Y/7N/2?) |
+| `5f2b7a9`, `c226576`, `b65f8f7` | Day 6 tau-bench agreement harness; κ=0.1692 (structural ceiling), FAIL precision 0.806; inquiry-op measured+rejected (tuning log) |
+| `d713287`, `aead64a` | Day 7 review app (`eval/review/`) + transcript-join step digests (99.5% args coverage; fixed a real Bearer-token redaction bug) |
+| `4c30a62` | Bug 1: `transcript_join.py` corrects phantom-OK tool steps (is_error=true) on live-Phoenix path; 53 steps / 28 traces; 0 verdicts flipped (the finding). TESTBED SCOPE — durable fix is emitter-side (success=false on is_error). |
+| `c948edd` → *(this update)* | Phase 3 spec revised: deterministic-first, single-Postgres, correlation_key, learned-expectations, Kairos-self-improvement (agent intervention cut), judge deferred |
 
 Plugin repo (`Xero/kairos-analysis-views`, own git): `b30e7e2` (fail-loud guard, meta/null types) → `c630d60` (outcome rows table) → `8529e0e` (is_primary/secondary count types).
 
-## Current honest numbers (live Phoenix, 345 traces / 7d, pre-any-of fix)
+## Current honest numbers (live Phoenix, 345 traces / 7d, post-fixes)
 
-- mean memberships/trace **0.70** (exit bar ≤1.5 ✓; was ~3 before Day 5)
-- unmapped **187 (54%)** — Bash-only coordination-curl sessions (the insight-report-0 waste), become mappable after Day 13 intervention
-- outcome rates: Code Impl **0.42** (will rise with any-of fix), Research 1.00, Orchestration 0.88, Coordination 1.00
+- mean memberships/trace **0.69** (exit bar ≤1.5 ✓; was ~3 before Day 5)
+- unmapped **187 (54%)** — Bash-only coordination-curl sessions (the insight-report-0 waste); Kairos SURFACES this, does not fix it
+- outcome rates (contract completion): Code Impl **1.00**, Research 1.00, Orchestration 0.88, Coordination 1.00 — high because contract-completion is blind to session quality (the Day-8 detectors add that dimension; this is a known, recorded property)
+- Day 6 cross-check: vs tau-bench rewards κ=0.17 (structural ceiling), but **FAIL-verdict precision 0.806** — "Kairos FAIL = trustworthy alarm; PASS = contract done, semantics unverified"
 - token instrumentation 99.8%; cache excluded from waste (one trace: 14k real vs 5.16M cache-read — would have inflated 360×)
 
 ## Owner spot-check labels (docs/spotcheck-day4.md — PRESERVE, has handwritten comments)
@@ -66,16 +77,17 @@ Plugin repo (`Xero/kairos-analysis-views`, own git): `b30e7e2` (fail-loud guard,
 - Live spans: `claude_code.tool` (top-level `tool_name`, `success` on child `tool.execution`), `claude_code.llm_request` (top-level token keys), NO args/outputs on any span (F10) → transcript digests required for human/LLM judgment; transcripts at `~/.claude/projects/*/<session.id>.jsonl`, `session.id` on span attrs. `paperclip.issue`/`run_id` on TOOL spans (absent on root interaction spans — Day 11 join must read tool spans).
 - `Xero/config/context.yaml` is a SYMLINK to `kairos-ai/config/context.yaml`.
 - tau-bench ground truth: `~/tau-agent/results/ablation_bundles/*.json` (`modes[].checkpoint_rows[].reward` + `kairos_run_dir`).
-- Paperclip source `~/dev/paperclip` (MIT); `packages/mcp-server` ships list_issues/checkout_issue/add_comment/update_issue/approvals — Day 13 intervention = wire it + rewrite CTO AGENTS.md (no fork). Baseline in insight-report-0.
+- Infra running (verified `docker ps`): `deploy-phoenix-1` :6006 (traces), `deploy-otel-collector-1` (OTel ingest, fans out to Phoenix + Jaeger), `ledger-pg` :5432, `infra-cos-postgres` :5433 — **Postgres already available; no new store needed.** Roadmap: Kairos becomes an OTel sink off the existing collector → owns store + view, Phoenix retired.
+- Paperclip source `~/dev/paperclip` (MIT) ships `packages/mcp-server` — relevant only as context for the coordination-waste Kairos SURFACES; wiring it is the user's agent-fix decision, OUT OF KAIROS SCOPE.
 - `scripts/` is outside kairos-ai ruff lint paths. `scripts/node_modules/` untracked, needs .gitignore line.
 
 ## Immediate next steps (in order)
 
-1. **Collect in-flight fix** (side_effect_match): verify any-mode semantics in both call sites, check the 7 disputed trace verdicts flip to pass, re-tally owner labels against rerun → expect ≥18/20 equivalent agreement → **Phase 1 CLOSED**.
-2. **Day 6** (sprint-exec-2-trust.md): tau-bench agreement harness — pair bundle rewards with traces, κ + confusion matrix, `eval/reports/taubench-agreement.md`. Decision tree: κ≥0.7 proceed; <0.7 = budgeted rework slot for outcome iteration.
-3. **Day 7**: organic labeling export (50 findings + 20 clean, stratified, redacted) → owner ~90 min → redundancy redefinition (needs transcript-sourced args since spans carry none) → precision ≥0.7 or demote.
-4. Days 8–14 per sprint-exec-3-loop.md (triage → tier-2 judge w/ validation gate → report+store → nightly runner → Day 13 pre-selected coordination-diet intervention on CTO only → delta).
+1. **Single-source-of-data setup**: dedicated `kairos` Postgres DB (new container or DB on an existing PG instance — owner infra call); migrations for `findings`/`nightly_rollup`/`labels`/`expectations`/`discovery_queue`; 7-day backfill loader.
+2. **Day 8** (sprint-exec-3-loop.md §Day-8): deterministic session-quality detectors (D1 unrecovered_error, D2 struggle_ratio, D3 coordination_waste, D4 work_to_talk) + learned-expectation LEARN stage. Each validated ≥0.7 precision on owner labels or cut — nothing dormant.
+3. **Day 9** correlation_key rollup (generic, documented, optional). **Day 10** Postgres persistence. **Day 11** delta + minimal dashboard. **Day 12** discovery mode + nightly runner. **Days 13–14** run the flywheel live → measure Kairos's own detection-quality delta → `docs/case-study-1.md`.
+4. **Config documentation** (owner-flagged): the Kairos config guide must state what `correlation_key`, operations, and detector thresholds are, when required, and safe defaults. No hidden assumptions.
 
 ## Standing review discipline (keep)
 
-Executor prompts: spec section is law, ambiguity → STOP, tests alongside, conventional commits, scoped git add, report ambiguities. Fable reviews EVERY report against acceptance criteria + runs one live verification before accepting; fix-or-dispatch on any deviation. Owner gates: spot-check re-tally (imminent), Day 6 κ report, Day 7 labeling, Day 13 intervention approval.
+Operating model: Sonnet executors implement from spec sections; Fable (this thread) reviews EVERY diff against acceptance criteria + one live verification before accepting; fix-or-dispatch on any deviation. Executor prompts: spec section is law, ambiguity → STOP, tests alongside, conventional commits, scoped git add. Owner gates: Day-8 detector precision report, Day-12 first-night supervision, Day-14 flywheel-delta + case study. **Nothing ships dormant** — every detector gets a real config + measured precision or it's cut.
