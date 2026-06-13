@@ -115,15 +115,31 @@ def load_answers() -> dict[str, dict[str, Any]]:
     return answers
 
 
-def save_answer(trace_id: str, question: str, answer: str, verdict_shown: str) -> None:
-    """Append one answer record to answers.jsonl immediately."""
-    rec = {
+def save_answer(
+    trace_id: str,
+    question: str,
+    answer: str,
+    verdict_shown: str,
+    relabel: bool = False,
+    disagreement_kind: str | None = None,
+) -> None:
+    """Append one answer record to answers.jsonl immediately.
+
+    Re-label entries from the disagreement queue include ``relabel=true``
+    and ``disagreement_kind`` so they are distinguishable from originals.
+    Existing lines are never overwritten or deleted — append-only.
+    """
+    rec: dict[str, Any] = {
         "trace_id": trace_id,
         "question": question,
         "answer": answer,
         "verdict_shown": verdict_shown,
         "ts": datetime.now(tz=UTC).isoformat(),
     }
+    if relabel:
+        rec["relabel"] = True
+    if disagreement_kind:
+        rec["disagreement_kind"] = disagreement_kind
     with ANSWERS_PATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
 
@@ -213,6 +229,14 @@ def _render_step_timeline(entry: dict[str, Any]) -> None:
         with cols[4]:
             if src and src != "none":
                 st.markdown(f'<span style="font-size:0.75em;color:#aaa">{src}</span>', unsafe_allow_html=True)
+
+        # Detector note (disagreement queue only — not present on normal queue entries)
+        detector_note = step.get("detector_note")
+        if detector_note:
+            st.markdown(
+                f'<span style="font-size:0.8em;color:#e67e22;font-style:italic">🔍 {detector_note}</span>',
+                unsafe_allow_html=True,
+            )
 
         if is_evidence:
             st.markdown("---")
@@ -316,6 +340,11 @@ def main() -> None:
 
     st.markdown(f"### {question}")
 
+    # Show prior label for disagreement queue entries
+    prior_comment = entry.get("prior_comment", "")
+    if prior_comment.strip():
+        st.info(f"Previously you said: {prior_comment.strip()}")
+
     # Prefill if already answered
     prefill = ""
     existing = answers.get(trace_id)
@@ -340,9 +369,20 @@ def main() -> None:
     with col_b3:
         back_clicked = st.button("◀ Back", use_container_width=True)
 
+    # Determine if this is a relabel entry (disagreement queue)
+    is_relabel = bool(entry.get("disagreement_kind"))
+    disagreement_kind = entry.get("disagreement_kind") or None
+
     if save_clicked:
         if answer_text.strip():
-            save_answer(trace_id, question, answer_text.strip(), verdict)
+            save_answer(
+                trace_id,
+                question,
+                answer_text.strip(),
+                verdict,
+                relabel=is_relabel,
+                disagreement_kind=disagreement_kind,
+            )
             # Reload answers so prefill updates
             st.session_state["current_index"] = idx + 1
             st.rerun()
