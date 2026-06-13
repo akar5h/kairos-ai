@@ -6,6 +6,13 @@
 agent_name: "Xero Platform"
 agent_description: "Paperclip coding agents (ClaudeCoder, CTO) executing issues."
 
+# Day 9: correlation_key groups multiple traces for the same issue into one
+# logical unit of work. Live-verified 2026-06-13: paperclip.issue present on
+# 13/95 traces in Phoenix default project (present on ALL span types per trace).
+# Paperclip sprint unit = issue; each issue produces N agent runs (traces).
+# last-wins rollup: unit passes if the final computable trace passes.
+correlation_key: "paperclip.issue"
+
 operations:
 
   - name: "Code Implementation"

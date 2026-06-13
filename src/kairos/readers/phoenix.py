@@ -328,7 +328,11 @@ def _enrich_tool_args_from_transcript(
     return enriched
 
 
-def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
+def spans_to_envelope(
+    spans: list[Any],
+    *,
+    correlation_key_attr: str | None = None,
+) -> TraceEnvelope:
     """Convert a list of OTel-shaped spans (or Phoenix dicts) into a TraceEnvelope.
 
     Spans may arrive in any order; they're sorted by ``start_time`` before
@@ -347,6 +351,17 @@ def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
     the ClaudeCode adapter extractor runs over tool steps still at
     ``status_source == NONE`` after rungs 1–2 (kairos.outcome / success attr /
     OTel status) were silent.  Steps decided by rungs 1–2 are never touched.
+
+    Parameters
+    ----------
+    spans:
+        Raw spans — either Phoenix dicts or OTel ReadableSpan-shaped objects.
+    correlation_key_attr:
+        When set, scan all spans for this attribute name and store the first
+        value found on ``envelope.correlation_key_value``.  On live data the
+        attribute is present on every span in the trace (interaction, llm_request,
+        tool, tool.execution), so the first span that carries it wins.
+        ``None`` → ``envelope.correlation_key_value`` stays ``None``.
     """
     if not spans:
         return TraceEnvelope(
@@ -361,6 +376,20 @@ def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
     # mypy quiet at the boundary.
     wrapped: list[Any] = [_phoenix_dict_to_span(s) if isinstance(s, dict) else s for s in spans]
     wrapped.sort(key=lambda s: s.start_time)
+
+    # Day 9: extract correlation key value from spans (first span that carries it).
+    # The attribute is present on every span in a live Paperclip trace, so the
+    # first match is sufficient.  Scan pre-sort wrapping so dict spans are already
+    # normalised via _phoenix_dict_to_span.
+    correlation_key_value: str | None = None
+    if correlation_key_attr:
+        for span in wrapped:
+            attrs = getattr(span, "attributes", None)
+            if isinstance(attrs, dict):
+                raw_val = attrs.get(correlation_key_attr)
+                if raw_val is not None:
+                    correlation_key_value = str(raw_val)
+                    break
 
     # Day 4 fix (rung 2a propagation): the emitter sets status_code=OK
     # unconditionally on ``claude_code.tool`` spans (live: 4904 OK / 0 ERROR);
@@ -455,6 +484,10 @@ def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
                 trace_id=envelope.trace_id,
             )
 
+    # Day 9: stamp correlation key value on the envelope.
+    if correlation_key_value is not None:
+        envelope = envelope.model_copy(update={"correlation_key_value": correlation_key_value})
+
     # Day 4: orphan/integrity check.
     # A span is an orphan when it has a parent_id that is not present in this trace's
     # span set AND it is not a root span (root = parent is None).
@@ -516,8 +549,23 @@ class PhoenixReader:
         self._project = project
         self._span_limit = span_limit
 
-    def fetch_envelope(self, trace_id: str) -> TraceEnvelope:
-        """Fetch all spans for ``trace_id`` from Phoenix, return a TraceEnvelope."""
+    def fetch_envelope(
+        self,
+        trace_id: str,
+        *,
+        correlation_key_attr: str | None = None,
+    ) -> TraceEnvelope:
+        """Fetch all spans for ``trace_id`` from Phoenix, return a TraceEnvelope.
+
+        Parameters
+        ----------
+        trace_id:
+            The hex trace ID to fetch.
+        correlation_key_attr:
+            When set, scan spans for this attribute name and store the first
+            found value on ``envelope.correlation_key_value``.  Pass the value
+            of ``BusinessContext.correlation_key`` here.
+        """
         spans = list(
             self._client.spans.get_spans(
                 project_identifier=self._project,
@@ -536,7 +584,7 @@ class PhoenixReader:
                 limit=self._span_limit,
                 hint="Increase PhoenixReader(span_limit=N) to capture all spans.",
             )
-        envelope = spans_to_envelope(spans)
+        envelope = spans_to_envelope(spans, correlation_key_attr=correlation_key_attr)
         logger.info(
             "phoenix_reader.fetched",
             trace_id=trace_id,

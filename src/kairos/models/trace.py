@@ -141,6 +141,16 @@ class TraceEnvelope(BaseModel):
     # Provenance
     source_metadata: dict[str, Any] | None = None
 
+    # Day 9: correlation key value (populated by the reader when a
+    # correlation_key attribute name is configured in BusinessContext).
+    correlation_key_value: str | None = None
+    """Value of the configured correlation-key span attribute for this trace.
+
+    Populated by the Phoenix reader when ``correlation_key_attr`` is passed to
+    ``spans_to_envelope``.  ``None`` means either (a) no attribute was
+    configured, or (b) the attribute was absent from all spans in this trace.
+    """
+
     # Integrity (Day 4: orphan check)
     integrity: str = "complete"
     """Span-set integrity. "complete" when all parent_ids resolve within the trace;

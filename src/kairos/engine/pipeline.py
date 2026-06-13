@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 
 from kairos.analysis.outcome_metric import compute_outcome_rate
 from kairos.analysis.reference_behavior import extract_reference_behavior
+from kairos.analysis.unit_outcome import rollup_units
 from kairos.analysis.workflow_divergence import detect_workflow_divergence
 from kairos.analysis.workflow_membership import MembershipKind, WorkflowMembership
 from kairos.detection.runner import detect_tier1
@@ -39,6 +40,7 @@ from kairos.taxonomy.business_context import default_membership_threshold
 if TYPE_CHECKING:
     from kairos.analysis.outcome_metric import WorkflowOutcomeSummary
     from kairos.analysis.reference_behavior import ReferenceCohort
+    from kairos.analysis.unit_outcome import UnitOutcomeSummary
     from kairos.analysis.workflow_divergence import DivergenceFinding
     from kairos.detection.models import Finding
     from kairos.models.trace import TraceEnvelope
@@ -110,6 +112,18 @@ class AnalysisResult:
     workflows: list[WorkflowSummary]
     unmapped: UnmappedActivity
     reliability: dict[str, float | None]
+    unit_summaries: list[UnitOutcomeSummary] = field(default_factory=list)
+    """Per-unit rollup produced by the correlation-key rollup stage (Day 9).
+
+    When ``BusinessContext.correlation_key`` is ``None``, each entry mirrors
+    its per-trace ``OutcomeResult`` exactly (unit == trace, backward-compat).
+    When a key is configured, traces sharing the same key value are grouped
+    into one unit with last-wins outcome, union findings, and summed cost.
+
+    Always populated (even when correlation_key is None) so callers have a
+    uniform API.  The per-trace ``WorkflowOutcomeSummary.per_trace_results``
+    are still present inside each ``WorkflowSummary.outcome``.
+    """
 
 
 # ── Multi-label membership (Slice B.0) ─────────────────────────────────
@@ -479,17 +493,34 @@ def run_pipeline(
     unmapped_envelopes = [e for e in envelopes if e.trace_id not in mapped_trace_ids]
     unmapped = _summarize_unmapped(unmapped_envelopes)
 
+    # Step 7: correlation-key rollup (Day 9).
+    # Collect all per-trace OutcomeResults from the per-workflow summaries.
+    all_outcome_results = [
+        result
+        for ws in workflows
+        for result in ws.outcome.per_trace_results
+    ]
+    unit_summaries = rollup_units(
+        envelopes,
+        all_outcome_results,
+        per_trace_findings,
+        correlation_key=context.correlation_key,
+    )
+
     logger.info(
         "pipeline.completed",
         total_traces=len(envelopes),
         workflows=len(workflows),
         unmapped=unmapped.trace_count,
+        units=len(unit_summaries),
+        correlation_key=context.correlation_key,
     )
 
     return AnalysisResult(
         workflows=workflows,
         unmapped=unmapped,
         reliability=reliability,
+        unit_summaries=unit_summaries,
     )
 
 

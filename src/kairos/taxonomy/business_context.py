@@ -55,6 +55,14 @@ class BusinessContext:
     agent_name: str
     agent_description: str
     operations: list[BusinessOperation]
+    correlation_key: str | None = None
+    """Optional span attribute name that groups multiple traces into one logical
+    unit of work.  Example: ``"paperclip.issue"`` groups all traces that worked
+    on the same issue; ``"thread_id"`` groups chat turns.
+
+    When ``None`` (the default) each trace is its own unit — behaviour is
+    byte-identical to before this field existed.
+    """
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> BusinessContext:
@@ -132,8 +140,11 @@ class BusinessContext:
                 )
             )
 
+        correlation_key = data.get("correlation_key") or None
+
         return cls(
             agent_name=data.get("agent_name", ""),
             agent_description=data.get("agent_description", ""),
             operations=operations,
+            correlation_key=correlation_key,
         )
