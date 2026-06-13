@@ -41,7 +41,7 @@ from kairos.readers.genai_mapping import (
     span_to_trace_end,
     span_to_trace_start,
 )
-from kairos.readers.transcript_join import tool_errors_from_transcript
+from kairos.readers.transcript_join import tool_args_from_transcript, tool_errors_from_transcript
 
 logger = get_logger(__name__)
 
@@ -276,6 +276,58 @@ def _correct_tool_errors_from_transcript(
     return corrected
 
 
+def _enrich_tool_args_from_transcript(
+    wrapped: list[Any],
+    envelope: TraceEnvelope,
+) -> int:
+    """Populate tool step ``tool_args`` from the session transcript's tool_use.input.
+
+    Called AFTER ``_correct_tool_errors_from_transcript`` — only for
+    claude_code-shaped traces (caller guards on is_claude_code).
+
+    The F10 emitter limitation means spans carry no tool args/outputs on live
+    Phoenix data.  The transcript's ``tool_use.input`` is ground truth for args.
+    This function uses the SAME ordinal-per-tool-name, time-windowed alignment
+    as the is_error correction (via ``tool_args_from_transcript`` → shared
+    ``_fetch_windowed_calls`` pipeline).
+
+    Only populates steps where ``tool_args`` is currently empty (None or {}) —
+    never overwrites a step that already has args from the span (future-proof
+    for when the emitter is fixed to populate args on spans).
+
+    Args are pre-redacted by ``transcript_join._redact_args`` before this call.
+
+    Graceful degradation: missing transcript / no match → args stay empty, NO crash.
+
+    Returns the number of steps enriched.
+    """
+    if not envelope.steps:
+        return 0
+
+    args_map = tool_args_from_transcript(wrapped, list(envelope.steps))
+    if not args_map:
+        return 0
+
+    from kairos.models.enums import StepType  # local import
+    from kairos.normalization.arg_normalizer import normalize_args
+
+    enriched = 0
+    for step in envelope.steps:
+        if step.step_type != StepType.TOOL_CALL:
+            continue
+        if step.step_index not in args_map:
+            continue
+        # Only populate if the span didn't already provide args.
+        if step.tool_args:
+            continue
+        args = args_map[step.step_index]
+        step.tool_args = args
+        step.tool_args_normalized = normalize_args(args)
+        enriched += 1
+
+    return enriched
+
+
 def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
     """Convert a list of OTel-shaped spans (or Phoenix dicts) into a TraceEnvelope.
 
@@ -370,6 +422,7 @@ def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
     # transcript_join aligns steps by ordinal-per-tool-name and corrects them.
     # Graceful degradation: missing transcript → no correction, no crash.
     corrected_count = 0
+    enriched_args_count = 0
     if is_claude_code:
         corrected_count = _correct_tool_errors_from_transcript(wrapped, envelope)
         if corrected_count:
@@ -381,6 +434,24 @@ def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
         else:
             logger.debug(
                 "transcript_join.no_corrections",
+                trace_id=envelope.trace_id,
+            )
+
+        # Day 8 fix (F10 args enrichment): populate tool_args on steps from the
+        # transcript's tool_use.input — the emitter doesn't carry args on live spans.
+        # Uses the same ordinal-per-tool-name alignment as the is_error correction.
+        # Args are pre-redacted (secrets stripped). Only enriches steps with empty args.
+        # Graceful degradation: missing transcript → no enrichment, no crash.
+        enriched_args_count = _enrich_tool_args_from_transcript(wrapped, envelope)
+        if enriched_args_count:
+            logger.info(
+                "transcript_join.enriched_tool_args",
+                n=enriched_args_count,
+                trace_id=envelope.trace_id,
+            )
+        else:
+            logger.debug(
+                "transcript_join.no_args_enrichment",
                 trace_id=envelope.trace_id,
             )
 
@@ -410,6 +481,7 @@ def spans_to_envelope(spans: list[Any]) -> TraceEnvelope:
         human_escalation=session_blocked,
         adapter_outcomes_applied=is_claude_code,
         transcript_corrected=corrected_count,
+        transcript_args_enriched=enriched_args_count,
     )
     return envelope
 

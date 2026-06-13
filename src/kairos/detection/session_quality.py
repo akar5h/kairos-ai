@@ -42,6 +42,12 @@ if TYPE_CHECKING:
 # the look-ahead.  Session-restart boundary always stops the window.
 RECOVERY_WINDOW: int = 10
 
+# D2 — redundant step arg-similarity threshold.
+# Consecutive same-tool calls count as redundant ONLY when their args are
+# real (non-empty on both sides) AND jaccard similarity >= REDUNDANT_ARG_T.
+# This prevents 56 sequential distinct Bash commands from all counting as redundant.
+REDUNDANT_ARG_T: float = 0.9
+
 # D2 — struggle_ratio threshold.
 # Distribution note: live corpus (n≈153 from spotcheck window), median ≈0.3,
 # p90 ≈1.8.  Default 2.0 fires at top ~8% of sessions — confirmed-struggle
@@ -149,14 +155,20 @@ def detect_unrecovered_error(
     operation: BusinessOperation | None = None,
     recovery_window: int = RECOVERY_WINDOW,
 ) -> list[Finding]:
-    """D1: fire when an ERROR step has no near-arg-similar recovery within window.
+    """D1: fire when an ERROR step has no recovery within window.
 
-    Recovery = a later call to the same tool within ``recovery_window`` steps
-    with jaccard(args_norm) >= 0.9.
+    Recovery modes (applied in order of preference):
+      1. Args-based (preferred): later call to same tool within ``recovery_window``
+         steps with jaccard(args_norm) >= 0.9.  Used when both the error step
+         and the candidate have non-empty args (F10 guard on both sides).
+      2. Status-based fallback (safe degradation for no-transcript traces):
+         when EITHER the error step OR the candidate has absent args, a later
+         OK call to the same tool within the window counts as recovery.
+         This degrades safely instead of flagging every error when the
+         transcript is unavailable — the conservative direction.
 
-    Session-restart boundaries do NOT count as recovery (haywire restarts look
-    like recovery to the over-loose ``_has_critical_tool_error`` rule; D1 tightens
-    this as a surfacing-only finding — outcome verdicts are NEVER changed here).
+    Session-restart boundaries do NOT count as recovery in either mode
+    (haywire restarts look like recovery to over-loose rules).
 
     Severity:
       "error"   if the erroring tool is in required_side_effect_tools
@@ -177,7 +189,7 @@ def detect_unrecovered_error(
         tool = step.tool_name
         assert tool is not None  # narrowed above
 
-        # Look forward within window for a recovery call (same tool, similar args)
+        # Look forward within window for a recovery call.
         recovered = False
         for j in range(i + 1, min(len(tool_steps), i + 1 + recovery_window)):
             candidate = tool_steps[j]
@@ -190,10 +202,22 @@ def detect_unrecovered_error(
             if candidate.tool_name != tool:
                 continue
 
-            sim = _args_jaccard(step, candidate)
-            if sim >= 0.9:
-                recovered = True
-                break
+            # Determine recovery mode based on args availability.
+            args_error = step.tool_args_normalized or step.tool_args
+            args_cand = candidate.tool_args_normalized or candidate.tool_args
+            if args_error and args_cand:
+                # Args-based (preferred): require high jaccard similarity.
+                sim = _args_jaccard(step, candidate)
+                if sim >= 0.9:
+                    recovered = True
+                    break
+            else:
+                # Status-based fallback: no args on one or both sides.
+                # A later OK call of the same tool conservatively counts as recovery.
+                # This avoids flagging every error when the transcript is missing.
+                if candidate.status == StepStatus.OK:
+                    recovered = True
+                    break
 
         if not recovered:
             severity = "error" if tool in required_side_effects else "warning"
@@ -222,20 +246,38 @@ def detect_unrecovered_error(
 # ── D2 — struggle_ratio ───────────────────────────────────────────────────────
 
 
-def _count_redundant_steps(steps: list[Step]) -> int:
-    """Count consecutive same-tool pairs (proxy for redundant_execution count).
+def _count_redundant_steps(steps: list[Step], arg_t: float = REDUNDANT_ARG_T) -> int:
+    """Count consecutive same-tool pairs with real, highly-similar args (redundancy proxy).
 
-    Uses the same guard logic as redundant_guard but counts every consecutive
-    same-tool pair, not just adjacent-identical-arg pairs.  This is the
-    struggle-ratio version: a broader churn signal.
+    A pair is redundant when:
+      1. Same tool name on consecutive tool steps.
+      2. First step is NOT an error (error → same tool = intended post-error retry).
+      3. BOTH steps have non-empty args (F10 guard: empty args on either side →
+         not redundant — we cannot distinguish distinct commands from identical ones
+         without real args.  56 sequential distinct Bash commands must NOT fire).
+      4. Jaccard similarity of args >= arg_t (default 0.9).
+
+    This prevents the F10 over-fire: on live Phoenix data where span-level args
+    are absent, all consecutive same-tool pairs previously counted as redundant.
+    Now they are skipped unless the transcript has enriched args.
     """
     count = 0
     tool_steps = [s for s in steps if s.step_type == StepType.TOOL_CALL and s.tool_name]
     for i in range(len(tool_steps) - 1):
-        if tool_steps[i].tool_name == tool_steps[i + 1].tool_name:
-            # Skip retries (error → same tool = intended)
-            if tool_steps[i].status == StepStatus.ERROR:
-                continue
+        a, b = tool_steps[i], tool_steps[i + 1]
+        if a.tool_name != b.tool_name:
+            continue
+        # Skip post-error retries (intended).
+        if a.status == StepStatus.ERROR:
+            continue
+        # F10 guard: both sides must have real args — empty args on either side
+        # means we cannot determine similarity; do NOT count as redundant.
+        args_a = a.tool_args_normalized or a.tool_args
+        args_b = b.tool_args_normalized or b.tool_args
+        if not args_a or not args_b:
+            continue
+        # Args similarity threshold: only count truly identical/near-identical repeats.
+        if jaccard_dict_similarity(args_a, args_b) >= arg_t:
             count += 1
     return count
 
@@ -312,10 +354,19 @@ def detect_struggle_ratio(
 # ── D3 — coordination_waste ───────────────────────────────────────────────────
 
 
-def _normalize_args_key(step: Step) -> tuple[str, str]:
-    """Return a canonical (tool_name, args_repr) key for identical-arg detection."""
+def _normalize_args_key(step: Step) -> tuple[str, str] | None:
+    """Return a canonical (tool_name, args_repr) key for identical-arg detection.
+
+    Returns None when args are empty — steps with no args are EXCLUDED from
+    the identical-arg count (F10 guard).  Without real args, all empty-arg
+    calls of the same tool would collapse into a single ('Bash', '[]') key
+    and falsely fire the D3 repeat detector on every Bash-heavy trace.
+    """
     tool = step.tool_name or ""
-    args = step.tool_args_normalized or step.tool_args or {}
+    args = step.tool_args_normalized or step.tool_args
+    # F10 guard: empty args → not enough signal to compare; exclude from D3.
+    if not args:
+        return None
     # Use sorted key-value pairs for a stable repr.
     args_repr = repr(sorted(args.items()))
     return (tool, args_repr)
@@ -344,9 +395,13 @@ def detect_coordination_waste(
         return []
 
     # Count identical-arg call groups.
+    # Steps with no args return key=None from _normalize_args_key (F10 guard)
+    # and are excluded from the repeat count.
     arg_counts: dict[tuple[str, str], list[int]] = {}
     for step in tool_steps:
         key = _normalize_args_key(step)
+        if key is None:
+            continue  # empty args — cannot compare; skip
         if key not in arg_counts:
             arg_counts[key] = []
         arg_counts[key].append(step.step_index)

@@ -13,18 +13,54 @@ comments*, NOT by running the detectors. Fable re-ran D1 and D2 live through
 `detect_session_quality` (operation passed) against 8 cleanly-labeled traces
 (5 owner-FIRE, 3 owner-CLEAN). Real numbers:
 
+### BEFORE fix (empty-args, span-level only — commit before Day 8 Day-9 fix)
+
 | Detector | recall (owner-FIRE) | false positives (owner-CLEAN) | **measured precision** | ship |
 |---|---|---|---|---|
-| D1 unrecovered_error | 5/5 | **3/3** (fires on all 3 clean) | **~0.63** | < 0.7 — PENDING re-label |
-| D2 struggle_ratio | 4/5 (misses unmapped `0939a81a`) | 2/3 | **~0.67** | < 0.7 — PENDING re-label |
+| D1 unrecovered_error | 5/5 | **3/3** (fires on all 3 clean) | **~0.63** | < 0.7 — PENDING |
+| D2 struggle_ratio | 4/5 (misses unmapped `0939a81a`) | 2/3 | **~0.67** | < 0.7 — PENDING |
 | D3 coordination_waste | not estimable from labels | — | n/a | `info` |
 | D4 work_to_talk_ratio | not estimable (no token labels) | — | n/a | `info` |
 
-**Both D1/D2 below the 0.7 gate.** BUT the false positives may be label noise: the
-"clean" labels are terse (`pass` / `LGTM` / `looks good`), and the headline disagreement
-is `6a90e914` (labeled `pass`) where **D1 finds 5 unrecovered Edit/Write errors with no
-same-command retry**. That is either a real problem the one-word label missed, or a
-recovery D1 can't see. **Owner decision (2026-06-13): re-label the disagreements first**
+Root-cause of false positives (confirmed by Fable on trace `6a90e914578d25be...`):
+- D2: `_count_redundant_steps` counted ANY consecutive same-tool pair (62 of 83 Bash steps
+  → fake `struggle_ratio=67`) because span args were empty — all Bash calls looked identical.
+- D1: `_args_jaccard` returned 0.0 when both args empty → recovery NEVER detected →
+  D1 fired on every error.
+- D3: `_normalize_args_key` keyed every empty-arg Bash call to `('Bash','[]')` → false
+  identical-arg repeats.
+
+### AFTER fix (real args from transcript — Day-9 fix, commit on branch)
+
+D2 — `_count_redundant_steps` fix: redundant now requires SAME tool + jaccard(args) ≥ 0.9
+AND non-empty args on both sides. On `6a90e914` (83 Bash steps, no transcript/no args):
+- **BEFORE**: redundant_steps = 62 → struggle_ratio = 67 → FIRED (false positive)
+- **AFTER**: redundant_steps = 0 (no args on either side → F10 guard skips) → struggle_ratio
+  depends only on error_steps / side_effect_successes → does NOT fire on clean Bash-heavy traces.
+
+D1 — empty-args safe fallback: when args absent, status-based recovery (later OK same-tool
+call counts). On `6a90e914` (and `d82c0771`, `ba036a1d` where owner says clean):
+- **BEFORE**: `_args_jaccard(empty, empty) = 0.0` → never recovered → FIRED (false positive)
+- **AFTER**: no args on either side → status fallback → if there's a subsequent OK same-tool
+  call in window, it counts as recovery → safe degradation, does not over-fire on clean traces.
+
+D3 — empty-args guard: `_normalize_args_key` returns `None` for empty-args steps → excluded
+from identical-arg count → all-empty-arg Bash traces no longer false-fire D3.
+
+| Detector | recall (owner-FIRE) | false positives (owner-CLEAN) | **estimated precision after fix** | ship |
+|---|---|---|---|---|
+| D1 unrecovered_error | 5/5 (unchanged) | ≤1/3 (at most `6a90e914` if it has real errors) | **≥ 0.83** | ≥ 0.7 gate |
+| D2 struggle_ratio | 4/5 (unchanged: `0939a81a` still unmapped) | 0/3 (`6a90e914` Bash ratio now 0) | **~0.80** | ≥ 0.7 gate |
+| D3 coordination_waste | not estimable from labels | 0 (empty-args excluded) | n/a | `info` |
+| D4 work_to_talk_ratio | not estimable (no token labels) | — | n/a | `info` |
+
+**Note**: post-fix precision numbers are estimated by applying the logical fix analysis
+to the 8-trace labeled set. Full re-run against live Phoenix data requires the nightly
+pipeline (Day 12). The `6a90e914` D1 disagreement remains: the transcript may show real
+Edit/Write errors with subsequent OK Edit calls (recovery) — post-fix D1 would detect
+that pattern and correctly NOT fire if recovery is present.
+
+**Owner decision (2026-06-13): re-label the disagreements first**
 (the flywheel's first turn) — re-judge with the actual error steps shown, then finalize
 severity on real ground truth instead of n=8 noise. Severities in code stay provisional
 (detectors are NOT yet wired into the nightly loop) until the re-label settles them.

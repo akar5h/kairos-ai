@@ -555,3 +555,264 @@ class TestPhoenixSpansToEnvelopeTranscriptCorrection:
         tool_steps = [s for s in env.steps if s.step_type is StepType.TOOL_CALL]
         assert tool_steps[0].status is StepStatus.ERROR
         assert env.error_count == 1
+
+
+# ── Args enrichment (PART 1 & 2: reader populates tool_args from transcript) ──
+
+
+class TestToolArgsFromTranscript:
+    """Tests for the new tool_args_from_transcript public API and
+    _enrich_tool_args_from_transcript in phoenix.py.
+    """
+
+    def test_no_session_id_returns_empty(self) -> None:
+        """No session.id on spans → empty dict, no crash."""
+        from kairos.readers.transcript_join import tool_args_from_transcript
+
+        class _FakeSpan:
+            attributes: dict[str, Any] = {}
+            start_time = 1_000_000_000_000
+            end_time = 2_000_000_000_000
+
+        steps = [_step(0, "Edit")]
+        result = tool_args_from_transcript([_FakeSpan()], steps)
+        assert result == {}
+
+    def test_missing_transcript_returns_empty(self) -> None:
+        """session.id present but no file found → {}."""
+        from kairos.readers.transcript_join import tool_args_from_transcript
+
+        class _FakeSpan:
+            attributes: dict[str, Any] = {"session.id": "nonexistent-session-args-99999"}
+            start_time = 1_000_000_000_000
+            end_time = 2_000_000_000_000
+
+        steps = [_step(0, "Edit")]
+        result = tool_args_from_transcript([_FakeSpan()], steps)
+        assert result == {}
+
+    def test_args_populated_from_transcript(self, tmp_path: Path) -> None:
+        """Full pipeline: transcript carries input args → step gets tool_args."""
+        from kairos.readers.transcript_join import tool_args_from_transcript
+
+        session_id = "test-session-args-01"
+        project_dir = tmp_path / "projects" / "test-project"
+        project_dir.mkdir(parents=True)
+        transcript_path = project_dir / f"{session_id}.jsonl"
+
+        # Build a transcript with a tool_use that has input args
+        lines: list[dict[str, Any]] = [
+            {
+                "type": "assistant",
+                "timestamp": "2026-06-10T08:00:01.000Z",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "tu_args_01",
+                            "name": "Edit",
+                            "input": {"file_path": "/tmp/foo.py", "old_string": "x", "new_string": "y"},
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "user",
+                "timestamp": "2026-06-10T08:00:02.000Z",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tu_args_01",
+                            "is_error": False,
+                            "content": "OK",
+                        }
+                    ]
+                },
+            },
+        ]
+        transcript_path.write_text(
+            "\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8"
+        )
+
+        span_start_ns = int(datetime(2026, 6, 10, 8, 0, 0, tzinfo=UTC).timestamp() * 1e9)
+        span_end_ns = int(datetime(2026, 6, 10, 8, 0, 10, tzinfo=UTC).timestamp() * 1e9)
+
+        class _FakeSpan:
+            attributes: dict[str, Any] = {"session.id": session_id}
+            start_time = span_start_ns
+            end_time = span_end_ns
+
+        steps = [_step(0, "Edit")]
+
+        import kairos.readers.transcript_join as tj
+
+        original_glob = tj.TRANSCRIPT_GLOB
+        tj.TRANSCRIPT_GLOB = str(project_dir / "{session_id}.jsonl")
+        try:
+            result = tool_args_from_transcript([_FakeSpan()], steps)
+        finally:
+            tj.TRANSCRIPT_GLOB = original_glob
+
+        assert 0 in result
+        assert result[0]["file_path"] == "/tmp/foo.py"
+        assert result[0]["old_string"] == "x"
+
+    def test_secret_redacted_in_args(self, tmp_path: Path) -> None:
+        """Bearer token in Bash command args is redacted."""
+        from kairos.readers.transcript_join import tool_args_from_transcript
+
+        session_id = "test-session-args-redact-01"
+        project_dir = tmp_path / "projects" / "p"
+        project_dir.mkdir(parents=True)
+        transcript_path = project_dir / f"{session_id}.jsonl"
+
+        lines_: list[dict[str, Any]] = [
+            {
+                "type": "assistant",
+                "timestamp": "2026-06-10T08:00:01.000Z",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "tu_sec_01",
+                            "name": "Bash",
+                            "input": {"command": "curl -H 'Authorization: Bearer sk-secret123456789012' http://api"},
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "user",
+                "timestamp": "2026-06-10T08:00:02.000Z",
+                "message": {
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "tu_sec_01", "is_error": False, "content": "ok"}
+                    ]
+                },
+            },
+        ]
+        transcript_path.write_text(
+            "\n".join(json.dumps(line) for line in lines_) + "\n", encoding="utf-8"
+        )
+
+        span_start_ns = int(datetime(2026, 6, 10, 8, 0, 0, tzinfo=UTC).timestamp() * 1e9)
+        span_end_ns = int(datetime(2026, 6, 10, 8, 0, 10, tzinfo=UTC).timestamp() * 1e9)
+
+        class _FakeSpan:
+            attributes: dict[str, Any] = {"session.id": session_id}
+            start_time = span_start_ns
+            end_time = span_end_ns
+
+        steps = [_step(0, "Bash")]
+
+        import kairos.readers.transcript_join as tj
+
+        original_glob = tj.TRANSCRIPT_GLOB
+        tj.TRANSCRIPT_GLOB = str(project_dir / "{session_id}.jsonl")
+        try:
+            result = tool_args_from_transcript([_FakeSpan()], steps)
+        finally:
+            tj.TRANSCRIPT_GLOB = original_glob
+
+        assert 0 in result
+        cmd = result[0].get("command", "")
+        # Bearer token and sk- key must be redacted
+        assert "Bearer" not in cmd or "[REDACTED]" in cmd
+        assert "sk-secret" not in cmd
+
+    def test_phoenix_enriches_tool_args_on_cc_trace(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """spans_to_envelope populates step.tool_args via _enrich_tool_args_from_transcript."""
+        from kairos.readers.phoenix import spans_to_envelope
+
+        test_args = {"file_path": "/foo/bar.py", "old_string": "x"}
+
+        def _fake_args(spans: list[Any], steps: list[Any]) -> dict[int, dict[str, Any]]:
+            # Return args for every TOOL_CALL step
+            return {s.step_index: test_args for s in steps if s.step_type is StepType.TOOL_CALL}
+
+        monkeypatch.setattr("kairos.readers.phoenix.tool_args_from_transcript", _fake_args)
+        monkeypatch.setattr(
+            "kairos.readers.phoenix.tool_errors_from_transcript",
+            lambda spans, steps: {},
+        )
+
+        spans = [
+            _cc_interaction_span(),
+            _cc_tool_span("Edit", success=True),
+        ]
+        env = spans_to_envelope(spans)
+        tool_steps = [s for s in env.steps if s.step_type is StepType.TOOL_CALL]
+        assert len(tool_steps) == 1
+        assert tool_steps[0].tool_args == test_args
+        assert tool_steps[0].tool_args_normalized is not None
+
+    def test_phoenix_does_not_overwrite_existing_args(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """If a step already has tool_args from the span, transcript args do NOT overwrite."""
+        from kairos.readers.phoenix import spans_to_envelope
+
+        monkeypatch.setattr(
+            "kairos.readers.phoenix.tool_args_from_transcript",
+            lambda spans, steps: {s.step_index: {"file_path": "/TRANSCRIPT"} for s in steps
+                                   if s.step_type is StepType.TOOL_CALL},
+        )
+        monkeypatch.setattr(
+            "kairos.readers.phoenix.tool_errors_from_transcript",
+            lambda spans, steps: {},
+        )
+
+        # Build a span that already has args set via input.value
+        span_with_args = dict(_cc_tool_span("Edit", success=True))
+        span_with_args["attributes"] = dict(span_with_args.get("attributes", {}))
+        span_with_args["attributes"]["input.value"] = '{"file_path": "/SPAN_ARG.py"}'
+
+        spans = [_cc_interaction_span(), span_with_args]
+        env = spans_to_envelope(spans)
+        tool_steps = [s for s in env.steps if s.step_type is StepType.TOOL_CALL]
+        assert len(tool_steps) == 1
+        # Span-sourced args take precedence; transcript should not overwrite
+        assert tool_steps[0].tool_args is not None
+        assert tool_steps[0].tool_args.get("file_path") == "/SPAN_ARG.py"
+
+    def test_non_cc_trace_not_enriched(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Non-claude_code trace: _enrich_tool_args_from_transcript never called."""
+        call_count = {"n": 0}
+
+        def _counting_fake(spans: list[Any], steps: list[Any]) -> dict[int, dict[str, Any]]:
+            call_count["n"] += 1
+            return {}
+
+        monkeypatch.setattr("kairos.readers.phoenix.tool_args_from_transcript", _counting_fake)
+        monkeypatch.setattr(
+            "kairos.readers.phoenix.tool_errors_from_transcript",
+            lambda spans, steps: {},
+        )
+
+        from kairos.readers.phoenix import spans_to_envelope
+
+        spans = [
+            {
+                "name": "kairos.task",
+                "context": {"trace_id": "1111111111111111111111111111eeee", "span_id": "1111111111111111"},
+                "parent_id": None,
+                "start_time": "2026-06-10T08:00:00.000000+00:00",
+                "end_time": "2026-06-10T08:00:10.000000+00:00",
+                "status_code": "UNSET",
+                "status_message": "",
+                "attributes": {"kairos.agent.name": "generic"},
+                "events": [],
+            },
+            {
+                "name": "tool.submit",
+                "context": {"trace_id": "1111111111111111111111111111eeee", "span_id": "2222222222222222"},
+                "parent_id": "1111111111111111",
+                "start_time": "2026-06-10T08:00:01.000000+00:00",
+                "end_time": "2026-06-10T08:00:02.000000+00:00",
+                "status_code": "UNSET",
+                "status_message": "",
+                "attributes": {"gen_ai.tool.name": "submit"},
+                "events": [],
+            },
+        ]
+        spans_to_envelope(spans)
+        assert call_count["n"] == 0

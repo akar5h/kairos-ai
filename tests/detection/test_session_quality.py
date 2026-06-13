@@ -509,3 +509,138 @@ class TestDetectSessionQuality:
         trace_ids = {f.trace_id for f in findings}
         assert "orch3a" in trace_ids
         assert "orch3b" in trace_ids
+
+
+# ── D2 — F10 arg-similarity fix ───────────────────────────────────────────────
+
+
+class TestD2ArgsRequiredForRedundancy:
+    """D2 must NOT count consecutive same-tool pairs as redundant when args are absent
+    (the F10 over-fire: 56 distinct Bash commands looked identical without real args).
+    """
+
+    def test_sequential_distinct_bash_commands_not_redundant(self) -> None:
+        """56 sequential Bash steps with no args → redundant_steps == 0."""
+        from kairos.detection.session_quality import _count_redundant_steps
+        steps = [
+            _step(i, "Bash", StepStatus.OK)  # no tool_args → empty
+            for i in range(56)
+        ]
+        assert _count_redundant_steps(steps) == 0
+
+    def test_sequential_same_tool_different_args_not_redundant(self) -> None:
+        """Same tool, different args per step → not redundant."""
+        from kairos.detection.session_quality import _count_redundant_steps
+        steps = [
+            _step(i, "Bash", StepStatus.OK, tool_args={"command": f"ls /dir{i}"})
+            for i in range(10)
+        ]
+        assert _count_redundant_steps(steps) == 0
+
+    def test_true_identical_arg_repeats_are_redundant(self) -> None:
+        """Same tool, identical args → counted as redundant."""
+        from kairos.detection.session_quality import _count_redundant_steps
+        args = {"command": "curl http://api/status"}
+        steps = [
+            _step(i, "Bash", StepStatus.OK, tool_args=args)
+            for i in range(4)
+        ]
+        # 3 consecutive pairs of (Bash,args)~(Bash,args) → 3 redundant
+        assert _count_redundant_steps(steps) == 3
+
+    def test_post_error_retry_not_redundant(self) -> None:
+        """Error step followed by same-tool same-args step → NOT redundant (retry)."""
+        from kairos.detection.session_quality import _count_redundant_steps
+        args = {"file_path": "/a.py"}
+        steps = [
+            _step(0, "Edit", StepStatus.ERROR, tool_args=args),
+            _step(1, "Edit", StepStatus.OK, tool_args=args),
+        ]
+        assert _count_redundant_steps(steps) == 0
+
+    def test_struggle_ratio_no_fire_on_empty_args_bash_heavy(self) -> None:
+        """Bash-heavy trace with absent args must NOT fire D2 (the 6a90e914 fix)."""
+        # Simulate 83 Bash steps (like 6a90e914) with no args — all distinct commands
+        # that we can't see because the transcript is missing.
+        steps = [_step(i, "Bash", StepStatus.OK) for i in range(83)]
+        steps.append(_step(83, "Edit", StepStatus.OK))  # 1 side effect
+        trace = _make_trace("bash_heavy", steps)
+        findings = detect_struggle_ratio(trace, struggle_t=2.0)
+        # Without real args, redundant_steps=0 → struggle = 0/84 = 0.0 < 2.0 → no fire
+        assert findings == []
+
+
+# ── D1 — empty-args safe degradation ─────────────────────────────────────────
+
+
+class TestD1EmptyArgsFallback:
+    """D1 must degrade safely when args are absent (no transcript): use status-based
+    recovery instead of firing on every error.
+    """
+
+    def test_no_args_ok_retry_counts_as_recovery(self) -> None:
+        """No args on either side: a later OK call of same tool → recovered, no fire."""
+        trace = _make_trace("d1_fallback1", [
+            _step(0, "Edit", StepStatus.ERROR),   # no args
+            _step(1, "Edit", StepStatus.OK),      # no args, but OK → recovery
+        ])
+        assert detect_unrecovered_error(trace) == []
+
+    def test_no_args_no_ok_retry_fires(self) -> None:
+        """No args, error step with no same-tool OK follow-up → fires."""
+        trace = _make_trace("d1_fallback2", [
+            _step(0, "Edit", StepStatus.ERROR),
+            _step(1, "Bash", StepStatus.OK),
+        ])
+        findings = detect_unrecovered_error(trace)
+        assert len(findings) == 1
+        assert findings[0].evidence["tool"] == "Edit"
+
+    def test_with_real_args_uses_jaccard_not_status(self) -> None:
+        """When args present, jaccard must pass — OK retry with different args NOT recovery."""
+        a_args = {"file_path": "/a.py", "old_string": "foo", "new_string": "bar"}
+        b_args = {"file_path": "/b.py", "old_string": "zzz", "new_string": "yyy"}
+        trace = _make_trace("d1_fallback3", [
+            _step(0, "Edit", StepStatus.ERROR, tool_args=a_args),
+            _step(1, "Edit", StepStatus.OK, tool_args=b_args),  # args differ → not recovery
+        ])
+        findings = detect_unrecovered_error(trace)
+        assert len(findings) == 1
+
+
+# ── D3 — empty-args F10 guard ─────────────────────────────────────────────────
+
+
+class TestD3EmptyArgsGuard:
+    """D3 must NOT collapse all empty-arg Bash calls into the same key and false-fire."""
+
+    def test_empty_args_excluded_from_repeat_count(self) -> None:
+        """Many Bash steps with no args → no repeat violation."""
+        steps = [_step(i, "Bash", StepStatus.OK) for i in range(10)]
+        trace = _make_trace("d3_empty1", steps)
+        findings = detect_coordination_waste(trace, repeat_t=3, curl_t=0.99)
+        assert findings == []
+
+    def test_real_args_still_fire_repeat(self) -> None:
+        """Steps with real identical args → repeat still fires."""
+        args = {"command": "git status"}
+        steps = [
+            _step(i, "Bash", StepStatus.OK, tool_args=args, tool_args_normalized=args)
+            for i in range(4)
+        ]
+        trace = _make_trace("d3_empty2", steps)
+        findings = detect_coordination_waste(trace, repeat_t=3, curl_t=0.99)
+        assert len(findings) == 1
+        assert findings[0].evidence["repeat_violations"]
+
+    def test_mixed_empty_and_real_args_only_real_counted(self) -> None:
+        """Mix: some steps with args, some without → only args-bearing steps in count."""
+        args = {"command": "git status"}
+        steps = (
+            [_step(i, "Bash", StepStatus.OK) for i in range(5)]  # no args
+            + [_step(i + 5, "Bash", StepStatus.OK, tool_args=args, tool_args_normalized=args)
+               for i in range(2)]  # real args but only 2 → below repeat_t=3
+        )
+        trace = _make_trace("d3_empty3", steps)
+        findings = detect_coordination_waste(trace, repeat_t=3, curl_t=0.99)
+        assert findings == []
