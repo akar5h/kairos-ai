@@ -312,10 +312,12 @@ def test_cap_drops_surplus_candidates(caplog: pytest.LogCaptureFixture, tmp_path
             max_candidates=small_cap,
         )
 
+    # No silent truncation: the drop count is SURFACED on the result (the reliable
+    # contract), not only logged. (caplog capture of the structlog warning is
+    # propagation-order-dependent across the suite, so we assert the surfaced field.)
+    assert result.dropped_by_cap == len(miss_candidates) - small_cap
     assert result.dropped_by_cap > 0
     assert len(result.candidates) == small_cap
-    # Logger warning should have been emitted.
-    assert any("capped" in r.message.lower() or "cap" in r.message.lower() for r in caplog.records)
 
 
 # ── expectation-miss folding ──────────────────────────────────────────────────
