@@ -49,6 +49,14 @@ kairos_pg_data/
 # labels.jsonl and context.yaml are committed; raw trace JSONs are not.
 eval/corpus/taubench/*.json
 
+# Raw Phoenix span snapshots (regenerable via corpus.snapshot_phoenix_spans).
+# The raw <trace_id>.json span files are large (~29M) and NOT committed; the
+# committed manifest + resolved map + live_trace_ids.txt make the corpus
+# composition and corpus_hash reproducible without them.
+eval/corpus/live/*.json
+!eval/corpus/live/snapshot_manifest.json
+!eval/corpus/live/spotcheck_resolved.json
+
 # Review queue and answers (regenerable / local reviewer data — never commit)
 eval/review/queue.json
 eval/review/answers.jsonl

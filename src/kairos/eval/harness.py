@@ -195,16 +195,24 @@ if str(src_path) not in sys.path:
 from kairos.eval.corpus import build_corpus
 from kairos.eval.panel import compute_panel
 
-taubench_dir = worktree_root / "eval" / "corpus" / "taubench"
-live_ids = worktree_root / "eval" / "corpus" / "live_trace_ids.txt"
+# The CORPUS is the stable ruler — its fixed inputs (tau-bench envelopes,
+# raw-span snapshots, resolved map, live ids) ALWAYS come from HOST, never the
+# worktree. Only the engine (spans_to_envelope, detectors) varies by ref.
+host_root = host_src.parent
+taubench_dir = host_root / "eval" / "corpus" / "taubench"
+live_ids = host_root / "eval" / "corpus" / "live_trace_ids.txt"
+snapshot_dir = host_root / "eval" / "corpus" / "live"
 
-# Fall back to host paths if the worktree doesn't have the eval corpus
-if not (worktree_root / "eval" / "corpus" / "taubench" / "labels.jsonl").exists():
+# argv[3]/argv[4] override host paths if explicitly provided (kept for compat).
+if len(sys.argv) > 3 and sys.argv[3]:
     taubench_dir = Path(sys.argv[3])
+if len(sys.argv) > 4 and sys.argv[4]:
     live_ids = Path(sys.argv[4])
 
-corpus = build_corpus(taubench_dir=taubench_dir, live_ids_file=live_ids)
-panel = compute_panel(corpus, taubench_dir=taubench_dir)
+corpus = build_corpus(
+    taubench_dir=taubench_dir, live_ids_file=live_ids, snapshot_dir=snapshot_dir
+)
+panel = compute_panel(corpus, taubench_dir=taubench_dir, snapshot_dir=snapshot_dir)
 print(panel.to_json())
 """
 

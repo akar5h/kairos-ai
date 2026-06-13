@@ -12,6 +12,7 @@ from kairos.eval.panel import (
     DetectorMetrics,
     MetricPanel,
     OutcomeMetrics,
+    _call_spans_to_envelope,
     _cohen_kappa,
     _compute_detector_metrics,
     _compute_outcome_metrics,
@@ -230,3 +231,44 @@ def test_panel_to_dict_round_trip():
     json_str = panel.to_json()
     restored = json.loads(json_str)
     assert restored["corpus_hash"] == "abc123"
+
+
+# ── spans_to_envelope signature adaptation ────────────────────────────────────
+
+
+def test_call_spans_to_envelope_old_signature():
+    """A ref whose spans_to_envelope takes only `spans` is called positionally."""
+    seen = {}
+
+    def old_reader(spans):
+        seen["spans"] = spans
+        return "ENV"
+
+    out = _call_spans_to_envelope(old_reader, [{"a": 1}])
+    assert out == "ENV"
+    assert seen["spans"] == [{"a": 1}]
+
+
+def test_call_spans_to_envelope_new_signature():
+    """A ref with correlation_key_attr is called with that kwarg (=None)."""
+    seen = {}
+
+    def new_reader(spans, *, correlation_key_attr=None):
+        seen["ck"] = correlation_key_attr
+        return "ENV2"
+
+    out = _call_spans_to_envelope(new_reader, [])
+    assert out == "ENV2"
+    assert seen["ck"] is None
+
+
+def test_call_spans_to_envelope_no_signature():
+    """A callable with no introspectable signature falls back to positional call."""
+    # A builtin-like object: use a lambda wrapped so signature works, then a
+    # callable whose signature raises — emulate via object with __call__.
+    class Reader:
+        def __call__(self, spans):
+            return ("ENV3", len(spans))
+
+    out = _call_spans_to_envelope(Reader(), [1, 2, 3])
+    assert out == ("ENV3", 3)

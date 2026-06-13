@@ -134,23 +134,46 @@ class MetricPanel:
 # ── Engine runner ─────────────────────────────────────────────────────────────
 
 
+def _call_spans_to_envelope(fn: Any, spans: list[Any]) -> Any:
+    """Call the ref's spans_to_envelope, adapting to its signature.
+
+    Older refs expose ``spans_to_envelope(spans)``; newer refs add
+    ``correlation_key_attr=...``. We introspect and pass only what the ref
+    supports. The RAW spans are the fixed input; everything from normalization
+    onward (incl. args-enrichment) is the REF's behavior under test.
+    """
+    import inspect
+
+    param_names: set[str] = set()
+    with contextlib.suppress(ValueError, TypeError):
+        param_names = set(inspect.signature(fn).parameters)
+    if "correlation_key_attr" in param_names:
+        with contextlib.suppress(TypeError):
+            return fn(spans, correlation_key_attr=None)
+    return fn(spans)
+
+
 def _run_engine_on_corpus(
     entries: list[CorpusEntry],
     taubench_dir: Path,
+    snapshot_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Run the Kairos engine against all corpus entries that have loaded traces.
+    """Run the Kairos engine against all corpus entries.
 
     Returns a dict:
       "outcome_results": dict[trace_id, {"outcome_pass": bool, "computable": bool}]
       "findings": dict[trace_id, list[{"pattern_name": str, "severity": str}]]
 
-    The engine is imported from the current Python path (set by harness to the ref
-    under evaluation). For tau-bench traces, loads TraceEnvelopes from disk.
-    For live traces, we only compute what we can without Phoenix access
-    (fire-count is 0 for live entries without an envelope).
+    The engine is imported from the current Python path (set by the harness to
+    the ref under evaluation). Two envelope sources:
+      - tau-bench: TraceEnvelopes loaded from disk (taubench_dir).
+      - live/spotcheck/answers WITH a raw-span snapshot: the REF's
+        ``spans_to_envelope`` is called on the stored raw spans, so the ref's
+        normalization (incl. args-enrichment) is exercised, then detectors run.
+    Entries without an envelope (no snapshot) are recorded not-computable.
 
     IMPORTANT: this function never modifies outcome_metric.py, session_quality.py,
-    pipeline.py, or any detector logic. It is a pure consumer.
+    pipeline.py, spans_to_envelope, or any detector logic. It is a pure consumer.
     """
     from kairos.models.trace import TraceEnvelope
     from kairos.taxonomy.business_context import BusinessContext
@@ -160,6 +183,7 @@ def _run_engine_on_corpus(
     _evaluate_outcome: Any = None
     _detect_tier1: Any = None
     _detect_session_quality: Any = None
+    _spans_to_envelope: Any = None
     with contextlib.suppress(ImportError):
         from kairos.analysis.outcome_metric import evaluate_outcome as _evaluate_outcome
     with contextlib.suppress(ImportError):
@@ -168,6 +192,8 @@ def _run_engine_on_corpus(
         from kairos.detection.session_quality import (
             detect_session_quality as _detect_session_quality,
         )
+    with contextlib.suppress(ImportError):
+        from kairos.readers.phoenix import spans_to_envelope as _spans_to_envelope
 
     # Load taubench context for tau-bench traces
     context_yaml = taubench_dir / "context.yaml"
@@ -185,6 +211,24 @@ def _run_engine_on_corpus(
                 tau_envelopes[env.trace_id] = env
 
     tau_operations = list(tau_context.operations) if tau_context else []
+
+    def _live_envelope(raw_spans_file: str) -> TraceEnvelope | None:
+        """Build an envelope from a stored raw-span snapshot via the ref's reader.
+
+        Returns None on any failure (missing file, reader absent, parse error) —
+        the entry then degrades to not-computable, never crashing the panel.
+        """
+        if snapshot_dir is None or _spans_to_envelope is None:
+            return None
+        spans_path = snapshot_dir / raw_spans_file
+        if not spans_path.exists():
+            return None
+        try:
+            spans = json.loads(spans_path.read_text())
+            env = _call_spans_to_envelope(_spans_to_envelope, spans)
+        except Exception:  # noqa: BLE001 — resilience: skip this trace, keep going
+            return None
+        return env if isinstance(env, TraceEnvelope) else None
 
     def _best_op(env: TraceEnvelope) -> Any:
         """Pick the tau-bench operation that best covers this trace's tools."""
@@ -208,45 +252,62 @@ def _run_engine_on_corpus(
 
     for entry in entries:
         tid = entry.trace_id
-        maybe_env: TraceEnvelope | None = tau_envelopes.get(tid)
 
-        if maybe_env is None:
-            # No envelope available (spotcheck, answers, or live without Phoenix)
-            # Cannot run engine — record as not-computable
+        # Envelope source: tau-bench from disk, else the ref-rebuilt live envelope.
+        is_tau = tid in tau_envelopes
+        if is_tau:
+            trace_env = tau_envelopes[tid]
+        elif entry.raw_spans_file is not None:
+            live_env = _live_envelope(entry.raw_spans_file)
+            if live_env is None:
+                outcome_results[tid] = {"outcome_pass": False, "computable": False}
+                findings_by_trace[tid] = []
+                continue
+            trace_env = live_env
+        else:
+            # No envelope available (no snapshot) — not-computable.
             outcome_results[tid] = {"outcome_pass": False, "computable": False}
             findings_by_trace[tid] = []
             continue
 
-        trace_env: TraceEnvelope = maybe_env
-
         # Outcome
-        if entry.source == "taubench" and tau_operations and _evaluate_outcome is not None:
+        if is_tau and tau_operations and _evaluate_outcome is not None:
             op = _best_op(trace_env)
             result = _evaluate_outcome(trace_env, op)
             outcome_results[tid] = {
                 "outcome_pass": result.outcome_pass,
                 "computable": result.computable,
             }
+        elif not is_tau and _evaluate_outcome is not None:
+            # Live coding traces have no tau operation; evaluate with op=None
+            # where the ref's evaluate_outcome supports it, else mark abstain.
+            with contextlib.suppress(Exception):
+                live_result = _evaluate_outcome(trace_env, None)
+                outcome_results[tid] = {
+                    "outcome_pass": getattr(live_result, "outcome_pass", False),
+                    "computable": getattr(live_result, "computable", False),
+                }
+            if tid not in outcome_results:
+                outcome_results[tid] = {"outcome_pass": False, "computable": False}
         else:
             outcome_results[tid] = {"outcome_pass": False, "computable": False}
 
         # Detectors — run on the envelope (session_quality + redundant).
         # Guard: detectors may not exist at old refs (graceful degradation).
+        # This runs for BOTH tau and live envelopes — the live path is what makes
+        # the detector + blast-radius half of the panel non-vacuous.
         trace_findings: list[dict[str, Any]] = []
         with contextlib.suppress(Exception):
             # Tier-1 redundant detector (redundant_execution)
-            if tau_operations and _detect_tier1 is not None:
-                op = _best_op(trace_env)
+            if _detect_tier1 is not None:
                 cluster_median = float(len(trace_env.steps))
                 tier1_findings = _detect_tier1([trace_env], cluster_median)
                 for f in tier1_findings:
                     trace_findings.append({"pattern_name": f.pattern_name, "severity": f.severity})
             # Session-quality detectors (D1–D4)
             if _detect_session_quality is not None:
-                if tau_operations:
-                    sq_findings = _detect_session_quality([trace_env], _best_op(trace_env))
-                else:
-                    sq_findings = _detect_session_quality([trace_env], None)
+                op = _best_op(trace_env) if (is_tau and tau_operations) else None
+                sq_findings = _detect_session_quality([trace_env], op)
                 for f in sq_findings:
                     trace_findings.append({"pattern_name": f.pattern_name, "severity": f.severity})
         findings_by_trace[tid] = trace_findings
@@ -415,7 +476,11 @@ def _compute_detector_metrics(
     )
 
 
-def compute_panel(corpus: EvalCorpus, taubench_dir: Path | None = None) -> MetricPanel:
+def compute_panel(
+    corpus: EvalCorpus,
+    taubench_dir: Path | None = None,
+    snapshot_dir: Path | None = None,
+) -> MetricPanel:
     """Compute the full metric panel for the current engine against the corpus.
 
     Parameters
@@ -425,11 +490,19 @@ def compute_panel(corpus: EvalCorpus, taubench_dir: Path | None = None) -> Metri
     taubench_dir:
         Path to eval/corpus/taubench/ for loading trace envelopes.
         Defaults to the standard repo path.
+    snapshot_dir:
+        Path to eval/corpus/live/ holding raw-span snapshots. Live/spotcheck/
+        answers entries with a snapshot get a real envelope (rebuilt via the
+        ref's spans_to_envelope) so detectors actually run. Defaults to the
+        standard repo path.
     """
+    repo_root = Path(__file__).parent.parent.parent.parent
     if taubench_dir is None:
-        taubench_dir = Path(__file__).parent.parent.parent.parent / "eval" / "corpus" / "taubench"
+        taubench_dir = repo_root / "eval" / "corpus" / "taubench"
+    if snapshot_dir is None:
+        snapshot_dir = repo_root / "eval" / "corpus" / "live"
 
-    engine_results = _run_engine_on_corpus(corpus.entries, taubench_dir)
+    engine_results = _run_engine_on_corpus(corpus.entries, taubench_dir, snapshot_dir)
     outcome_results = engine_results["outcome_results"]
     findings_by_trace = engine_results["findings"]
 

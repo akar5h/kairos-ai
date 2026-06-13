@@ -11,8 +11,10 @@ from kairos.eval.corpus import (
     _ANSWERS_TRUTH,
     _SPOTCHECK_TRUTH,
     EvalCorpus,
+    _build_live_entries,
     _compute_corpus_hash,
     _load_answers,
+    _load_snapshot_manifest,
     _load_spotcheck,
     _load_taubench,
     build_corpus,
@@ -196,9 +198,10 @@ def test_build_corpus_no_duplicate_trace_ids():
 
 
 def test_build_corpus_hash_matches_entries():
-    """corpus_hash must match what _compute_corpus_hash would produce for trace_ids."""
+    """corpus_hash must match _compute_corpus_hash over trace_ids + snapshotted IDs."""
     corpus = build_corpus()
-    expected_hash = _compute_corpus_hash(corpus.trace_ids)
+    snapshotted = sorted(e.trace_id for e in corpus.entries if e.raw_spans_file is not None)
+    expected_hash = _compute_corpus_hash(corpus.trace_ids, snapshotted)
     assert corpus.corpus_hash == expected_hash
 
 
@@ -254,3 +257,77 @@ def test_persist_live_trace_ids_idempotent(tmp_path):
     persist_live_trace_ids(ids, path)
     persist_live_trace_ids(ids, path)
     assert path.read_text().count("\n") == len(ids)
+
+
+# ── raw-span snapshot path ─────────────────────────────────────────────────────
+
+
+def test_corpus_hash_folds_snapshot_membership():
+    """corpus_hash changes when snapshot membership changes (version bump signal)."""
+    ids = ["t1", "t2", "t3"]
+    h_none = _compute_corpus_hash(ids, [])
+    h_some = _compute_corpus_hash(ids, ["t1"])
+    h_more = _compute_corpus_hash(ids, ["t1", "t2"])
+    assert h_none != h_some
+    assert h_some != h_more
+    # Same trace_ids + same snapshot set → identical hash regardless of order.
+    assert _compute_corpus_hash(ids, ["t2", "t1"]) == _compute_corpus_hash(ids, ["t1", "t2"])
+
+
+def test_load_snapshot_manifest_authoritative(tmp_path):
+    """Manifest file (when present) is authoritative for snapshot membership."""
+    snap = tmp_path / "live"
+    snap.mkdir()
+    manifest = snap / "snapshot_manifest.json"
+    manifest.write_text('{"snapshotted_trace_ids": ["aaa", "bbb"]}')
+    # A stray raw file not in the manifest must NOT be counted.
+    (snap / "ccc.json").write_text("[]")
+    got = _load_snapshot_manifest(manifest, snap)
+    assert got == {"aaa", "bbb"}
+
+
+def test_load_snapshot_manifest_falls_back_to_glob(tmp_path):
+    """Without a manifest, membership falls back to globbing raw <tid>.json files."""
+    snap = tmp_path / "live"
+    snap.mkdir()
+    (snap / "aaa.json").write_text("[]")
+    (snap / "bbb.json").write_text("[]")
+    (snap / "spotcheck_resolved.json").write_text("{}")
+    got = _load_snapshot_manifest(snap / "snapshot_manifest.json", snap)
+    assert got == {"aaa", "bbb"}  # resolved-map file excluded
+
+
+def test_spotcheck_resolves_to_full_id_when_snapshotted():
+    """A spotcheck prefix resolves to its full trace_id when that id is snapshotted."""
+    prefix = next(iter(_SPOTCHECK_TRUTH))
+    p16 = prefix[:16]
+    full = p16 + "deadbeefdeadbeef"  # synthetic full id
+    entries = _load_spotcheck(_SPOTCHECK_TRUTH, {p16: full}, {full})
+    entry = next(e for e in entries if e.trace_id == full)
+    assert entry.raw_spans_file == f"{full}.json"
+    assert entry.source == "spotcheck"
+
+
+def test_spotcheck_falls_back_to_prefix_without_snapshot():
+    """Without a snapshot, spotcheck entries keep the 16-char prefix and no snapshot."""
+    entries = _load_spotcheck(_SPOTCHECK_TRUTH, {}, set())
+    for e in entries:
+        assert e.raw_spans_file is None
+        assert len(e.trace_id) == 16
+
+
+def test_answers_sets_raw_spans_file_when_snapshotted(tmp_path):
+    """_load_answers sets raw_spans_file for trace_ids in the snapshot set."""
+    answers = tmp_path / "answers.jsonl"
+    answers.write_text('{"trace_id": "abc123", "verdict_shown": "pass", "answer": "ok"}\n')
+    entries = _load_answers(answers, {}, {"abc123"})
+    assert len(entries) == 1
+    assert entries[0].raw_spans_file == "abc123.json"
+
+
+def test_live_entries_snapshot_flag():
+    """_build_live_entries sets raw_spans_file only for snapshotted ids."""
+    entries = _build_live_entries(["x1", "x2"], existing_ids=set(), snapshotted={"x1"})
+    by_id = {e.trace_id: e for e in entries}
+    assert by_id["x1"].raw_spans_file == "x1.json"
+    assert by_id["x2"].raw_spans_file is None
