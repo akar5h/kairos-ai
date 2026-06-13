@@ -83,10 +83,12 @@ Plugin repo (`Xero/kairos-analysis-views`, own git): `b30e7e2` (fail-loud guard,
 
 ## Immediate next steps (in order)
 
-1. **Single-source-of-data setup**: dedicated `kairos` Postgres DB (new container or DB on an existing PG instance — owner infra call); migrations for `findings`/`nightly_rollup`/`labels`/`expectations`/`discovery_queue`; 7-day backfill loader.
-2. **Day 8** (sprint-exec-3-loop.md §Day-8): deterministic session-quality detectors (D1 unrecovered_error, D2 struggle_ratio, D3 coordination_waste, D4 work_to_talk) + learned-expectation LEARN stage. Each validated ≥0.7 precision on owner labels or cut — nothing dormant.
-3. **Day 9** correlation_key rollup (generic, documented, optional). **Day 10** Postgres persistence. **Day 11** delta + minimal dashboard. **Day 12** discovery mode + nightly runner. **Days 13–14** run the flywheel live → measure Kairos's own detection-quality delta → `docs/case-study-1.md`.
-4. **Config documentation** (owner-flagged): the Kairos config guide must state what `correlation_key`, operations, and detector thresholds are, when required, and safe defaults. No hidden assumptions.
+- **DONE — single-source store** (`d600c5c`): dedicated `kairos-pg` container (localhost:5434), 5 tables + migration runner. Ingest/backfill pending (Day 10, needs detectors).
+- **DONE — Day 8 detectors** (`2a84b81`, `9975ecf`, `59ac322`): D1–D4 + LEARN stage. **The flywheel turned twice during validation:** (1) Fable live-measurement caught the executor's *estimated* precision was fiction; (2) preparing the owner re-label surfaced that all detectors read EMPTY span args (F10) → fixed by wiring `transcript_join` real (redacted) args into the reader (`9975ecf`). Post-fix measured: **D2 FIXED** (1.0 precision, was false-firing on clean), **D3 FIXED**, **D1 hit the deterministic ceiling** (~0.62 — can't separate "error that mattered" from "benign error agent moved past"; both show later same-tool recovery; SEMANTIC, the empirical LLM-judge trigger). Owner decision: **D1→info, judge stays deferred.** Final slate: **D2 `warning`, D1/D3/D4 `info`.** Detectors NOT yet wired into the loop. Full trail: `eval/reports/session-quality-precision.md`.
+- **NEXT — Day 9** correlation_key rollup (generic, documented, optional). **Day 10** Postgres persist + backfill. **Day 11** delta + minimal dashboard. **Day 12** discovery mode + nightly runner. **Days 13–14** flywheel live → Kairos's own detection-quality delta → `docs/case-study-1.md`.
+- **Config documentation** (owner-flagged): the Kairos config guide must state what `correlation_key`, operations, detector thresholds are, when required, safe defaults. No hidden assumptions.
+
+**Standing lesson (3× now): executors ESTIMATE precision instead of measuring it — Fable MUST live-run every precision/quality claim before accepting.** Caught fictional numbers on Day-6 inquiry-op, Day-8 initial, and Day-8 post-fix.
 
 ## Standing review discipline (keep)
 
