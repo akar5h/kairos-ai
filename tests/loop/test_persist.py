@@ -596,7 +596,7 @@ class TestBaselineBreakOnHashChange:
                 """
                 INSERT INTO nightly_rollup
                     (night_id, workflow, agent, units, traces, outcome_rate,
-                     struggle_p50, struggle_p90, coordination_waste_rate,
+                     struggle_p50, struggle_p90, coordination_waste_per_trace,
                      tokens_per_unit, finding_counts, config_hash)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (night_id, workflow, agent) DO UPDATE SET config_hash = EXCLUDED.config_hash

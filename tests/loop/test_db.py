@@ -209,7 +209,7 @@ class TestNightlyRollupRoundTrip:
                 """
                 INSERT INTO nightly_rollup
                     (night_id, workflow, agent, units, traces, outcome_rate,
-                     struggle_p50, struggle_p90, coordination_waste_rate,
+                     struggle_p50, struggle_p90, coordination_waste_per_trace,
                      tokens_per_unit, finding_counts, config_hash)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (night_id, workflow, agent) DO UPDATE
@@ -224,7 +224,7 @@ class TestNightlyRollupRoundTrip:
                     0.80,
                     0.12,
                     0.45,
-                    0.05,
+                    0.05,  # coordination_waste_per_trace (renamed from coordination_waste_rate)
                     1200.5,
                     '{"unrecovered_error": 3, "struggle_ratio": 1}',
                     "def456",

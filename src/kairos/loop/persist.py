@@ -1,4 +1,4 @@
-"""Kairos Postgres persistence layer — Day 10.
+"""Kairos Postgres persistence layer — Day 10, honesty fixes Day 11.
 
 Writes per-trace findings and per-workflow nightly rollups to the kairos-pg
 Postgres instance.  All writes are idempotent (ON CONFLICT … DO UPDATE) so
@@ -20,14 +20,26 @@ config_hash discipline:
   • compute_config_hash() produces a stable SHA-256 hex digest over the
     context.yaml content + detector threshold values + severity map.
 
-Agent derivation:
-  • Span attrs carry ``paperclip.agent_id`` (e.g. "claudecoder", "cto",
-    "qaengineer") on live traces via the root span's ``paperclip`` dict.
-    The PhoenixReader root-span meta (collected by _fetch_root_trace_ids in
-    export_spotcheck.py) exposes this as the ``agent`` field.  When absent,
-    the value "unknown" is used.
-  • The TraceEnvelope carries no dedicated agent field today; callers pass
-    agent identity from the meta_by_trace dict built during Phoenix fetch.
+Agent derivation (honesty fix Day 11):
+  • service.name on the root span carries the agent class name (e.g.
+    "paperclip-claude-cto", "paperclip-claude-claudecoder",
+    "paperclip-claude-qaengineer") and is the PREFERRED identity signal.
+  • paperclip.agent_id is a per-instance UUID — it identifies the running
+    instance, NOT the agent class, so it CANNOT be used for per-agent grouping.
+    When service.name is absent and only paperclip.agent_id is present, the
+    UUID form "paperclip-claude-<uuid>" is normalised to the stable bucket
+    "paperclip-claude-other".  This prevents the per-agent series from being
+    shattered across ephemeral instance IDs.
+  • The canonical UUID detector: a 32-hex-char value joined by hyphens in
+    8-4-4-4-12 format (matches re.fullmatch(UUID_RE, ...)).
+
+Honesty fixes (migration 0008):
+  Bug 1 — unmapped outcome_rate is now NULL (nullable column).  Unmapped
+    traces carry no pass/fail contract; storing 0.0 was a lie.
+  Bug 2 — coordination_waste_per_trace (renamed from coordination_waste_rate).
+    The old name implied a 0–1 fraction; actual values are avg coordination_waste
+    findings per trace (can exceed 1.0).  Renamed for honesty; magnitude kept.
+  Bug 3 — UUID agent identity bucketed to "paperclip-claude-other" (see above).
 """
 
 from __future__ import annotations
@@ -51,6 +63,44 @@ if TYPE_CHECKING:
     from kairos.detection.models import Finding
     from kairos.engine.pipeline import AnalysisResult
     from kairos.models.trace import TraceEnvelope
+
+# ── Agent-identity normalisation (honesty fix Day 11) ─────────────────────────
+# UUID pattern: 8-4-4-4-12 hex groups (matches paperclip.agent_id format).
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+# Prefix for Paperclip-spawned agent names.
+_PC_CLAUDE_PREFIX = "paperclip-claude-"
+# Stable bucket for UUID-suffixed agent names (instance IDs, not class names).
+_UUID_AGENT_BUCKET = "paperclip-claude-other"
+
+
+def _normalise_agent(raw: str) -> str:
+    """Normalise an agent name so the per-agent series uses stable class names.
+
+    Paperclip traces carry two agent-identity signals:
+      • ``service.name`` → agent *class* (e.g. "paperclip-claude-cto").
+        This is human-readable, stable, and the PREFERRED signal.
+      • ``paperclip.agent_id`` → agent *instance* UUID (e.g.
+        "paperclip-claude-1c08f433-08bf-45c2-a6a5-831651596439").
+        This is an ephemeral instance identifier — NOT a class name.
+
+    When service.name was absent at span emission time, backfill.py fell back
+    to paperclip.agent_id, producing the UUID suffix form.  Those UUID-suffix
+    names cannot be reliably mapped to class names (no deterministic lookup
+    exists in the span attrs or ledger), so they are collapsed into the single
+    stable bucket ``paperclip-claude-other`` to keep the per-agent view
+    coherent.
+
+    Named class agents (cto, claudecoder, qaengineer) pass through unchanged.
+    "unknown" passes through unchanged.
+    """
+    if raw.startswith(_PC_CLAUDE_PREFIX):
+        suffix = raw[len(_PC_CLAUDE_PREFIX):]
+        if _UUID_RE.fullmatch(suffix):
+            return _UUID_AGENT_BUCKET
+    return raw
 
 logger = get_logger(__name__)
 
@@ -247,7 +297,7 @@ def persist_findings(
     for finding in deduped:
         tid = finding.trace_id
         workflow = trace_to_workflow.get(tid, "unmapped")
-        agent = agent_by_trace.get(tid, "unknown")
+        agent = _normalise_agent(agent_by_trace.get(tid, "unknown"))
         unit_id = unit_id_by_trace.get(tid, tid)
         tokens = trace_to_tokens.get(tid, 0)
         struggle = round(trace_to_struggle.get(tid, 0.0), 4)
@@ -373,7 +423,7 @@ def persist_nightly_rollup(
             wf = trace_to_workflow.get(tid)
             if wf:
                 workflow = wf
-                agent = agent_by_trace.get(tid, "unknown")
+                agent = _normalise_agent(agent_by_trace.get(tid, "unknown"))
                 break
 
         key = (workflow, agent)
@@ -407,7 +457,7 @@ def persist_nightly_rollup(
                 """
                 INSERT INTO nightly_rollup
                     (night_id, workflow, agent, units, traces, outcome_rate,
-                     struggle_p50, struggle_p90, coordination_waste_rate,
+                     struggle_p50, struggle_p90, coordination_waste_per_trace,
                      tokens_per_unit, finding_counts, config_hash, baseline_break)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (night_id, workflow, agent) DO UPDATE
@@ -418,7 +468,7 @@ def persist_nightly_rollup(
                     night_id,
                     "_config_change_",
                     "_",
-                    0, 0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                    0, 0, None, 0.0, 0.0, 0.0, 0.0,
                     Jsonb({}),
                     config_hash,
                     True,
@@ -438,7 +488,15 @@ def persist_nightly_rollup(
         units = len(b["unit_ids"])
         traces = len(b["trace_ids"])
         outcomes: list[bool] = b["outcomes"]
-        outcome_rate = (sum(outcomes) / len(outcomes)) if outcomes else 0.0
+
+        # Bug 1 fix: outcome_rate is NULL for "unmapped" — unmapped traces carry
+        # no pass/fail contract; 0.0 was a lie.  For mapped workflows with no
+        # computable outcomes, also NULL (insufficient evidence, not "all failed").
+        if workflow == "unmapped" or not outcomes:
+            outcome_rate: float | None = None
+        else:
+            outcome_rate = round(sum(outcomes) / len(outcomes), 6)
+
         struggles: list[float] = b["struggles"]
         struggle_p50 = _percentile(struggles, 50)
         struggle_p90 = _percentile(struggles, 90)
@@ -446,34 +504,36 @@ def persist_nightly_rollup(
         tokens_per_unit = (sum(tokens_list) / len(tokens_list)) if tokens_list else 0.0
         finding_counts_dict = dict(b["finding_counts"])
 
-        # coordination_waste_rate: fraction of units that have a coordination_waste finding.
-        coord_waste_units = sum(
-            1
+        # Bug 2 fix: coordination_waste_per_trace — average count of
+        # coordination_waste findings per trace in this (workflow, agent) cell.
+        # The old column name "coordination_waste_rate" implied a 0–1 fraction,
+        # but the value is a mean count (can exceed 1.0).  Renamed for honesty.
+        coord_waste_total = sum(
+            sum(1 for f in us.unit_findings if f.pattern_name == "coordination_waste")
             for us in result.unit_summaries
-            if any(f.pattern_name == "coordination_waste" for f in us.unit_findings)
-            and any(trace_to_workflow.get(tid) == workflow for tid in us.trace_ids)
+            if any(trace_to_workflow.get(tid) == workflow for tid in us.trace_ids)
         )
-        coordination_waste_rate = coord_waste_units / max(1, units)
+        coordination_waste_per_trace = coord_waste_total / max(1, traces)
 
         with conn.cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO nightly_rollup
                     (night_id, workflow, agent, units, traces, outcome_rate,
-                     struggle_p50, struggle_p90, coordination_waste_rate,
+                     struggle_p50, struggle_p90, coordination_waste_per_trace,
                      tokens_per_unit, finding_counts, config_hash, baseline_break)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (night_id, workflow, agent) DO UPDATE
-                    SET units                   = EXCLUDED.units,
-                        traces                  = EXCLUDED.traces,
-                        outcome_rate            = EXCLUDED.outcome_rate,
-                        struggle_p50            = EXCLUDED.struggle_p50,
-                        struggle_p90            = EXCLUDED.struggle_p90,
-                        coordination_waste_rate = EXCLUDED.coordination_waste_rate,
-                        tokens_per_unit         = EXCLUDED.tokens_per_unit,
-                        finding_counts          = EXCLUDED.finding_counts,
-                        config_hash             = EXCLUDED.config_hash,
-                        baseline_break          = EXCLUDED.baseline_break
+                    SET units                        = EXCLUDED.units,
+                        traces                       = EXCLUDED.traces,
+                        outcome_rate                 = EXCLUDED.outcome_rate,
+                        struggle_p50                 = EXCLUDED.struggle_p50,
+                        struggle_p90                 = EXCLUDED.struggle_p90,
+                        coordination_waste_per_trace = EXCLUDED.coordination_waste_per_trace,
+                        tokens_per_unit              = EXCLUDED.tokens_per_unit,
+                        finding_counts               = EXCLUDED.finding_counts,
+                        config_hash                  = EXCLUDED.config_hash,
+                        baseline_break               = EXCLUDED.baseline_break
                 """,
                 (
                     night_id,
@@ -481,10 +541,10 @@ def persist_nightly_rollup(
                     agent,
                     units,
                     traces,
-                    round(outcome_rate, 6),
+                    outcome_rate,  # None for unmapped; nullable column
                     round(struggle_p50, 6),
                     round(struggle_p90, 6),
-                    round(coordination_waste_rate, 6),
+                    round(coordination_waste_per_trace, 6),
                     round(tokens_per_unit, 2),
                     Jsonb(finding_counts_dict),
                     config_hash,
