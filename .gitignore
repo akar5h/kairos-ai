@@ -57,3 +57,18 @@ eval/review/answers.jsonl
 .idea/
 .vscode/
 .DS_Store
+
+# Review disagreement queue (local reviewer data — never commit)
+eval/review/disagreement_queue.json
+
+# Streamlit dashboard cache
+eval/dashboard/.streamlit/
+
+# Node modules (scripts/package.json installs)
+scripts/node_modules/
+
+# Kairos analysis output views (generated output — never commit)
+kairos-analysis-views/
+
+# MLO generated output
+.mlo/
