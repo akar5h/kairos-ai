@@ -69,6 +69,9 @@ eval/review/answers.jsonl
 # Review disagreement queue (local reviewer data — never commit)
 eval/review/disagreement_queue.json
 
+# Haywire-restart review queue (regenerable; never commit)
+eval/review/haywire_queue.json
+
 # Streamlit dashboard cache
 eval/dashboard/.streamlit/
 

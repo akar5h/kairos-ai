@@ -10,6 +10,7 @@ Answers persist immediately to eval/review/answers.jsonl (append-only).
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,17 @@ import streamlit as st
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _HERE = Path(__file__).parent
-QUEUE_PATH = _HERE / "queue.json"
+
+# Support QUEUE_PATH env var for alternate queues (e.g. haywire_queue.json).
+# Relative paths are resolved relative to the repo root (two levels up from
+# eval/review/).  Absolute paths are used as-is.
+_QUEUE_PATH_ENV = os.environ.get("QUEUE_PATH", "")
+if _QUEUE_PATH_ENV:
+    _qp = Path(_QUEUE_PATH_ENV)
+    QUEUE_PATH = _qp if _qp.is_absolute() else (_HERE.parent.parent / _qp)
+else:
+    QUEUE_PATH = _HERE / "queue.json"
+
 ANSWERS_PATH = _HERE / "answers.jsonl"
 
 # ── Verdict styling ────────────────────────────────────────────────────────────
@@ -122,11 +133,14 @@ def save_answer(
     verdict_shown: str,
     relabel: bool = False,
     disagreement_kind: str | None = None,
+    entry_class: str | None = None,
 ) -> None:
     """Append one answer record to answers.jsonl immediately.
 
     Re-label entries from the disagreement queue include ``relabel=true``
     and ``disagreement_kind`` so they are distinguishable from originals.
+    Haywire-restart entries include ``class: "haywire"`` so they feed a
+    separate detector corpus.
     Existing lines are never overwritten or deleted — append-only.
     """
     rec: dict[str, Any] = {
@@ -140,6 +154,8 @@ def save_answer(
         rec["relabel"] = True
     if disagreement_kind:
         rec["disagreement_kind"] = disagreement_kind
+    if entry_class:
+        rec["class"] = entry_class
     with ANSWERS_PATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec) + "\n")
 
@@ -253,7 +269,11 @@ def main() -> None:
 
     queue = load_queue()
     if not queue:
-        st.error(f"queue.json not found at {QUEUE_PATH}. Run: uv run eval/review/build_queue.py")
+        st.error(
+            f"Queue not found at {QUEUE_PATH}. "
+            f"Run: uv run eval/review/build_queue.py  "
+            f"(or set QUEUE_PATH=eval/review/haywire_queue.json and run build_haywire_queue.py)"
+        )
         st.stop()
 
     answers = load_answers()
@@ -372,6 +392,8 @@ def main() -> None:
     # Determine if this is a relabel entry (disagreement queue)
     is_relabel = bool(entry.get("disagreement_kind"))
     disagreement_kind = entry.get("disagreement_kind") or None
+    # Haywire queue entries carry class="haywire" so answers are distinguishable.
+    entry_class: str | None = entry.get("class") or None
 
     if save_clicked:
         if answer_text.strip():
@@ -382,6 +404,7 @@ def main() -> None:
                 verdict,
                 relabel=is_relabel,
                 disagreement_kind=disagreement_kind,
+                entry_class=entry_class,
             )
             # Reload answers so prefill updates
             st.session_state["current_index"] = idx + 1
