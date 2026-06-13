@@ -40,3 +40,24 @@ services:
       - "6006:6006"     # Phoenix UI
       - "4319:4317"     # Phoenix OTLP gRPC
     restart: unless-stopped
+
+  # Kairos single source of truth (Day 10, XER-sprint-3).
+  # Dedicated instance — NOT shared with ledger-pg (:5432) or
+  # infra-cos-postgres (:5433).  Bound to localhost only (127.0.0.1:5434)
+  # so it is never reachable from outside the dev host.
+  # Credentials are supplied via environment; never hardcoded here.
+  # Connect string: postgresql://${KAIROS_PG_USER}:${KAIROS_PG_PASSWORD}@127.0.0.1:5434/${KAIROS_PG_DB}
+  kairos-pg:
+    image: postgres:16
+    environment:
+      POSTGRES_DB:       ${KAIROS_PG_DB:-kairos}
+      POSTGRES_USER:     ${KAIROS_PG_USER:?KAIROS_PG_USER must be set}
+      POSTGRES_PASSWORD: ${KAIROS_PG_PASSWORD:?KAIROS_PG_PASSWORD must be set}
+    ports:
+      - "127.0.0.1:5434:5432"   # localhost only — never 0.0.0.0
+    volumes:
+      - kairos_pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  kairos_pg_data:

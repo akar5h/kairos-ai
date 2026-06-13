@@ -31,6 +31,9 @@ dependencies = [
     # CLI
     "click>=8.0",
     "rich>=13.0",
+    # Postgres driver — loop persistence (Day 10).
+    # psycopg v3 with binary wheels; no ORM, five tables only.
+    "psycopg[binary]>=3.1",
 ]
 
 [project.optional-dependencies]
