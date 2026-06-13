@@ -77,3 +77,10 @@ kairos-analysis-views/
 # Parquet fallback files written when Postgres is unavailable.
 output/loop_data/
 output/discovery_queue.json
+
+# Eval harness worktrees (created under /tmp by harness.py — never in repo)
+# Listed here as a safety net if someone runs eval from within the repo dir.
+/tmp/kairos-eval-*/
+
+# Eval runner scratch (temp scripts written by harness)
+/tmp/kairos_eval_*.py
