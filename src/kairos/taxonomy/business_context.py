@@ -63,6 +63,28 @@ class BusinessContext:
     When ``None`` (the default) each trace is its own unit — behaviour is
     byte-identical to before this field existed.
     """
+    coordination_markers: list[str] = field(default_factory=list)
+    """Phrase list (case-insensitive) that, when found in a trace's user_input,
+    flag the trace as a coordination-context session rather than genuine agent
+    work.  Empty list (the default) means the feature is off — no traces are
+    flagged.
+
+    Example: ``["wake payload", "resume delta", "heartbeat"]`` identifies
+    Paperclip heartbeat sessions.  The engine applies these generically; the
+    specific strings are a configuration concern, not engine logic.
+    """
+    coordination_tools: list[str] = field(default_factory=list)
+    """Tool signatures that, when matched by a trace step, flag the trace as a
+    coordination-context session.  Each entry is either:
+      - ``"ToolName"`` — matches any step whose tool_name equals ToolName.
+      - ``"ToolName:substring"`` — matches when tool_name equals ToolName AND
+        the step's args string contains ``substring`` (case-insensitive).
+
+    Empty list (the default) means the feature is off.
+
+    Example: ``["Skill:paperclip", "Bash:PAPERCLIP_API"]`` identifies Paperclip
+    coordination tool calls generically.
+    """
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> BusinessContext:
@@ -142,9 +164,21 @@ class BusinessContext:
 
         correlation_key = data.get("correlation_key") or None
 
+        raw_markers = data.get("coordination_markers", [])
+        if not isinstance(raw_markers, list) or not all(isinstance(m, str) for m in raw_markers):
+            msg = "'coordination_markers' must be a list of strings"
+            raise ValueError(msg)
+
+        raw_tools = data.get("coordination_tools", [])
+        if not isinstance(raw_tools, list) or not all(isinstance(t, str) for t in raw_tools):
+            msg = "'coordination_tools' must be a list of strings"
+            raise ValueError(msg)
+
         return cls(
             agent_name=data.get("agent_name", ""),
             agent_description=data.get("agent_description", ""),
             operations=operations,
             correlation_key=correlation_key,
+            coordination_markers=list(raw_markers),
+            coordination_tools=list(raw_tools),
         )

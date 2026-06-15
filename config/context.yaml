@@ -13,6 +13,14 @@ agent_description: "Paperclip coding agents (ClaudeCoder, CTO) executing issues.
 # last-wins rollup: unit passes if the final computable trace passes.
 correlation_key: "paperclip.issue"
 
+# Coordination-context classifier — flags traces that are Paperclip control-plane
+# heartbeat sessions rather than genuine agent-quality work signals.
+# Analysis (eval/reports/haywire-analysis.md): 24/24 owner-labeled "haywire"
+# traces were coordination churn; R1 (task text markers) alone flags all 24.
+# Engine applies these generically — Paperclip is just one configuration.
+coordination_markers: ["wake payload", "resume delta", "heartbeat"]
+coordination_tools: ["Skill:paperclip", "Bash:PAPERCLIP_API", "Bash:paperclip"]
+
 operations:
 
   - name: "Code Implementation"
