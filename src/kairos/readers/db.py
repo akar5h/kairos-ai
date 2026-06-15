@@ -107,13 +107,36 @@ def fetch_envelope_from_db(
     dsn: str,
     *,
     correlation_key_attr: str | None = None,
+    enrich_hooks: bool = False,
 ) -> TraceEnvelope:
     """Fetch spans from DB and return a ``TraceEnvelope``.
 
     Drop-in replacement for ``PhoenixReader.fetch_envelope()`` — reads from
     Postgres instead of Phoenix HTTP.
+
+    Parameters
+    ----------
+    trace_id:
+        Hex trace ID to fetch.
+    dsn:
+        libpq connection string.
+    correlation_key_attr:
+        When set, scan spans for this attribute name and store the first
+        found value on ``envelope.correlation_key_value``.
+    enrich_hooks:
+        When True, call ``enrich_envelope_with_hooks`` after building the
+        envelope to overwrite step status / args / output from the
+        ``hook_events`` table (requires ``session.id`` on spans).
+        Default False — existing callers and tests are unaffected.
     """
     from kairos.readers.phoenix import spans_to_envelope  # noqa: PLC0415
 
     spans = fetch_spans_from_db(trace_id, dsn)
-    return spans_to_envelope(spans, correlation_key_attr=correlation_key_attr)
+    envelope = spans_to_envelope(spans, correlation_key_attr=correlation_key_attr)
+
+    if enrich_hooks:
+        from kairos.readers.hook_join import enrich_envelope_with_hooks  # noqa: PLC0415
+
+        envelope = enrich_envelope_with_hooks(envelope, dsn)
+
+    return envelope
