@@ -1,21 +1,20 @@
-"""Phoenix reader — pulls OTel spans from a Phoenix server, returns TraceEnvelope.
+"""Phoenix span primitives — OTel span adapter + envelope builder.
 
-Architecture: Kairos sits on top of OpenTelemetry. Hosts emit OTel spans
-via OpenLLMetry / OpenInference / raw OTel; Phoenix (or any OTel backend)
-stores them. This reader queries Phoenix for spans by trace_id, converts
-each span via ``genai_mapping``, hands the resulting events to
-``LiveNormalizer``, and returns a ``TraceEnvelope`` ready for analysis.
+F1.5: The ``PhoenixReader`` HTTP/GraphQL fetch class has been removed.
+Kairos now ingests spans itself (OTLP → spans table) and reads them via
+``kairos.readers.db.fetch_envelope_from_db``.
 
-Phoenix span dict shape (from arize-phoenix-client) is mapped onto an
-OTel-ReadableSpan-like adapter so the existing ``genai_mapping`` pure
-functions work unchanged.
+This module retains the span adapter primitives (``_PhoenixSpan`` and family)
+and the pure conversion functions (``spans_to_envelope``, ``_phoenix_dict_to_span``)
+that the DB reader and the OTLP ingest path both depend on.  DO NOT delete
+these — ``kairos.readers.db`` imports them directly.
 
 Public API::
 
-    from kairos.readers.phoenix import PhoenixReader
+    from kairos.readers.phoenix import spans_to_envelope
 
-    reader = PhoenixReader(endpoint="http://localhost:6006")
-    envelope = reader.fetch_envelope("0123456789abcdef0123456789abcdef")
+    # spans may be Phoenix dicts or _PhoenixSpan instances
+    envelope = spans_to_envelope(spans)
 """
 
 from __future__ import annotations
@@ -44,12 +43,6 @@ from kairos.readers.genai_mapping import (
 from kairos.readers.transcript_join import tool_args_from_transcript, tool_errors_from_transcript
 
 logger = get_logger(__name__)
-
-# arize-phoenix-client.get_spans paginates internally via cursor until
-# all matching spans are fetched or the limit is reached. 100_000 covers
-# any realistic trace; raise further with PhoenixReader(span_limit=N).
-_DEFAULT_LIMIT: int = 100_000
-_DEFAULT_PROJECT: str = "default"
 
 # Shared stateless adapter for rung 3 on claude_code-shaped live traces.
 # No import cycle: normalization.agents.* never imports kairos.readers.
@@ -519,77 +512,5 @@ def spans_to_envelope(
     return envelope
 
 
-# ───────────────────────────── PhoenixReader ────────────────────────────
-
-
-try:
-    from phoenix.client import Client
-except ImportError:  # pragma: no cover — fallback for environments without phoenix-client
-    Client = None  # type: ignore[assignment,misc]
-
-
-class PhoenixReader:
-    """Query Phoenix for spans by trace_id and produce a TraceEnvelope."""
-
-    def __init__(
-        self,
-        *,
-        client: Any | None = None,
-        endpoint: str | None = None,
-        project: str = _DEFAULT_PROJECT,
-        span_limit: int = _DEFAULT_LIMIT,
-    ) -> None:
-        if client is not None:
-            self._client = client
-        else:
-            if Client is None:
-                msg = "PhoenixReader requires arize-phoenix-client. Install with: pip install arize-phoenix-client"
-                raise RuntimeError(msg)
-            self._client = Client(base_url=endpoint) if endpoint else Client()
-        self._project = project
-        self._span_limit = span_limit
-
-    def fetch_envelope(
-        self,
-        trace_id: str,
-        *,
-        correlation_key_attr: str | None = None,
-    ) -> TraceEnvelope:
-        """Fetch all spans for ``trace_id`` from Phoenix, return a TraceEnvelope.
-
-        Parameters
-        ----------
-        trace_id:
-            The hex trace ID to fetch.
-        correlation_key_attr:
-            When set, scan spans for this attribute name and store the first
-            found value on ``envelope.correlation_key_value``.  Pass the value
-            of ``BusinessContext.correlation_key`` here.
-        """
-        spans = list(
-            self._client.spans.get_spans(
-                project_identifier=self._project,
-                trace_ids=[trace_id],
-                limit=self._span_limit,
-            )
-        )
-        # When span_count == span_limit we may have been truncated — warn but
-        # continue so callers get analysis on whatever spans arrived. Raise the
-        # default (100_000) or pass PhoenixReader(span_limit=N) if needed.
-        if len(spans) >= self._span_limit:
-            logger.warning(
-                "phoenix_reader.span_limit_reached",
-                trace_id=trace_id,
-                span_count=len(spans),
-                limit=self._span_limit,
-                hint="Increase PhoenixReader(span_limit=N) to capture all spans.",
-            )
-        envelope = spans_to_envelope(spans, correlation_key_attr=correlation_key_attr)
-        logger.info(
-            "phoenix_reader.fetched",
-            trace_id=trace_id,
-            project=self._project,
-            span_count=len(spans),
-            envelope_valid=envelope.is_valid,
-        )
-        return envelope
+# PhoenixReader (HTTP/GraphQL fetch class) removed in F1.5.
+# Use kairos.readers.db.fetch_envelope_from_db instead.

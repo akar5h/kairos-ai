@@ -102,6 +102,53 @@ def fetch_spans_from_db(trace_id: str, dsn: str) -> list[_PhoenixSpan]:
     return [_db_row_to_span(row) for row in rows]
 
 
+def list_trace_ids(
+    dsn: str,
+    *,
+    since: str | None = None,
+    limit: int | None = None,
+) -> list[str]:
+    """Return distinct trace_ids from the ``spans`` table.
+
+    Replaces the Phoenix GraphQL pagination for trace discovery now that Kairos
+    owns the ingest path (F1.4).  The span with the earliest ``start_time`` per
+    trace is used for the optional time filter so ``since`` selects traces that
+    *began* after that point.
+
+    Parameters
+    ----------
+    dsn:
+        libpq connection string.
+    since:
+        ISO-8601 timestamp string (e.g. ``"2026-06-15T00:00:00+00:00"``).
+        When set, only traces whose earliest span started at or after this
+        time are returned.  ``None`` → no time filter (all traces).
+    limit:
+        Maximum number of trace_ids to return.  ``None`` → no cap.
+    """
+    base = "SELECT trace_id FROM spans GROUP BY trace_id"
+    params: list[object] = []
+
+    having_clauses: list[str] = []
+    if since is not None:
+        having_clauses.append("min(start_time) >= %s")
+        params.append(since)
+
+    query = base
+    if having_clauses:
+        query += " HAVING " + " AND ".join(having_clauses)
+    query += " ORDER BY min(start_time) DESC"
+
+    if limit is not None:
+        query += " LIMIT %s"
+        params.append(limit)
+
+    with psycopg.connect(dsn, row_factory=dict_row) as conn:
+        rows = conn.execute(query, params).fetchall()
+
+    return [str(row["trace_id"]) for row in rows]
+
+
 def fetch_envelope_from_db(
     trace_id: str,
     dsn: str,

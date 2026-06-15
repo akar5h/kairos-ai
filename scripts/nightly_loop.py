@@ -1,8 +1,9 @@
 """nightly_loop.py — Deterministic nightly runner for Kairos.
 
 State machine (each transition logs a timestamped line):
-  FETCH    — pull Phoenix traces for the last 26h, dedupe vs seen;
-             3× retry / 30-minute back-off → skip-marker report + EXIT 0
+  FETCH    — discover traces from the DB (spans table) for the last 26h,
+             dedupe vs seen; 3× retry / 30-minute back-off → skip-marker
+             report + EXIT 0
   ANALYZE  — run_pipeline (outcome + tier-1 + tier-1.5 session-quality);
              0 traces → "quiet night" report (valid)
   ROLLUP   — correlation_key grouping;
@@ -19,12 +20,15 @@ The night is NEVER silent.
 
 NO LLM calls anywhere.  Loop's own traces excluded via actor_id filter.
 
+F1.5: Kairos now ingests spans itself (OTLP → spans table). The FETCH stage
+uses list_trace_ids + fetch_envelope_from_db instead of Phoenix GraphQL.
+KAIROS_PHOENIX_ENDPOINT and KAIROS_PHOENIX_PROJECT env vars are no longer
+read by this runner (they remain in .env.example for reference only).
+
 Env (names → .env.example):
   KAIROS_LOOP_DISABLED        — kill switch; any non-empty value disables
   KAIROS_CONTEXT_PATH         — path to context.yaml
-  KAIROS_PHOENIX_ENDPOINT     — Phoenix base URL (default: http://localhost:6006)
-  KAIROS_PHOENIX_PROJECT      — Phoenix project name (default: default)
-  KAIROS_PG_DSN               — Postgres DSN for kairos-pg
+  KAIROS_PG_DSN               — Postgres DSN for kairos-pg (also used for FETCH)
   LEDGER_API_URL              — Decision Ledger API for EMIT stage (optional)
   KAIROS_LOOP_DATA_DIR        — directory for parquet fallback + report output
                                  (default: <repo_root>/output/loop_data)
@@ -40,7 +44,6 @@ import os
 import sys
 import time
 import traceback
-import urllib.error
 import urllib.request
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
@@ -65,13 +68,12 @@ from kairos.engine.pipeline import run_pipeline  # noqa: E402
 from kairos.log import get_logger, setup_logging  # noqa: E402
 from kairos.loop.discover import run_discovery  # noqa: E402
 from kairos.loop.persist import persist_night  # noqa: E402
-from kairos.readers.phoenix import PhoenixReader  # noqa: E402
+from kairos.readers.db import fetch_envelope_from_db, list_trace_ids  # noqa: E402
 from kairos.taxonomy.business_context import BusinessContext  # noqa: E402
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-DEFAULT_ENDPOINT = os.environ.get("KAIROS_PHOENIX_ENDPOINT", "http://localhost:6006")
-DEFAULT_PROJECT = os.environ.get("KAIROS_PHOENIX_PROJECT", "default")
+DEFAULT_DSN = os.environ.get("KAIROS_PG_DSN", "")
 DEFAULT_CONTEXT = os.environ.get(
     "KAIROS_CONTEXT_PATH", str(_REPO / "config" / "context.yaml")
 )
@@ -82,7 +84,6 @@ DEFAULT_DATA_DIR = os.environ.get(
 FETCH_WINDOW_HOURS: int = 26
 FETCH_RETRY_COUNT: int = 3
 FETCH_RETRY_WAIT_S: float = 5.0   # short wait in tests; launchd nights use 30min
-PHOENIX_TIMEOUT: int = 120
 
 # actor_id tag used by loop traces — excluded from analysis.
 LOOP_ACTOR_TAG: str = "kairos-loop"
@@ -147,123 +148,22 @@ def _quiet_night_report(data_dir: Path, night_id: date) -> Path:
     return _write_report(data_dir, report)
 
 
-# ── GraphQL helpers (reuse pattern from backfill.py) ─────────────────────────
+# ── DB-backed trace discovery (F1.5 — replaces Phoenix GraphQL) ───────────────
 
 
-def _gql(endpoint: str, query: str, timeout: int = PHOENIX_TIMEOUT) -> Any:
-    url = endpoint.rstrip("/") + "/graphql"
-    body = json.dumps({"query": query}).encode()
-    req = urllib.request.Request(  # noqa: S310
-        url,
-        data=body,
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
-        raw = resp.read()
-    parsed = json.loads(raw)
-    if "errors" in parsed:
-        raise RuntimeError(f"GraphQL errors: {parsed['errors']}")
-    return parsed.get("data", {})
-
-
-def _resolve_project_id(endpoint: str, project_name: str) -> str:
-    data = _gql(
-        endpoint,
-        "{ projects(first: 100) { edges { node { id name } } } }",
-    )
-    edges = data.get("projects", {}).get("edges", [])
-    for edge in edges:
-        node = edge.get("node", {})
-        if node.get("name") == project_name:
-            return node["id"]
-    available = [e["node"]["name"] for e in edges]
-    raise RuntimeError(
-        f"project '{project_name}' not found. Available: {', '.join(available)}"
-    )
-
-
-def _root_span_meta(raw_attributes: str | None) -> dict[str, str | None]:
-    """Extract session_id / agent from root span attributes."""
-    meta: dict[str, str | None] = {"session_id": None, "agent": None, "actor_id": None}
-    if not raw_attributes:
-        return meta
-    try:
-        attrs = json.loads(raw_attributes)
-    except (json.JSONDecodeError, TypeError):
-        return meta
-    if not isinstance(attrs, dict):
-        return meta
-    session = attrs.get("session")
-    if isinstance(session, dict) and session.get("id"):
-        meta["session_id"] = str(session["id"])
-    service = attrs.get("service")
-    if isinstance(service, dict) and service.get("name"):
-        meta["agent"] = str(service["name"])
-    paperclip = attrs.get("paperclip")
-    if isinstance(paperclip, dict) and meta["agent"] is None and paperclip.get("agent_id"):
-        meta["agent"] = str(paperclip["agent_id"])
-    # actor_id: used to filter loop's own traces
-    actor_id = attrs.get("actor_id")
-    if isinstance(actor_id, str):
-        meta["actor_id"] = actor_id
-    return meta
-
-
-def _fetch_root_trace_ids(
-    endpoint: str,
-    project_id: str,
+def _fetch_db_trace_ids(
+    dsn: str,
     start_iso: str,
-    end_iso: str,
-) -> tuple[list[str], dict[str, dict[str, str | None]]]:
-    """Paginate root spans; return (trace_ids, meta_by_trace).
+) -> list[str]:
+    """List trace_ids from the spans table that started after ``start_iso``.
 
-    Filters out traces tagged actor_id=kairos-loop (loop's own activity).
+    Replaces the Phoenix GraphQL pagination (F1.5). Kairos now owns the
+    ingest path (OTLP → spans table), so the DB is the authoritative source.
+
+    Loop-self traces (actor_id=kairos-loop) are excluded by the caller after
+    fetching each envelope — the DB query is kept simple per spec.
     """
-    trace_ids: list[str] = []
-    meta_by_trace: dict[str, dict[str, str | None]] = {}
-    seen: set[str] = set()
-    cursor: str | None = None
-    loop_excluded = 0
-
-    while True:
-        after_clause = f', after: "{cursor}"' if cursor is not None else ""
-        query = (
-            f'{{ node(id: "{project_id}") {{ ... on Project {{ '
-            f'spans(first: 100{after_clause}, rootSpansOnly: true, '
-            f'timeRange: {{start: "{start_iso}", end: "{end_iso}"}}) {{ '
-            f'pageInfo {{ hasNextPage endCursor }} '
-            f'edges {{ node {{ context {{ traceId }} attributes }} }} '
-            f'}} }} }} }}'
-        )
-        data = _gql(endpoint, query)
-        spans_data = data.get("node", {}).get("spans")
-        if not spans_data:
-            break
-
-        for edge in spans_data.get("edges", []):
-            node = edge.get("node", {})
-            tid = node.get("context", {}).get("traceId", "")
-            if not tid or tid in seen:
-                continue
-            meta = _root_span_meta(node.get("attributes"))
-            # Exclude loop's own traces.
-            if meta.get("actor_id") == LOOP_ACTOR_TAG:
-                loop_excluded += 1
-                continue
-            seen.add(tid)
-            trace_ids.append(tid)
-            meta_by_trace[tid] = meta
-
-        page_info = spans_data.get("pageInfo", {})
-        if not page_info.get("hasNextPage") or not page_info.get("endCursor"):
-            break
-        cursor = page_info["endCursor"]
-
-    if loop_excluded:
-        logger.info("fetch.loop_traces_excluded", count=loop_excluded)
-
-    return trace_ids, meta_by_trace
+    return list_trace_ids(dsn, since=start_iso)
 
 
 def _load_seen_trace_ids(data_dir: Path) -> set[str]:
@@ -407,8 +307,7 @@ def _log_transition(state: str) -> None:
 
 def run_nightly_loop(
     *,
-    endpoint: str = DEFAULT_ENDPOINT,
-    project: str = DEFAULT_PROJECT,
+    dsn: str = DEFAULT_DSN,
     context_path: str = DEFAULT_CONTEXT,
     data_dir_path: str = DEFAULT_DATA_DIR,
     ledger_url: str | None = None,
@@ -416,12 +315,20 @@ def run_nightly_loop(
     # Injected dependencies for testing.
     _force_exception: Exception | None = None,
     _pg_conn: Any | None = None,
+    # Deprecated: kept for backward-compat in tests; no longer used at runtime.
+    endpoint: str = "",
+    project: str = "",
 ) -> dict[str, Any]:
     """Execute the nightly loop state machine.
 
     Returns a summary dict.  Always exits cleanly (skip-marker on any error).
 
     Kill switch: KAIROS_LOOP_DISABLED=1 → log + return immediately.
+
+    F1.5: Trace discovery now reads from the ``spans`` DB table via
+    ``list_trace_ids`` instead of Phoenix GraphQL. ``dsn`` is used for both
+    discovery and envelope fetch.  ``endpoint``/``project`` are accepted but
+    ignored (kept for backward-compat in existing test callsites).
     """
     data_dir = Path(data_dir_path)
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -430,6 +337,9 @@ def run_nightly_loop(
     if os.environ.get("KAIROS_LOOP_DISABLED", "").strip():
         logger.info("nightly_loop.kill_switch_active", reason="KAIROS_LOOP_DISABLED is set")
         return {"status": "disabled", "reason": "KAIROS_LOOP_DISABLED is set"}
+
+    # Resolve DSN: param > env.
+    active_dsn = dsn or os.environ.get("KAIROS_PG_DSN", "")
 
     night_id = datetime.now(tz=UTC).date()
 
@@ -446,7 +356,6 @@ def run_nightly_loop(
 
         # Retry loop.
         trace_ids: list[str] = []
-        meta_by_trace: dict[str, dict[str, str | None]] = {}
         fetch_error: str | None = None
 
         for attempt in range(1, FETCH_RETRY_COUNT + 1):
@@ -454,12 +363,8 @@ def run_nightly_loop(
                 now = datetime.now(tz=UTC)
                 start = now - timedelta(hours=FETCH_WINDOW_HOURS)
                 start_iso = start.isoformat().replace("+00:00", "Z")
-                end_iso = now.isoformat().replace("+00:00", "Z")
 
-                project_id = _resolve_project_id(endpoint, project)
-                raw_ids, meta_by_trace = _fetch_root_trace_ids(
-                    endpoint, project_id, start_iso, end_iso
-                )
+                raw_ids = _fetch_db_trace_ids(active_dsn, start_iso)
                 # Dedupe vs seen.
                 new_ids = [tid for tid in raw_ids if tid not in seen_ids]
                 logger.info(
@@ -495,28 +400,44 @@ def run_nightly_loop(
             path = _quiet_night_report(data_dir, night_id)
             return {"status": "quiet_night", "night_id": str(night_id), "report_path": str(path)}
 
-        # Fetch envelopes.
-        reader = PhoenixReader(endpoint=endpoint, project=project)
+        # Fetch envelopes from DB.
         envelopes_by_night: dict[date, list[Any]] = defaultdict(list)
-        meta_by_night: dict[date, dict[str, dict[str, str | None]]] = defaultdict(dict)
         fetch_skipped = 0
+        loop_excluded = 0
 
         for tid in trace_ids:
             try:
-                env = reader.fetch_envelope(
+                env = fetch_envelope_from_db(
                     tid,
+                    active_dsn,
                     correlation_key_attr=context.correlation_key,
+                    enrich_hooks=False,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("fetch.envelope_skip", trace_id=tid[:16], error=str(exc))
                 fetch_skipped += 1
+                continue
+            # Exclude loop's own traces (actor_id=kairos-loop on any span attribute).
+            actor_id = next(
+                (
+                    str(getattr(span, "attrs", {}).get("actor_id", ""))
+                    for span in env.steps
+                    if isinstance(getattr(span, "attrs", None), dict)
+                    and getattr(span, "attrs", {}).get("actor_id")
+                ),
+                "",
+            )
+            if actor_id == LOOP_ACTOR_TAG:
+                loop_excluded += 1
                 continue
             if not env.is_valid:
                 fetch_skipped += 1
                 continue
             night = _night_for_trace(env)
             envelopes_by_night[night].append(env)
-            meta_by_night[night][tid] = meta_by_trace.get(tid, {})
+
+        if loop_excluded:
+            logger.info("fetch.loop_traces_excluded", count=loop_excluded)
 
         fetched_total = sum(len(v) for v in envelopes_by_night.values())
         logger.info(
@@ -612,11 +533,10 @@ def run_nightly_loop(
 
         for night, result in all_results.items():
             night_envs = all_envelopes.get(night, [])
-            night_meta = meta_by_night.get(night, {})
-            agent_by_trace = {
-                tid: (m.get("agent") or "unknown")
-                for tid, m in night_meta.items()
-            }
+            # F1.5: agent metadata came from Phoenix root-span attributes.
+            # The DB path does not replicate root-span meta queries; agent
+            # defaults to "unknown" for all traces (persist_night tolerates this).
+            agent_by_trace: dict[str, str] = {}
 
             try:
                 conn = _pg_conn  # None → persist_night opens its own
@@ -767,8 +687,7 @@ def main() -> None:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT, help="Phoenix base URL")
-    parser.add_argument("--project", default=DEFAULT_PROJECT, help="Phoenix project name")
+    parser.add_argument("--dsn", default=DEFAULT_DSN, help="Postgres DSN (KAIROS_PG_DSN)")
     parser.add_argument("--context", default=DEFAULT_CONTEXT, help="Path to context.yaml")
     parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR, help="Loop data directory")
     parser.add_argument("--ledger-url", default=None, help="Decision Ledger API URL")
@@ -786,8 +705,7 @@ def main() -> None:
         sys.exit(1)
 
     result = run_nightly_loop(
-        endpoint=args.endpoint,
-        project=args.project,
+        dsn=args.dsn,
         context_path=str(context_path),
         data_dir_path=args.data_dir,
         ledger_url=args.ledger_url,

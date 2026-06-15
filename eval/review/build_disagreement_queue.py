@@ -47,8 +47,6 @@ import argparse
 import json
 import re
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -65,14 +63,14 @@ from kairos.detection.session_quality import (  # noqa: E402
     detect_unrecovered_error,
 )
 from kairos.engine.pipeline import classify_membership  # noqa: E402
-from kairos.readers.phoenix import PhoenixReader  # noqa: E402
+from kairos.readers.db import fetch_envelope_from_db  # noqa: E402
 from kairos.taxonomy.business_context import BusinessContext  # noqa: E402
 
 # Reuse transcript alignment + redaction from sibling module
 sys.path.insert(0, str(_HERE))
 from build_queue import (  # noqa: E402
     _aggregate_tokens,
-    _root_span_meta,
+    _empty_meta,
     _session_id_from_steps,
     _trace_window,
     build_step_list,
@@ -90,8 +88,7 @@ if TYPE_CHECKING:
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-DEFAULT_ENDPOINT = "http://localhost:6006"
-DEFAULT_PROJECT = "default"
+DEFAULT_DSN = ""  # falls back to KAIROS_PG_DSN env var
 DEFAULT_CONTEXT = str(_REPO / "config" / "context.yaml")
 DEFAULT_OUT = str(_HERE / "disagreement_queue.json")
 DEFAULT_ANSWERS = str(_HERE / "answers.jsonl")
@@ -267,64 +264,7 @@ def spotcheck_to_label(row: dict[str, Any]) -> tuple[str, str, str]:
     return ("UNKNOWN", f"AGREE=? (verdict={verdict})", comment)
 
 
-# ── Phoenix helpers (minimal — reuse from build_queue via shared _gql) ─────────
-
-
-def _gql(endpoint: str, query: str) -> Any:
-    url = endpoint.rstrip("/") + "/graphql"
-    body = json.dumps({"query": query}).encode()
-    req = urllib.request.Request(  # noqa: S310
-        url,
-        data=body,
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
-            raw = resp.read()
-    except urllib.error.URLError as exc:
-        print(f"ERROR: cannot reach Phoenix at {url}: {exc}", file=sys.stderr)
-        sys.exit(1)
-    parsed = json.loads(raw)
-    if "errors" in parsed:
-        print(f"GraphQL errors: {parsed['errors']}", file=sys.stderr)
-        sys.exit(1)
-    return parsed.get("data", {})
-
-
-def _resolve_project_id(endpoint: str, project_name: str) -> str:
-    data = _gql(endpoint, "{ projects(first: 100) { edges { node { id name } } } }")
-    edges = data.get("projects", {}).get("edges", [])
-    for edge in edges:
-        node = edge.get("node", {})
-        if node.get("name") == project_name:
-            return str(node["id"])
-    available = [e["node"]["name"] for e in edges]
-    print(
-        f"ERROR: project '{project_name}' not found. Available: {', '.join(available)}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-
-def _fetch_root_meta(endpoint: str, project_id: str, trace_id: str) -> dict[str, str | None]:
-    query = (
-        f'{{ node(id: "{project_id}") {{ ... on Project {{ '
-        f'spans(first: 10, rootSpansOnly: true, filterCondition: "trace_id == \\"{trace_id}\\"") {{ '
-        f"edges {{ node {{ context {{ traceId }} attributes }} }} "
-        f"}} }} }} }}"
-    )
-    try:
-        data = _gql(endpoint, query)
-        edges = data.get("node", {}).get("spans", {}).get("edges", [])
-        for edge in edges:
-            node = edge.get("node", {})
-            if node.get("context", {}).get("traceId", "") == trace_id:
-                result: dict[str, str | None] = _root_span_meta(node.get("attributes"))
-                return result
-    except SystemExit:
-        pass
-    return {"session_id": None, "issue": None, "agent": None}
+# (Phoenix GraphQL helpers removed in F1.5; DB is the source.)
 
 
 # ── Detector note builders ─────────────────────────────────────────────────────
@@ -526,13 +466,19 @@ def main() -> None:  # noqa: C901
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
-    parser.add_argument("--project", default=DEFAULT_PROJECT)
+    parser.add_argument("--dsn", default=DEFAULT_DSN, help="Postgres DSN (default: KAIROS_PG_DSN env var)")
     parser.add_argument("--context", default=DEFAULT_CONTEXT)
     parser.add_argument("--out", default=DEFAULT_OUT)
     parser.add_argument("--answers", default=DEFAULT_ANSWERS)
     parser.add_argument("--spotcheck", default=DEFAULT_SPOTCHECK)
     args = parser.parse_args()
+
+    import os  # noqa: PLC0415
+
+    dsn = args.dsn or os.environ.get("KAIROS_PG_DSN", "")
+    if not dsn:
+        print("ERROR: --dsn or KAIROS_PG_DSN env var required.", file=sys.stderr)
+        sys.exit(1)
 
     context_path = Path(args.context)
     if not context_path.exists():
@@ -541,11 +487,6 @@ def main() -> None:  # noqa: C901
 
     print(f"Loading context from {context_path} ...", file=sys.stderr)
     context = BusinessContext.from_yaml(str(context_path))
-
-    print(f"Resolving Phoenix project '{args.project}' at {args.endpoint} ...", file=sys.stderr)
-    project_id = _resolve_project_id(args.endpoint, args.project)
-
-    reader = PhoenixReader(endpoint=args.endpoint, project=args.project)
 
     # ── Collect labeled traces ────────────────────────────────────────────────
     # (a) answers.jsonl
@@ -589,7 +530,7 @@ def main() -> None:  # noqa: C901
             continue
 
         try:
-            envelope = reader.fetch_envelope(trace_id)
+            envelope = fetch_envelope_from_db(trace_id, dsn, enrich_hooks=False)
         except Exception as exc:  # noqa: BLE001
             print(f"  SKIP {trace_id[:16]}: fetch error: {exc}", file=sys.stderr)
             continue
@@ -666,7 +607,8 @@ def main() -> None:  # noqa: C901
         c_kind: str = cand["kind"]
 
         # Transcript alignment (for rich step digests)
-        meta = _fetch_root_meta(args.endpoint, project_id, c_trace_id)
+        # F1.5: no Phoenix root-span meta; agent defaults to "unknown".
+        meta = _empty_meta()
         session_id = _session_id_from_steps(c_envelope) or meta.get("session_id")
         start, end = _trace_window(c_envelope)
         transcript_map = align_trace_to_transcript(c_envelope.steps, session_id, start, end)
@@ -680,9 +622,8 @@ def main() -> None:  # noqa: C901
             c_findings_d1, c_findings_d2, c_prior_label, c_prior_comment, operation_name
         )
 
-        phoenix_url = (
-            f"{args.endpoint.rstrip('/')}/projects/{project_id}/traces/{c_trace_id}"
-        )
+        # F1.5: Phoenix retired; no UI deep-link available.
+        phoenix_url = ""
 
         entry: dict[str, Any] = {
             "trace_id": c_trace_id,

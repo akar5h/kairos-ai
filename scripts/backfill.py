@@ -1,43 +1,32 @@
-"""backfill.py — replay the last N days of live Phoenix traces through
+"""backfill.py — replay the last N days of DB spans through
 the full analysis + persist path, bucketed by night (UTC date).
+
+F1.5: reads spans from kairos-pg (spans table) via list_trace_ids +
+fetch_envelope_from_db instead of Phoenix GraphQL.
 
 Idempotent: safe to re-run.  Existing rows are upserted, never duplicated.
 
-Resilient: a per-trace try/except catches transient Phoenix timeouts; skipped
+Resilient: a per-trace try/except catches transient DB errors; skipped
 traces are counted and logged but do NOT abort the whole run.
 
 Usage:
-    uv run scripts/backfill.py [--days N] [--endpoint URL] [--project NAME]
-        [--context PATH] [--endpoint-timeout S]
+    uv run scripts/backfill.py [--days N] [--dsn DSN] [--context PATH]
 
 Default:
-    --days 7      (last 7 × 24h)
-    --endpoint    http://localhost:6006
-    --project     default
+    --days 7
+    --dsn   $KAIROS_PG_DSN
     --context     <repo_root>/config/context.yaml
 
 Environment:
     KAIROS_PG_DSN          required — postgres DSN for kairos-pg
-    KAIROS_PHOENIX_ENDPOINT optional override for --endpoint
-    KAIROS_PHOENIX_PROJECT  optional override for --project
     KAIROS_CONTEXT_PATH     optional override for --context
-
-Agent derivation:
-    Root span meta carries ``paperclip.agent_id`` (preferred) then
-    ``service.name``.  _root_span_meta() from export_spotcheck.py returns
-    {"session_id", "issue", "agent"} where "agent" is the service.name value.
-    For Paperclip traces ``service.name`` is the agent identity
-    (e.g. "claudecoder", "cto", "qaengineer").
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
-import urllib.error
-import urllib.request
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -58,148 +47,19 @@ from kairos.detection.session_quality import (
 )
 from kairos.engine.pipeline import run_pipeline
 from kairos.loop.db import apply_migrations
-from kairos.loop.persist import compute_config_hash, persist_night
-from kairos.readers.phoenix import PhoenixReader
+from kairos.loop.persist import persist_night
+from kairos.readers.db import fetch_envelope_from_db, list_trace_ids
 from kairos.taxonomy.business_context import BusinessContext
 
-DEFAULT_ENDPOINT = os.environ.get("KAIROS_PHOENIX_ENDPOINT", "http://localhost:6006")
-DEFAULT_PROJECT = os.environ.get("KAIROS_PHOENIX_PROJECT", "default")
+DEFAULT_DSN = os.environ.get("KAIROS_PG_DSN", "")
 DEFAULT_CONTEXT = os.environ.get(
     "KAIROS_CONTEXT_PATH", str(_REPO / "config" / "context.yaml")
 )
 DEFAULT_DAYS = 7
-DEFAULT_TIMEOUT = 120  # seconds per Phoenix request
 
 
-# ── Phoenix GraphQL helpers (reuse pattern from export_spotcheck.py) ──────────
-
-
-def _gql(endpoint: str, query: str, timeout: int = DEFAULT_TIMEOUT) -> Any:
-    url = endpoint.rstrip("/") + "/graphql"
-    body = json.dumps({"query": query}).encode()
-    req = urllib.request.Request(
-        url,
-        data=body,
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        raw = resp.read()
-    parsed = json.loads(raw)
-    if "errors" in parsed:
-        raise RuntimeError(f"GraphQL errors: {parsed['errors']}")
-    return parsed.get("data", {})
-
-
-def _resolve_project_id(endpoint: str, project_name: str, timeout: int) -> str:
-    data = _gql(
-        endpoint,
-        "{ projects(first: 100) { edges { node { id name } } } }",
-        timeout=timeout,
-    )
-    edges = data.get("projects", {}).get("edges", [])
-    for edge in edges:
-        node = edge.get("node", {})
-        if node.get("name") == project_name:
-            return node["id"]
-    available = [e["node"]["name"] for e in edges]
-    raise RuntimeError(
-        f"project '{project_name}' not found in Phoenix. "
-        f"Available: {', '.join(available)}"
-    )
-
-
-def _root_span_meta(raw_attributes: str | None) -> dict[str, str | None]:
-    """Extract session_id / paperclip issue / agent from root span attributes.
-
-    Agent derivation (priority order):
-      1. ``service.name``  (e.g. "paperclip-claude-cto", "paperclip-claude-coder") —
-         the human-readable agent class name matching the spec's claudecoder/cto/qaengineer
-         examples.  Present on all Paperclip OTel spans.
-      2. ``paperclip.agent_id`` — UUID instance identifier; used as fallback when
-         service.name is absent (non-Paperclip traces).
-
-    Live-verified 2026-06-13: service.name = "paperclip-claude-cto" is the correct
-    agent class signal.  paperclip.agent_id is a UUID that identifies the agent
-    *instance*, not the class, so it cannot be used for grouping by agent type.
-    """
-    meta: dict[str, str | None] = {
-        "session_id": None,
-        "issue": None,
-        "agent": None,
-    }
-    if not raw_attributes:
-        return meta
-    try:
-        attrs = json.loads(raw_attributes)
-    except (json.JSONDecodeError, TypeError):
-        return meta
-    if not isinstance(attrs, dict):
-        return meta
-
-    # session.id
-    session = attrs.get("session")
-    if isinstance(session, dict) and session.get("id"):
-        meta["session_id"] = str(session["id"])
-
-    # service.name → agent class (preferred: human-readable, matchable to agent types).
-    service = attrs.get("service")
-    if isinstance(service, dict) and service.get("name"):
-        meta["agent"] = str(service["name"])
-
-    # paperclip.issue + paperclip.agent_id as fallback when service.name absent.
-    paperclip = attrs.get("paperclip")
-    if isinstance(paperclip, dict):
-        if paperclip.get("issue"):
-            meta["issue"] = str(paperclip["issue"])
-        if meta["agent"] is None and paperclip.get("agent_id"):
-            meta["agent"] = str(paperclip["agent_id"])
-
-    return meta
-
-
-def _fetch_root_trace_ids(
-    endpoint: str,
-    project_id: str,
-    start_iso: str,
-    end_iso: str,
-    timeout: int,
-) -> tuple[list[str], dict[str, dict[str, str | None]]]:
-    """Paginate root spans for [start_iso, end_iso]; return (trace_ids, meta_by_trace)."""
-    trace_ids: list[str] = []
-    meta_by_trace: dict[str, dict[str, str | None]] = {}
-    seen: set[str] = set()
-    cursor: str | None = None
-
-    while True:
-        after_clause = f', after: "{cursor}"' if cursor is not None else ""
-        query = (
-            f'{{ node(id: "{project_id}") {{ ... on Project {{ '
-            f'spans(first: 100{after_clause}, rootSpansOnly: true, '
-            f'timeRange: {{start: "{start_iso}", end: "{end_iso}"}}) {{ '
-            f'pageInfo {{ hasNextPage endCursor }} '
-            f'edges {{ node {{ context {{ traceId }} attributes }} }} '
-            f'}} }} }} }}'
-        )
-        data = _gql(endpoint, query, timeout=timeout)
-        spans_data = data.get("node", {}).get("spans")
-        if not spans_data:
-            break
-
-        for edge in spans_data.get("edges", []):
-            node = edge.get("node", {})
-            tid = node.get("context", {}).get("traceId", "")
-            if tid and tid not in seen:
-                seen.add(tid)
-                trace_ids.append(tid)
-                meta_by_trace[tid] = _root_span_meta(node.get("attributes"))
-
-        page_info = spans_data.get("pageInfo", {})
-        if not page_info.get("hasNextPage") or not page_info.get("endCursor"):
-            break
-        cursor = page_info["endCursor"]
-
-    return trace_ids, meta_by_trace
+# PhoenixReader + GraphQL helpers removed in F1.5.
+# Use list_trace_ids + fetch_envelope_from_db (kairos.readers.db) instead.
 
 
 # ── Night bucketing ───────────────────────────────────────────────────────────
@@ -232,31 +92,23 @@ _DETECTOR_THRESHOLDS: dict[str, Any] = {
 def run_backfill(
     *,
     days: int,
-    endpoint: str,
-    project: str,
+    dsn: str,
     context_path: str,
-    timeout: int,
 ) -> dict[str, int]:
     """Execute the backfill.  Returns summary counts."""
     print(f"[backfill] Loading context from {context_path} ...", flush=True)
     context = BusinessContext.from_yaml(context_path)
 
-    print(f"[backfill] Applying migrations ...", flush=True)
+    print("[backfill] Applying migrations ...", flush=True)
     apply_migrations()
-
-    print(f"[backfill] Resolving Phoenix project '{project}' at {endpoint} ...", flush=True)
-    project_id = _resolve_project_id(endpoint, project, timeout)
 
     now = datetime.now(tz=UTC)
     start = now - timedelta(hours=days * 24)
     start_iso = start.isoformat().replace("+00:00", "Z")
-    end_iso = now.isoformat().replace("+00:00", "Z")
 
-    print(f"[backfill] Fetching root trace IDs: last {days}×24h ({start_iso} → {end_iso}) ...", flush=True)
-    trace_ids, meta_by_trace = _fetch_root_trace_ids(
-        endpoint, project_id, start_iso, end_iso, timeout
-    )
-    print(f"[backfill] {len(trace_ids)} root trace IDs found.", flush=True)
+    print(f"[backfill] Listing trace IDs from DB: last {days}×24h (since {start_iso}) ...", flush=True)
+    trace_ids = list_trace_ids(dsn, since=start_iso)
+    print(f"[backfill] {len(trace_ids)} trace IDs found in DB.", flush=True)
 
     if not trace_ids:
         print("[backfill] No traces found. Nothing to backfill.", flush=True)
@@ -270,26 +122,21 @@ def run_backfill(
             "units": 0,
         }
 
-    # Fetch envelopes — resilient per-trace.
-    reader = PhoenixReader(
-        endpoint=endpoint,
-        project=project,
-    )
-
-    print(f"[backfill] Fetching {len(trace_ids)} envelopes from Phoenix ...", flush=True)
+    print(f"[backfill] Fetching {len(trace_ids)} envelopes from DB ...", flush=True)
     envelopes_by_night: dict[date, list[Any]] = defaultdict(list)
-    meta_by_night_trace: dict[date, dict[str, dict[str, str | None]]] = defaultdict(dict)
     skipped = 0
 
     for i, tid in enumerate(trace_ids):
         if i % 20 == 0 and i > 0:
             print(f"[backfill]   {i}/{len(trace_ids)} envelopes fetched ({skipped} skipped) ...", flush=True)
         try:
-            env = reader.fetch_envelope(
+            env = fetch_envelope_from_db(
                 tid,
+                dsn,
                 correlation_key_attr=context.correlation_key,
+                enrich_hooks=False,
             )
-        except Exception as exc:  # noqa: BLE001 — transient timeout / network errors
+        except Exception as exc:  # noqa: BLE001 — transient DB errors
             print(f"[backfill]   SKIP {tid[:16]}: {exc}", flush=True)
             skipped += 1
             continue
@@ -300,7 +147,6 @@ def run_backfill(
 
         night = _night_for_trace(env)
         envelopes_by_night[night].append(env)
-        meta_by_night_trace[night][tid] = meta_by_trace.get(tid, {})
 
     traces_fetched = sum(len(v) for v in envelopes_by_night.values())
     nights_list = sorted(envelopes_by_night.keys())
@@ -315,19 +161,14 @@ def run_backfill(
     total_rollup = 0
     total_units = 0
 
-    cfg_hash = compute_config_hash(context, _DETECTOR_THRESHOLDS)
-
     for night in nights_list:
         night_envs = envelopes_by_night[night]
-        night_meta = meta_by_night_trace[night]
 
         print(f"[backfill]   Night {night}: {len(night_envs)} traces ...", flush=True)
 
-        # Build agent lookup for this night's traces.
-        agent_by_trace: dict[str, str] = {
-            tid: (meta.get("agent") or "unknown")
-            for tid, meta in night_meta.items()
-        }
+        # Agent metadata no longer available from Phoenix root spans (F1.5).
+        # agent_by_trace defaults to "unknown"; extracted from envelope attrs where possible.
+        agent_by_trace: dict[str, str] = {env.trace_id: "unknown" for env in night_envs}
 
         try:
             # Run the full pipeline.
@@ -419,28 +260,20 @@ def main() -> None:
         help="Number of days to backfill (default: %(default)s)",
     )
     parser.add_argument(
-        "--endpoint",
-        default=DEFAULT_ENDPOINT,
-        help="Phoenix base URL (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--project",
-        default=DEFAULT_PROJECT,
-        help="Phoenix project name (default: %(default)s)",
+        "--dsn",
+        default=DEFAULT_DSN,
+        help="Postgres DSN for kairos-pg (default: $KAIROS_PG_DSN)",
     )
     parser.add_argument(
         "--context",
         default=DEFAULT_CONTEXT,
         help="Path to context.yaml (default: %(default)s)",
     )
-    parser.add_argument(
-        "--endpoint-timeout",
-        type=int,
-        default=DEFAULT_TIMEOUT,
-        dest="timeout",
-        help="Per-request timeout in seconds for Phoenix calls (default: %(default)s)",
-    )
     args = parser.parse_args()
+
+    if not args.dsn:
+        print("ERROR: --dsn or KAIROS_PG_DSN required", file=sys.stderr)
+        sys.exit(1)
 
     context_path = Path(args.context)
     if not context_path.exists():
@@ -450,10 +283,8 @@ def main() -> None:
     try:
         run_backfill(
             days=args.days,
-            endpoint=args.endpoint,
-            project=args.project,
+            dsn=args.dsn,
             context_path=str(context_path),
-            timeout=args.timeout,
         )
     except Exception as exc:
         print(f"ERROR: backfill failed: {exc}", file=sys.stderr)

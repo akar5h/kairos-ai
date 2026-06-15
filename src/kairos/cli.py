@@ -33,7 +33,7 @@ from kairos.log import get_logger, setup_logging
 from kairos.normalization.agents.claude_code import ClaudeCodeNormalizer
 from kairos.normalization.agents.codex import CodexNormalizer
 from kairos.normalization.agents.paperclip import PaperclipNormalizer
-from kairos.readers.phoenix import PhoenixReader
+from kairos.readers.db import fetch_envelope_from_db
 from kairos.store.json_store import JSONStore
 from kairos.taxonomy.business_context import BusinessContext
 from kairos.views.analysis_view import (
@@ -88,11 +88,20 @@ def _load_from_phoenix(
     endpoint: str,
     span_limit: int | None = None,
 ) -> list[TraceEnvelope]:
-    if span_limit is not None:
-        reader = PhoenixReader(endpoint=endpoint, span_limit=span_limit)
-    else:
-        reader = PhoenixReader(endpoint=endpoint)
-    return [reader.fetch_envelope(tid) for tid in trace_ids]
+    """Load envelopes for the given trace IDs from the Kairos DB (F1.5).
+
+    The ``--phoenix`` CLI flag now reads from the local spans DB instead of
+    the Phoenix HTTP API.  ``endpoint`` and ``span_limit`` are accepted but
+    ignored (kept for call-site compatibility).  Set KAIROS_PG_DSN to point
+    at the kairos-pg instance.
+    """
+    import os  # noqa: PLC0415
+
+    dsn = os.environ.get("KAIROS_PG_DSN", "")
+    if not dsn:
+        msg = "--phoenix flag requires KAIROS_PG_DSN env var (kairos reads from DB, not Phoenix)"
+        raise RuntimeError(msg)
+    return [fetch_envelope_from_db(tid, dsn) for tid in trace_ids]
 
 
 def _load_from_transcript(path: Path, agent_kind: str) -> list[TraceEnvelope]:

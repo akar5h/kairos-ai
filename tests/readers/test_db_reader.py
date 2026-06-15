@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from kairos.readers.db import _db_row_to_span, fetch_envelope_from_db, fetch_spans_from_db
+from kairos.readers.db import _db_row_to_span, fetch_envelope_from_db, fetch_spans_from_db, list_trace_ids
 from kairos.readers.phoenix import _PhoenixSpan, spans_to_envelope
 
 _DSN = os.environ.get("KAIROS_PG_DSN", "").strip()
@@ -308,3 +308,150 @@ class TestSpansRoundTrip:
         nonexistent = uuid.uuid4().hex
         envelope = fetch_envelope_from_db(nonexistent, _DSN)
         assert not envelope.is_valid
+
+
+# ── Unit tests for list_trace_ids (mocked psycopg) ───────────────────────────
+
+
+class TestListTraceIdsUnit:
+    """list_trace_ids builds correct SQL and returns trace_id strings."""
+
+    def _mock_conn(self, rows: list[dict[str, str]]) -> Any:
+        from unittest.mock import MagicMock
+
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = lambda s: mock_conn
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.execute.return_value.fetchall.return_value = rows
+        return mock_conn
+
+    def test_empty_result_returns_empty_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+
+        import psycopg
+
+        mock_conn = self._mock_conn([])
+        monkeypatch.setattr(psycopg, "connect", lambda *a, **kw: mock_conn)
+        result = list_trace_ids("postgresql://fake/kairos")
+        assert result == []
+
+    def test_returns_trace_ids_as_strings(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import psycopg
+
+        rows = [{"trace_id": "aabbccdd" * 4}, {"trace_id": "11223344" * 4}]
+        mock_conn = self._mock_conn(rows)
+        monkeypatch.setattr(psycopg, "connect", lambda *a, **kw: mock_conn)
+        result = list_trace_ids("postgresql://fake/kairos")
+        assert result == ["aabbccdd" * 4, "11223344" * 4]
+
+    def test_since_filter_adds_having_clause(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import psycopg
+
+        mock_conn = self._mock_conn([])
+        monkeypatch.setattr(psycopg, "connect", lambda *a, **kw: mock_conn)
+        list_trace_ids("postgresql://fake/kairos", since="2026-06-01T00:00:00Z")
+        sql, params = (
+            mock_conn.execute.call_args[0][0],
+            mock_conn.execute.call_args[0][1],
+        )
+        assert "HAVING" in sql
+        assert "min(start_time)" in sql
+        assert "2026-06-01T00:00:00Z" in params
+
+    def test_limit_adds_limit_clause(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import psycopg
+
+        mock_conn = self._mock_conn([])
+        monkeypatch.setattr(psycopg, "connect", lambda *a, **kw: mock_conn)
+        list_trace_ids("postgresql://fake/kairos", limit=10)
+        sql, params = (
+            mock_conn.execute.call_args[0][0],
+            mock_conn.execute.call_args[0][1],
+        )
+        assert "LIMIT" in sql
+        assert 10 in params
+
+    def test_no_filter_no_having_no_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import psycopg
+
+        mock_conn = self._mock_conn([])
+        monkeypatch.setattr(psycopg, "connect", lambda *a, **kw: mock_conn)
+        list_trace_ids("postgresql://fake/kairos")
+        sql = mock_conn.execute.call_args[0][0]
+        assert "HAVING" not in sql
+        assert "LIMIT" not in sql
+
+
+# ── Integration test for list_trace_ids (requires live kairos-pg) ─────────────
+
+
+@_skip_no_db
+class TestListTraceIdsDb:
+    """list_trace_ids queries the real spans table."""
+
+    def _cleanup(self, trace_id: str) -> None:
+        import psycopg
+
+        with psycopg.connect(_DSN) as conn:
+            conn.execute("DELETE FROM spans WHERE trace_id = %s", (trace_id,))
+            conn.commit()
+
+    def test_list_trace_ids_finds_persisted_trace(self) -> None:
+        from kairos.ingest.spans import persist_spans
+        from kairos.loop import db
+
+        db.apply_migrations()
+
+        tid = uuid.uuid4().hex
+        phoenix_dicts = [
+            _make_phoenix_dict(trace_id=tid, span_id="f" * 16, name="kairos.task"),
+        ]
+        persist_spans(phoenix_dicts, _DSN, source="test")
+
+        try:
+            ids = list_trace_ids(_DSN)
+            assert tid in ids
+        finally:
+            self._cleanup(tid)
+
+    def test_list_trace_ids_since_filter_excludes_old_traces(self) -> None:
+        """Traces started before `since` are excluded."""
+        from kairos.ingest.spans import persist_spans
+        from kairos.loop import db
+
+        db.apply_migrations()
+
+        tid = uuid.uuid4().hex
+        phoenix_dicts = [
+            _make_phoenix_dict(trace_id=tid, span_id="e" * 16, name="kairos.task"),
+        ]
+        persist_spans(phoenix_dicts, _DSN, source="test")
+
+        try:
+            # since far in the future → no results for this trace
+            future = "2099-01-01T00:00:00Z"
+            ids = list_trace_ids(_DSN, since=future)
+            assert tid not in ids
+        finally:
+            self._cleanup(tid)
+
+    def test_list_trace_ids_limit_caps_results(self) -> None:
+        from kairos.ingest.spans import persist_spans
+        from kairos.loop import db
+
+        db.apply_migrations()
+
+        tids = []
+        try:
+            for _ in range(3):
+                tid = uuid.uuid4().hex
+                tids.append(tid)
+                persist_spans(
+                    [_make_phoenix_dict(trace_id=tid, span_id=uuid.uuid4().hex[:16], name="kairos.task")],
+                    _DSN,
+                    source="test",
+                )
+            result = list_trace_ids(_DSN, limit=1)
+            assert len(result) == 1
+        finally:
+            for tid in tids:
+                self._cleanup(tid)

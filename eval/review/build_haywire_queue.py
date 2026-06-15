@@ -61,15 +61,14 @@ sys.path.insert(0, str(_REPO / "src"))
 from kairos.detection.session_quality import _find_session_restart_indices  # noqa: E402
 from kairos.loop.discover import _post_restart_rework_count  # noqa: E402
 from kairos.models.enums import StepType  # noqa: E402
-from kairos.readers.phoenix import PhoenixReader  # noqa: E402
+from kairos.readers.db import fetch_envelope_from_db, list_trace_ids  # noqa: E402
 
 # Reuse transcript alignment + redaction from sibling module
 sys.path.insert(0, str(_HERE))
 from build_queue import (  # type: ignore[import-untyped]  # noqa: E402
     _aggregate_tokens,
-    _gql,
-    _resolve_project_id,
-    _root_span_meta,
+    _empty_meta,
+    _fetch_db_trace_ids,
     _session_id_from_steps,
     _step_args_digest,
     _step_output_digest,
@@ -93,8 +92,7 @@ if TYPE_CHECKING:
     from kairos.models.trace import Step, TraceEnvelope
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-DEFAULT_ENDPOINT = "http://localhost:6006"
-DEFAULT_PROJECT = "default"
+DEFAULT_DSN = ""  # falls back to KAIROS_PG_DSN env var
 DEFAULT_CONTEXT = str(_REPO / "config" / "context.yaml")
 DEFAULT_OUT = str(_HERE / "haywire_queue.json")
 DEFAULT_HOURS = 720
@@ -127,52 +125,17 @@ def _secret_grep_json(text: str) -> list[str]:
     return hits
 
 
-# ── Phoenix helpers ────────────────────────────────────────────────────────────
+# ── DB-backed trace discovery (F1.5 — replaces Phoenix GraphQL) ───────────────
 
 
 def _fetch_all_trace_ids(
-    endpoint: str, project_id: str, hours: int
-) -> tuple[list[str], dict[str, dict[str, str | None]]]:
-    """Paginate Phoenix root spans; collect trace IDs and root-span metadata."""
+    dsn: str, hours: int
+) -> list[str]:
+    """List trace_ids from the DB started within the last ``hours`` hours."""
     now = datetime.now(tz=UTC)
     start = now - timedelta(hours=hours)
     start_iso = start.isoformat().replace("+00:00", "Z")
-    end_iso = now.isoformat().replace("+00:00", "Z")
-
-    trace_ids: list[str] = []
-    meta_by_trace: dict[str, dict[str, str | None]] = {}
-    seen: set[str] = set()
-    cursor: str | None = None
-
-    while True:
-        after_clause = f', after: "{cursor}"' if cursor is not None else ""
-        query = (
-            f'{{ node(id: "{project_id}") {{ ... on Project {{ '
-            f'spans(first: 100{after_clause}, rootSpansOnly: true, '
-            f'timeRange: {{start: "{start_iso}", end: "{end_iso}"}}) {{ '
-            f'pageInfo {{ hasNextPage endCursor }} '
-            f'edges {{ node {{ context {{ traceId }} attributes }} }} '
-            f'}} }} }} }}'
-        )
-        data = _gql(endpoint, query)
-        spans_data = data.get("node", {}).get("spans")
-        if not spans_data:
-            break
-
-        for edge in spans_data.get("edges", []):
-            node = edge.get("node", {})
-            tid = node.get("context", {}).get("traceId", "")
-            if tid and tid not in seen:
-                seen.add(tid)
-                trace_ids.append(tid)
-                meta_by_trace[tid] = _root_span_meta(node.get("attributes"))
-
-        page_info = spans_data.get("pageInfo", {})
-        if not page_info.get("hasNextPage") or not page_info.get("endCursor"):
-            break
-        cursor = page_info["endCursor"]
-
-    return trace_ids, meta_by_trace
+    return _fetch_db_trace_ids(dsn, start_iso)
 
 
 # ── Question builder ──────────────────────────────────────────────────────────
@@ -427,28 +390,29 @@ def main() -> None:  # noqa: C901
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
-    parser.add_argument("--project", default=DEFAULT_PROJECT)
+    parser.add_argument("--dsn", default=DEFAULT_DSN, help="Postgres DSN (default: KAIROS_PG_DSN env var)")
     parser.add_argument("--context", default=DEFAULT_CONTEXT)
     parser.add_argument("--out", default=DEFAULT_OUT)
     parser.add_argument(
         "--hours",
         type=int,
         default=DEFAULT_HOURS,
-        help="Look-back window in hours for Phoenix listing (default: %(default)s)",
+        help="Look-back window in hours for DB listing (default: %(default)s)",
     )
     cli_args = parser.parse_args()
 
-    print(f"Resolving Phoenix project '{cli_args.project}' at {cli_args.endpoint} ...", file=sys.stderr)
-    project_id = _resolve_project_id(cli_args.endpoint, cli_args.project)
+    import os  # noqa: PLC0415
 
-    print(f"Fetching trace IDs (last {cli_args.hours}h) ...", file=sys.stderr)
-    all_trace_ids, meta_by_trace = _fetch_all_trace_ids(cli_args.endpoint, project_id, cli_args.hours)
+    dsn = cli_args.dsn or os.environ.get("KAIROS_PG_DSN", "")
+    if not dsn:
+        print("ERROR: --dsn or KAIROS_PG_DSN env var required.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Fetching trace IDs from DB (last {cli_args.hours}h) ...", file=sys.stderr)
+    all_trace_ids = _fetch_all_trace_ids(dsn, cli_args.hours)
     print(f"  {len(all_trace_ids)} total traces found.", file=sys.stderr)
 
-    reader = PhoenixReader(endpoint=cli_args.endpoint, project=cli_args.project)
-
-    # ── Pass 1: fetch envelopes and compute restart features ──────────────────
+    # ── Pass 1: fetch envelopes from DB and compute restart features ──────────
     # We need corpus-wide z-scores only for struggle/token/latency (not used in
     # haywire queue question), so we skip the full corpus feature pass.
     # We recompute only restart_count + post_restart_rework per trace.
@@ -460,7 +424,7 @@ def main() -> None:  # noqa: C901
         if i % 25 == 0 and i > 0:
             print(f"  scanning {i}/{len(all_trace_ids)} ...", file=sys.stderr)
         try:
-            envelope = reader.fetch_envelope(trace_id)
+            envelope = fetch_envelope_from_db(trace_id, dsn, enrich_hooks=False)
         except Exception as exc:  # noqa: BLE001
             print(f"  SKIP {trace_id[:16]}: fetch error: {exc}", file=sys.stderr)
             fetch_errors += 1
@@ -476,7 +440,7 @@ def main() -> None:  # noqa: C901
             continue
 
         rework = _post_restart_rework_count(envelope.steps, restart_indices)
-        meta = meta_by_trace.get(trace_id, {"session_id": None, "issue": None, "agent": None})
+        meta = _empty_meta()
         restart_traces.append((trace_id, envelope, restart_count, rework, restart_indices, meta))
 
     print(
@@ -509,9 +473,8 @@ def main() -> None:  # noqa: C901
 
         question = generate_haywire_question(restart_indices, restart_count, rework)
 
-        phoenix_url = (
-            f"{cli_args.endpoint.rstrip('/')}/projects/{project_id}/traces/{trace_id}"
-        )
+        # F1.5: Phoenix retired; no UI deep-link available.
+        phoenix_url = ""
 
         entry: dict[str, Any] = {
             "trace_id": trace_id,

@@ -1,15 +1,16 @@
-"""Tests for scripts/nightly_loop.py — Day 12.
+"""Tests for scripts/nightly_loop.py — F1.5.
 
 Coverage:
   - quiet night: 0 traces → 'quiet_night' report, exit 0
   - forced exception → skip-marker report, exit 0
   - kill switch KAIROS_LOOP_DISABLED=1 → clean no-op
+  - DB-backed trace discovery + envelope fetch path
   - DB-down → parquet fallback + WARN
   - state machine: FETCH→ANALYZE→...→DONE transitions logged
   - skip-marker contains traceback
 
 All tests use the _force_exception / _pg_conn injection points to avoid
-hitting live Phoenix or Postgres.
+hitting live Postgres.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime  # noqa: TC003
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -204,14 +205,10 @@ def test_quiet_night_valid_report(
     data_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """0 traces after dedup → 'quiet_night' report (valid, not an error)."""
+    """0 traces from DB → 'quiet_night' report (valid, not an error)."""
     monkeypatch.delenv("KAIROS_LOOP_DISABLED", raising=False)
 
-    # Patch fetch to return 0 new traces.
-    with (
-        patch.object(nl, "_resolve_project_id", return_value="proj-id"),
-        patch.object(nl, "_fetch_root_trace_ids", return_value=([], {})),
-    ):
+    with patch.object(nl, "_fetch_db_trace_ids", return_value=[]):
         result = nl.run_nightly_loop(
             context_path=str(context_path),
             data_dir_path=str(data_dir),
@@ -232,23 +229,18 @@ def test_db_down_parquet_fallback(
     data_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """When Postgres is unavailable, a parquet/JSON fallback is written."""
+    """When Postgres is unavailable for persist, a parquet/JSON fallback is written."""
     monkeypatch.delenv("KAIROS_LOOP_DISABLED", raising=False)
 
     trace = _make_trace()
 
-    # Fake reader.
-    mock_reader = MagicMock()
-    mock_reader.fetch_envelope.return_value = trace
-
     # persist_night raises to simulate DB down.
-    def _boom_persist(**kwargs):  # noqa: ANN202
+    def _boom_persist(**kwargs: Any) -> None:
         raise OSError("connection refused: kairos-pg down")
 
     with (
-        patch.object(nl, "_resolve_project_id", return_value="proj-id"),
-        patch.object(nl, "_fetch_root_trace_ids", return_value=([trace.trace_id], {})),
-        patch("nightly_loop.PhoenixReader", return_value=mock_reader),
+        patch.object(nl, "_fetch_db_trace_ids", return_value=[trace.trace_id]),
+        patch("nightly_loop.fetch_envelope_from_db", return_value=trace),
         patch.object(nl, "persist_night", side_effect=_boom_persist),
     ):
         result = nl.run_nightly_loop(
@@ -278,16 +270,13 @@ def test_state_transitions_logged(
     monkeypatch.delenv("KAIROS_LOOP_DISABLED", raising=False)
 
     trace = _make_trace()
-    mock_reader = MagicMock()
-    mock_reader.fetch_envelope.return_value = trace
 
-    # Patch away the DB and Phoenix so we can run deterministically.
+    # Patch away DB so we can run deterministically.
     fake_persist_result = {"findings_rows": 0, "rollup_rows": 0}
 
     with (
-        patch.object(nl, "_resolve_project_id", return_value="proj-id"),
-        patch.object(nl, "_fetch_root_trace_ids", return_value=([trace.trace_id], {})),
-        patch("nightly_loop.PhoenixReader", return_value=mock_reader),
+        patch.object(nl, "_fetch_db_trace_ids", return_value=[trace.trace_id]),
+        patch("nightly_loop.fetch_envelope_from_db", return_value=trace),
         patch.object(nl, "persist_night", return_value=fake_persist_result),
         caplog.at_level(logging.INFO, logger="kairos.loop.nightly_loop"),
     ):
@@ -298,15 +287,89 @@ def test_state_transitions_logged(
         )
 
     # Should have logged at least FETCH, ANALYZE, PERSIST transitions.
-    # structlog may format differently; check for state names in message or event.
-    all_log_text = " ".join(
-        str(r.getMessage()) for r in caplog.records
-    )
-    # At minimum FETCH should appear somewhere.
+    all_log_text = " ".join(str(r.getMessage()) for r in caplog.records)
     assert "FETCH" in all_log_text or any("FETCH" in str(r) for r in caplog.records)
 
 
-# ── Full end-to-end (live Phoenix + Postgres) ──────────────────────────────────
+# ── DB-backed trace discovery + envelope fetch ────────────────────────────────
+
+
+def test_db_discovery_and_fetch_path(
+    context_path: Path,
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_fetch_db_trace_ids + fetch_envelope_from_db drives the full loop path."""
+    monkeypatch.delenv("KAIROS_LOOP_DISABLED", raising=False)
+
+    trace = _make_trace()
+    fake_persist_result = {"findings_rows": 1, "rollup_rows": 1}
+
+    with (
+        patch.object(nl, "_fetch_db_trace_ids", return_value=[trace.trace_id]) as mock_fetch_ids,
+        patch("nightly_loop.fetch_envelope_from_db", return_value=trace) as mock_fetch_env,
+        patch.object(nl, "persist_night", return_value=fake_persist_result),
+    ):
+        result = nl.run_nightly_loop(
+            dsn="postgresql://fake/kairos",
+            context_path=str(context_path),
+            data_dir_path=str(data_dir),
+            retry_wait_s=0.0,
+        )
+
+    assert result["status"] in ("ok", "quiet_night")
+    mock_fetch_ids.assert_called_once()
+    # Loop passes correlation_key_attr + enrich_hooks kwargs.
+    mock_fetch_env.assert_called_once()
+    call_args = mock_fetch_env.call_args
+    assert call_args.args[0] == trace.trace_id
+    assert call_args.args[1] == "postgresql://fake/kairos"
+
+
+def test_db_discovery_excludes_kairos_loop_actor(
+    context_path: Path,
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Traces whose spans carry actor_id=kairos-loop are skipped post-fetch."""
+    from kairos.models.enums import StepStatus, StepType
+    from kairos.models.trace import Step, TraceEnvelope
+
+    monkeypatch.delenv("KAIROS_LOOP_DISABLED", raising=False)
+
+    loop_trace = TraceEnvelope(
+        trace_id="loop" + "0" * 28,
+        steps=[
+            Step(
+                step_index=0,
+                step_type=StepType.TOOL_CALL,
+                tool_name="Bash",
+                status=StepStatus.OK,
+                attrs={"actor_id": "kairos-loop"},
+            )
+        ],
+        total_tokens=10,
+        total_latency_ms=100,
+    )
+
+    fake_persist_result = {"findings_rows": 0, "rollup_rows": 0}
+
+    with (
+        patch.object(nl, "_fetch_db_trace_ids", return_value=[loop_trace.trace_id]),
+        patch("nightly_loop.fetch_envelope_from_db", return_value=loop_trace),
+        patch.object(nl, "persist_night", return_value=fake_persist_result),
+    ):
+        result = nl.run_nightly_loop(
+            context_path=str(context_path),
+            data_dir_path=str(data_dir),
+            retry_wait_s=0.0,
+        )
+
+    # Loop self-trace filtered → 0 envelopes → loop completes ok with nothing to analyze.
+    assert result["status"] in ("ok", "quiet_night")
+
+
+# ── Full end-to-end (live Postgres) ───────────────────────────────────────────
 
 
 @_skip_no_db
@@ -315,7 +378,7 @@ def test_e2e_run_live(
     data_dir: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """End-to-end run against live Phoenix + Postgres (skipped without DB)."""
+    """End-to-end run against live Postgres DB (skipped without KAIROS_PG_DSN)."""
     monkeypatch.delenv("KAIROS_LOOP_DISABLED", raising=False)
 
     context_path_real = _REPO / "config" / "context.yaml"

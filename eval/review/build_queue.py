@@ -1,17 +1,19 @@
 """build_queue.py — Build eval/review/queue.json for the trace-review app.
 
-Fetches traces from Phoenix, runs the Kairos engine, and emits a structured
-queue of trace entries with digested steps, token totals, and a pre-generated
-question per verdict.
+Fetches traces from the Kairos DB (spans table), runs the Kairos engine, and
+emits a structured queue of trace entries with digested steps, token totals,
+and a pre-generated question per verdict.
+
+F1.5: Trace discovery and envelope fetch now read from the DB (spans table)
+via list_trace_ids + fetch_envelope_from_db. Phoenix is no longer required.
 
 Usage:
     uv run eval/review/build_queue.py [--hours N] [--trace-ids id1,id2,...]
 
 Options:
     --hours N           Look-back window in hours (default: 168)
-    --trace-ids LIST    Comma-separated explicit trace IDs (skips Phoenix listing)
-    --endpoint URL      Phoenix base URL (default: http://localhost:6006)
-    --project NAME      Phoenix project name (default: default)
+    --trace-ids LIST    Comma-separated explicit trace IDs (skips DB listing)
+    --dsn DSN           Postgres DSN (default: KAIROS_PG_DSN env var)
     --context PATH      Path to context.yaml (default: config/context.yaml)
     --out PATH          Output JSON path (default: eval/review/queue.json)
 
@@ -24,8 +26,6 @@ import argparse
 import json
 import re
 import sys
-import urllib.error
-import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -40,7 +40,7 @@ from kairos.analysis.outcome_metric import OutcomeResult, evaluate_outcome  # no
 from kairos.analysis.workflow_membership import MembershipKind  # noqa: E402
 from kairos.engine.pipeline import classify_membership  # noqa: E402
 from kairos.models.enums import StepStatus, StepType  # noqa: E402
-from kairos.readers.phoenix import PhoenixReader  # noqa: E402
+from kairos.readers.db import fetch_envelope_from_db, list_trace_ids  # noqa: E402
 from kairos.taxonomy.business_context import BusinessContext  # noqa: E402
 
 # Transcript aligner (same directory) — also the single source of redaction.
@@ -63,8 +63,7 @@ from transcript_align import (  # noqa: E402
 if TYPE_CHECKING:
     from kairos.models.trace import Step, TraceEnvelope
 
-DEFAULT_ENDPOINT = "http://localhost:6006"
-DEFAULT_PROJECT = "default"
+DEFAULT_DSN = ""  # falls back to KAIROS_PG_DSN env var
 DEFAULT_CONTEXT = str(_REPO / "config" / "context.yaml")
 DEFAULT_OUT = str(_HERE / "queue.json")
 DEFAULT_HOURS = 168
@@ -83,132 +82,17 @@ def _one_line(text: str, limit: int) -> str:
     return flat[:limit] + "…" if len(flat) > limit else flat
 
 
-# ── Phoenix helpers ───────────────────────────────────────────────────────────
+# ── DB-backed helpers (F1.5 — replaces Phoenix GraphQL) ──────────────────────
 
 
-def _gql(endpoint: str, query: str) -> Any:
-    url = endpoint.rstrip("/") + "/graphql"
-    body = json.dumps({"query": query}).encode()
-    req = urllib.request.Request(  # noqa: S310
-        url,
-        data=body,
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
-            raw = resp.read()
-    except urllib.error.URLError as exc:
-        print(f"ERROR: cannot reach Phoenix at {url}: {exc}", file=sys.stderr)
-        sys.exit(1)
-    parsed = json.loads(raw)
-    if "errors" in parsed:
-        print(f"GraphQL errors: {parsed['errors']}", file=sys.stderr)
-        sys.exit(1)
-    return parsed.get("data", {})
+def _fetch_db_trace_ids(dsn: str, since_iso: str) -> list[str]:
+    """List trace_ids from the DB that started at or after ``since_iso``."""
+    return list_trace_ids(dsn, since=since_iso)
 
 
-def _resolve_project_id(endpoint: str, project_name: str) -> str:
-    data = _gql(endpoint, "{ projects(first: 100) { edges { node { id name } } } }")
-    edges = data.get("projects", {}).get("edges", [])
-    for edge in edges:
-        node = edge.get("node", {})
-        if node.get("name") == project_name:
-            return str(node["id"])
-    available = [e["node"]["name"] for e in edges]
-    print(f"ERROR: project '{project_name}' not found. Available: {', '.join(available)}", file=sys.stderr)
-    sys.exit(1)
-
-
-def _fetch_root_trace_ids(
-    endpoint: str, project_id: str, start_iso: str, end_iso: str
-) -> tuple[list[str], dict[str, dict[str, str | None]]]:
-    """Paginate root spans; collect trace IDs + per-trace root-span meta."""
-    trace_ids: list[str] = []
-    meta_by_trace: dict[str, dict[str, str | None]] = {}
-    seen: set[str] = set()
-    cursor: str | None = None
-
-    while True:
-        after_clause = f', after: "{cursor}"' if cursor is not None else ""
-        query = (
-            f'{{ node(id: "{project_id}") {{ ... on Project {{ '
-            f'spans(first: 100{after_clause}, rootSpansOnly: true, '
-            f'timeRange: {{start: "{start_iso}", end: "{end_iso}"}}) {{ '
-            f'pageInfo {{ hasNextPage endCursor }} '
-            f'edges {{ node {{ context {{ traceId }} attributes }} }} '
-            f'}} }} }} }}'
-        )
-        data = _gql(endpoint, query)
-        spans_data = data.get("node", {}).get("spans")
-        if not spans_data:
-            break
-
-        for edge in spans_data.get("edges", []):
-            node = edge.get("node", {})
-            tid = node.get("context", {}).get("traceId", "")
-            if tid and tid not in seen:
-                seen.add(tid)
-                trace_ids.append(tid)
-                meta_by_trace[tid] = _root_span_meta(node.get("attributes"))
-
-        page_info = spans_data.get("pageInfo", {})
-        if not page_info.get("hasNextPage") or not page_info.get("endCursor"):
-            break
-        cursor = page_info["endCursor"]
-
-    return trace_ids, meta_by_trace
-
-
-def _root_span_meta(raw_attributes: str | None) -> dict[str, str | None]:
-    """Extract session_id / paperclip issue / agent from a root span."""
-    meta: dict[str, str | None] = {"session_id": None, "issue": None, "agent": None}
-    if not raw_attributes:
-        return meta
-    try:
-        attrs = json.loads(raw_attributes)
-    except (json.JSONDecodeError, TypeError):
-        return meta
-    if not isinstance(attrs, dict):
-        return meta
-    session = attrs.get("session")
-    if isinstance(session, dict) and session.get("id"):
-        meta["session_id"] = str(session["id"])
-    paperclip = attrs.get("paperclip")
-    if isinstance(paperclip, dict) and paperclip.get("issue"):
-        meta["issue"] = str(paperclip["issue"])
-    service = attrs.get("service")
-    if isinstance(service, dict) and service.get("name"):
-        meta["agent"] = str(service["name"])
-    return meta
-
-
-def _fetch_meta_for_ids(
-    endpoint: str, project_id: str, trace_ids: list[str]
-) -> dict[str, dict[str, str | None]]:
-    """Fetch root span metadata for explicit trace IDs."""
-    meta_by_trace: dict[str, dict[str, str | None]] = {}
-    for tid in trace_ids:
-        query = (
-            f'{{ node(id: "{project_id}") {{ ... on Project {{ '
-            f'spans(first: 10, rootSpansOnly: true, filterCondition: "trace_id == \\"{tid}\\"") {{ '
-            f'edges {{ node {{ context {{ traceId }} attributes }} }} '
-            f'}} }} }} }}'
-        )
-        try:
-            data = _gql(endpoint, query)
-            edges = data.get("node", {}).get("spans", {}).get("edges", [])
-            for edge in edges:
-                node = edge.get("node", {})
-                found_tid = node.get("context", {}).get("traceId", "")
-                if found_tid == tid:
-                    meta_by_trace[tid] = _root_span_meta(node.get("attributes"))
-                    break
-        except SystemExit:
-            pass
-        if tid not in meta_by_trace:
-            meta_by_trace[tid] = {"session_id": None, "issue": None, "agent": None}
-    return meta_by_trace
+def _empty_meta() -> dict[str, str | None]:
+    """Default per-trace meta when root-span metadata is unavailable (no Phoenix)."""
+    return {"session_id": None, "issue": None, "agent": None}
 
 
 # ── Workflow helpers (reused from export_spotcheck) ───────────────────────────
@@ -537,8 +421,6 @@ def build_entry(
     primary_workflow: str,
     membership_kind: str,
     meta: dict[str, str | None],
-    endpoint: str,
-    project_node_id: str,
 ) -> dict[str, Any]:
     """Build one queue.json entry for a trace."""
     verdict = "non_computable"
@@ -549,8 +431,7 @@ def build_entry(
     evidence_step_index = result.evidence.step_index if result.evidence else None
 
     # Per-step transcript alignment: real args/outputs come from the session
-    # JSONL (Phoenix spans carry none — F10). Ordinal per-tool-name matching
-    # inside the trace's ±60s time window.
+    # JSONL. Ordinal per-tool-name matching inside the trace's ±60s time window.
     session_id = _session_id_from_steps(envelope) or meta.get("session_id")
     start, end = _trace_window(envelope)
     transcript_map = align_trace_to_transcript(envelope.steps, session_id, start, end)
@@ -562,7 +443,9 @@ def build_entry(
     frame_fields = entry_frame_fields(frame, windowed_events, start)
     attach_reactions(step_entries, transcript_map, windowed_events)
 
-    phoenix_url = f"{endpoint.rstrip('/')}/projects/{project_node_id}/traces/{trace_id}"
+    # F1.5: Phoenix is retired; no UI deep-link available. phoenix_url kept
+    # as empty string so app.py (which renders it only when truthy) is unaffected.
+    phoenix_url = ""
 
     return {
         "trace_id": trace_id,
@@ -602,13 +485,19 @@ def main() -> None:
     parser.add_argument(
         "--trace-ids",
         default="",
-        help="Comma-separated explicit trace IDs (skips Phoenix listing)",
+        help="Comma-separated explicit trace IDs (skips DB listing)",
     )
-    parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT, help="Phoenix base URL (default: %(default)s)")
-    parser.add_argument("--project", default=DEFAULT_PROJECT, help="Phoenix project name (default: %(default)s)")
+    parser.add_argument("--dsn", default=DEFAULT_DSN, help="Postgres DSN (default: KAIROS_PG_DSN env var)")
     parser.add_argument("--context", default=DEFAULT_CONTEXT, help="Path to context.yaml (default: %(default)s)")
     parser.add_argument("--out", default=DEFAULT_OUT, help="Output JSON path (default: %(default)s)")
     args = parser.parse_args()
+
+    import os  # noqa: PLC0415
+
+    dsn = args.dsn or os.environ.get("KAIROS_PG_DSN", "")
+    if not dsn:
+        print("ERROR: --dsn or KAIROS_PG_DSN env var required.", file=sys.stderr)
+        sys.exit(1)
 
     context_path = Path(args.context)
     if not context_path.exists():
@@ -618,31 +507,25 @@ def main() -> None:
     print(f"Loading context from {context_path} ...", file=sys.stderr)
     context = BusinessContext.from_yaml(str(context_path))
 
-    print(f"Resolving Phoenix project '{args.project}' at {args.endpoint} ...", file=sys.stderr)
-    project_id = _resolve_project_id(args.endpoint, args.project)
-
-    # ── Resolve trace IDs ─────────────────────────────────────────────────────
+    # ── Resolve trace IDs from DB ─────────────────────────────────────────────
     explicit_ids = [t.strip() for t in args.trace_ids.split(",") if t.strip()] if args.trace_ids else []
 
     if explicit_ids:
         trace_ids = explicit_ids
         print(f"Using {len(trace_ids)} explicit trace IDs.", file=sys.stderr)
-        meta_by_trace = _fetch_meta_for_ids(args.endpoint, project_id, trace_ids)
     else:
         now = datetime.now(tz=UTC)
         start = now - timedelta(hours=args.hours)
         start_iso = start.isoformat().replace("+00:00", "Z")
-        end_iso = now.isoformat().replace("+00:00", "Z")
-        print(f"Fetching trace IDs for last {args.hours}h ...", file=sys.stderr)
-        trace_ids, meta_by_trace = _fetch_root_trace_ids(args.endpoint, project_id, start_iso, end_iso)
+        print(f"Fetching trace IDs from DB for last {args.hours}h ...", file=sys.stderr)
+        trace_ids = _fetch_db_trace_ids(dsn, start_iso)
         print(f"  {len(trace_ids)} trace IDs found.", file=sys.stderr)
 
     if not trace_ids:
         print("ERROR: no trace IDs to process.", file=sys.stderr)
         sys.exit(1)
 
-    # ── Fetch envelopes and build queue entries ───────────────────────────────
-    reader = PhoenixReader(endpoint=args.endpoint, project=args.project)
+    # ── Fetch envelopes from DB and build queue entries ───────────────────────
     operations = list(context.operations)
 
     entries: list[dict[str, Any]] = []
@@ -652,7 +535,7 @@ def main() -> None:
         if i % 25 == 0 and i > 0:
             print(f"  processed {i}/{len(trace_ids)} ...", file=sys.stderr)
         try:
-            envelope = reader.fetch_envelope(trace_id)
+            envelope = fetch_envelope_from_db(trace_id, dsn, enrich_hooks=False)
         except Exception as exc:  # noqa: BLE001
             print(f"  SKIP {trace_id[:16]}: fetch error: {exc}", file=sys.stderr)
             errors += 1
@@ -678,7 +561,8 @@ def main() -> None:
         else:
             result = evaluate_outcome(envelope, op)
 
-        meta = meta_by_trace.get(trace_id, {"session_id": None, "issue": None, "agent": None})
+        # F1.5: no Phoenix root-span meta; agent defaults to "unknown".
+        meta = _empty_meta()
 
         entry = build_entry(
             trace_id=trace_id,
@@ -687,8 +571,6 @@ def main() -> None:
             primary_workflow=primary,
             membership_kind=membership_kind,
             meta=meta,
-            endpoint=args.endpoint,
-            project_node_id=project_id,
         )
         entries.append(entry)
 

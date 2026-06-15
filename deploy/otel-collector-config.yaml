@@ -47,19 +47,30 @@ exporters:
     tls:
       insecure: true
   # Phoenix (ELv2, opt-in profile) — HTTP OTLP at phoenix:6006.
-  # Active when the phoenix service is in the compose stack.
-  # v7.9.0 does not bind gRPC (4317); HTTP OTLP on 6006 is the only listener.
+  # Kept as an optional exporter for visibility / debugging; NOT in the
+  # default pipeline (F1.5: Kairos reads from DB, not Phoenix).
+  # Activate via the `phoenix` compose profile:
+  #   docker compose --profile phoenix up -d
   otlphttp/phoenix:
     endpoint: http://phoenix:6006
   debug:
     verbosity: normal
 
+# F1.5 topology: CC → OTLP :4318 → Kairos OTLP receiver (kairos-api) → spans table
+#               │                                                        │
+#               └── otel-collector :4317/:4318 → jaeger (raw UI)        └── kairos analysis
+#
+# Phoenix is opt-in only. The nightly loop and review queues read directly
+# from kairos-pg (spans table) via list_trace_ids + fetch_envelope_from_db.
+# The otel-collector is OPTIONAL for the analysis path — it is only needed
+# for the Jaeger raw-trace UI. Claude Code points at :4318 (install.sh).
 service:
   pipelines:
     traces:
       receivers: [otlp]
       processors: [transform/openinference, batch]
-      exporters: [otlp/jaeger, otlphttp/phoenix, debug]
+      # Default: Jaeger only. Phoenix removed from live ingest path (F1.5).
+      exporters: [otlp/jaeger, debug]
   telemetry:
     logs:
       level: info
