@@ -148,6 +148,194 @@ class TestDrainSpoolNoDB:
         assert isinstance(result2, datetime)
 
 
+# ── Idle-drain guard tests (no DB) ────────────────────────────────────────────
+
+
+def _make_session_end_record(session_id: str) -> dict[str, object]:
+    return {
+        "session_id": session_id,
+        "event_name": "SessionEnd",
+        "tool_use_id": None,
+        "tool_name": None,
+        "tool_input_redacted": None,
+        "tool_output": None,
+        "is_error": None,
+        "permission_mode": "default",
+        "agent_id": None,
+        "agent_type": None,
+        "payload_redacted": {},
+        "occurred_at": datetime.now(tz=UTC).isoformat(),
+    }
+
+
+def _write_spool(spool_dir: Path, session_id: str, records: list[dict]) -> Path:
+    """Write records as JSONL to a spool file and return the path."""
+    spool_file = spool_dir / f"{session_id}.jsonl"
+    with spool_file.open("w") as fh:
+        for rec in records:
+            fh.write(json.dumps(rec) + "\n")
+    return spool_file
+
+
+class TestIsDrainable:
+    """Unit-level tests for _is_drainable logic."""
+
+    def test_session_end_present_is_drainable_even_if_fresh(self, tmp_path: Path) -> None:
+        """A file with SessionEnd is always drainable, regardless of mtime."""
+        from kairos.ingest.hook_uploader import _is_drainable
+
+        session_id = f"test-end-{uuid.uuid4().hex[:8]}"
+        spool_file = _write_spool(
+            tmp_path,
+            session_id,
+            [
+                _make_post_tool_use_record(session_id),
+                _make_session_end_record(session_id),
+            ],
+        )
+        # Use a "now" that is just 1 second after mtime — file would be "active"
+        # without the SessionEnd guard.
+        now = spool_file.stat().st_mtime + 1.0
+        records = [
+            _make_post_tool_use_record(session_id),
+            _make_session_end_record(session_id),
+        ]
+        assert _is_drainable(spool_file, records, idle_seconds=90, _now=now)
+
+    def test_stale_file_no_session_end_is_drainable(self, tmp_path: Path) -> None:
+        """A file older than idle_seconds with no SessionEnd is drainable."""
+        from kairos.ingest.hook_uploader import _is_drainable
+
+        session_id = f"test-stale-{uuid.uuid4().hex[:8]}"
+        spool_file = _write_spool(
+            tmp_path, session_id, [_make_post_tool_use_record(session_id)]
+        )
+        # Set mtime to 200 seconds ago.
+        import os
+        old_mtime = spool_file.stat().st_mtime - 200
+        os.utime(spool_file, (old_mtime, old_mtime))
+
+        records = [_make_post_tool_use_record(session_id)]
+        now = spool_file.stat().st_mtime + 200  # 200 seconds after old mtime
+        assert _is_drainable(spool_file, records, idle_seconds=90, _now=now)
+
+    def test_fresh_file_no_session_end_is_not_drainable(self, tmp_path: Path) -> None:
+        """A freshly modified file with no SessionEnd must be skipped."""
+        from kairos.ingest.hook_uploader import _is_drainable
+
+        session_id = f"test-fresh-{uuid.uuid4().hex[:8]}"
+        spool_file = _write_spool(
+            tmp_path, session_id, [_make_post_tool_use_record(session_id)]
+        )
+        # "now" is only 10 seconds after mtime — well within idle_seconds=90.
+        now = spool_file.stat().st_mtime + 10.0
+        records = [_make_post_tool_use_record(session_id)]
+        assert not _is_drainable(spool_file, records, idle_seconds=90, _now=now)
+
+    def test_has_session_end_helper(self) -> None:
+        from kairos.ingest.hook_uploader import _has_session_end
+
+        session_id = "sess-abc"
+        records_with_end = [
+            _make_post_tool_use_record(session_id),
+            _make_session_end_record(session_id),
+        ]
+        records_without_end = [_make_post_tool_use_record(session_id)]
+        assert _has_session_end(records_with_end)
+        assert not _has_session_end(records_without_end)
+        assert not _has_session_end([])
+
+
+class TestDrainFileIdleGuard:
+    """Tests for _drain_file skipping active files (no DB required)."""
+
+    def test_active_file_skipped_returns_zero_not_renamed(self, tmp_path: Path) -> None:
+        """Active spool file (fresh mtime, no SessionEnd) → 0 rows, file NOT renamed."""
+        from unittest.mock import MagicMock
+
+        from kairos.ingest.hook_uploader import _drain_file
+
+        session_id = f"test-active-{uuid.uuid4().hex[:8]}"
+        spool_file = _write_spool(
+            tmp_path, session_id, [_make_post_tool_use_record(session_id)]
+        )
+        # "now" is 10s after mtime → within idle window.
+        now = spool_file.stat().st_mtime + 10.0
+
+        mock_conn = MagicMock()
+        result = _drain_file(spool_file, mock_conn, idle_seconds=90, _now=now)
+
+        assert result == 0, "Active file should return 0 rows"
+        # File must NOT be renamed to .done.
+        assert spool_file.exists(), "Active spool file must not be renamed"
+        done_file = spool_file.with_suffix(spool_file.suffix + ".done")
+        assert not done_file.exists(), ".done file must not be created for active file"
+        # DB must not have been touched.
+        mock_conn.cursor.assert_not_called()
+
+    def test_session_end_file_drained_regardless_of_mtime(self, tmp_path: Path) -> None:
+        """File with SessionEnd is sent to DB even if freshly modified.
+
+        Skips DB calls but verifies _mark_done (rename) occurs when
+        _is_drainable returns True for a SessionEnd file.
+        We mock psycopg at the cursor level to avoid a real DB connection.
+        """
+        from unittest.mock import MagicMock
+
+        from kairos.ingest.hook_uploader import _drain_file
+
+        session_id = f"test-end-drain-{uuid.uuid4().hex[:8]}"
+        records = [
+            _make_post_tool_use_record(session_id),
+            _make_session_end_record(session_id),
+        ]
+        spool_file = _write_spool(tmp_path, session_id, records)
+        # "now" is only 5s after mtime — active by mtime, but has SessionEnd.
+        now = spool_file.stat().st_mtime + 5.0
+
+        # Mock a conn that pretends _max_seq_for_session returns 0.
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchone.return_value = (0,)
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = lambda s: mock_cursor
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = _drain_file(spool_file, mock_conn, idle_seconds=90, _now=now)
+
+        assert result == 2, "Both records should be uploaded"
+        done_file = spool_file.with_suffix(spool_file.suffix + ".done")
+        assert not spool_file.exists(), "Drained file must be renamed to .done"
+        assert done_file.exists(), ".done file must exist after drain"
+
+    def test_stale_file_no_session_end_drained(self, tmp_path: Path) -> None:
+        """File older than idle_seconds (no SessionEnd) is drained."""
+        import os
+        from unittest.mock import MagicMock
+
+        from kairos.ingest.hook_uploader import _drain_file
+
+        session_id = f"test-stale-drain-{uuid.uuid4().hex[:8]}"
+        records = [_make_post_tool_use_record(session_id)]
+        spool_file = _write_spool(tmp_path, session_id, records)
+
+        # Back-date mtime to 200 seconds ago.
+        old_mtime = spool_file.stat().st_mtime - 200
+        os.utime(spool_file, (old_mtime, old_mtime))
+        now = old_mtime + 200  # 200s later → well past idle_seconds=90
+
+        mock_conn = MagicMock()
+        mock_conn.execute.return_value.fetchone.return_value = (0,)
+        mock_cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = lambda s: mock_cursor
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        result = _drain_file(spool_file, mock_conn, idle_seconds=90, _now=now)
+
+        assert result == 1
+        done_file = spool_file.with_suffix(spool_file.suffix + ".done")
+        assert done_file.exists()
+
+
 # ── DB round-trip tests ───────────────────────────────────────────────────────
 
 

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -105,9 +106,43 @@ def _max_seq_for_session(conn: psycopg.Connection[Any], session_id: str) -> int:
     return int(row[0]) if row else 0
 
 
-def _drain_file(path: Path, conn: psycopg.Connection[Any]) -> int:
+def _has_session_end(records: list[dict[str, Any]]) -> bool:
+    """Return True if any record in the list is a SessionEnd event."""
+    return any(rec.get("event_name") == "SessionEnd" for rec in records)
+
+
+def _is_drainable(
+    path: Path,
+    records: list[dict[str, Any]],
+    idle_seconds: int,
+    _now: float | None = None,
+) -> bool:
+    """Return True if the spool file is safe to drain this pass.
+
+    A file is drainable if EITHER:
+      (a) It contains a SessionEnd event — session has cleanly finished, OR
+      (b) Its mtime is older than now − idle_seconds — no recent writes.
+
+    Active files (recently modified, no SessionEnd) are skipped this pass
+    to prevent the carry-forward race: hook may still be appending events.
+    """
+    if _has_session_end(records):
+        return True
+    now = _now if _now is not None else time.time()
+    mtime = path.stat().st_mtime
+    return (now - mtime) >= idle_seconds
+
+
+def _drain_file(
+    path: Path,
+    conn: psycopg.Connection[Any],
+    idle_seconds: int = 90,
+    _now: float | None = None,
+) -> int:
     """Upload all rows from one spool file and rename it to .done.
 
+    Guard: only drain if the file is idle/ended (see _is_drainable).
+    Active files (recent mtime, no SessionEnd) return 0 without renaming.
     Corrupt / unparseable lines are skipped with a warning log.
     Returns the count of rows successfully upserted.
     """
@@ -138,6 +173,14 @@ def _drain_file(path: Path, conn: psycopg.Connection[Any]) -> int:
             "hook_uploader.skipped_lines",
             extra={"path": str(path), "count": skipped},
         )
+
+    # Guard: skip active files to prevent live-file data loss.
+    if not _is_drainable(path, records, idle_seconds, _now=_now):
+        logger.debug(
+            "hook_uploader.skip_active_file",
+            extra={"path": str(path)},
+        )
+        return 0
 
     if not records:
         # Nothing to upload — still mark done so we don't re-scan.
@@ -172,14 +215,22 @@ def _mark_done(path: Path) -> None:
     path.rename(done_path)
 
 
-def drain_spool(spool_dir: Path, dsn: str) -> int:
+def drain_spool(spool_dir: Path, dsn: str, idle_seconds: int = 90) -> int:
     """Drain all pending spool files in ``spool_dir`` into the ``hook_events`` table.
 
+    Only files that are "safe" to drain are processed this pass:
+      - Files containing a ``SessionEnd`` event (session cleanly finished), OR
+      - Files whose mtime is older than ``now − idle_seconds`` (no recent writes).
+    Active files (freshly written, no SessionEnd) are skipped to avoid the
+    carry-forward race where the hook appends events between read and rename.
+
     Args:
-        spool_dir: Directory containing ``<session_id>.jsonl`` spool files.
-                   Files already renamed to ``.jsonl.done`` are skipped.
-        dsn:       libpq connection string (never read from env here — caller
-                   is responsible for supplying it from KAIROS_PG_DSN).
+        spool_dir:    Directory containing ``<session_id>.jsonl`` spool files.
+                      Files already renamed to ``.jsonl.done`` are skipped.
+        dsn:          libpq connection string (never read from env here — caller
+                      is responsible for supplying it from KAIROS_PG_DSN).
+        idle_seconds: Seconds a file must be unmodified before it is drained
+                      when no SessionEnd is present.  Default 90s.
 
     Returns:
         Total number of rows upserted across all files this call.
@@ -196,7 +247,7 @@ def drain_spool(spool_dir: Path, dsn: str) -> int:
     with psycopg.connect(dsn) as conn:
         for file in files:
             try:
-                total += _drain_file(file, conn)
+                total += _drain_file(file, conn, idle_seconds=idle_seconds)
             except Exception:
                 logger.exception(
                     "hook_uploader.file_error",
