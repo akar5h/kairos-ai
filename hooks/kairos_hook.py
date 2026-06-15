@@ -104,6 +104,20 @@ _SECRET_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"Bearer\s+\S+", re.IGNORECASE),                # Bearer tokens
     re.compile(r"-----BEGIN [A-Z ]+-----.*?-----END [A-Z ]+-----", re.DOTALL),  # PEM certs
     re.compile(r"eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+", re.ASCII),  # JWT
+    # DB URLs with embedded credentials: scheme://user:pass@host/...
+    re.compile(
+        r"(postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^:\s]+:[^@\s]+@\S+",
+        re.IGNORECASE,
+    ),
+    # Assignment-style secrets: KEY=value or KEY: value (case-insensitive key match)
+    re.compile(
+        r"(?i)(api[_-]?key|secret|token|password|passwd|pwd|access[_-]?key)"
+        r"(?:\s*[=:]\s*)\S+",
+    ),
+    # GitHub fine-grained PAT
+    re.compile(r"github_pat_[A-Za-z0-9_]{22,}", re.ASCII),
+    # Slack tokens
+    re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}", re.ASCII),
 ]
 
 _REDACTED = "[REDACTED]"
