@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import patch
 
@@ -44,6 +45,10 @@ _skip_no_db = pytest.mark.skipif(
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+# Trace clusters: traceA around _T_A, traceB ~10 min later (well outside ±60 s pad).
+_T_A = datetime(2026, 6, 10, 8, 0, 0, tzinfo=UTC)
+_T_B = datetime(2026, 6, 10, 8, 10, 0, tzinfo=UTC)
+
 
 def _step(
     index: int,
@@ -52,6 +57,8 @@ def _step(
     status_source: StepStatusSource = StepStatusSource.ATTR_SUCCESS,
     tool_args: dict[str, Any] | None = None,
     tool_output: str | None = None,
+    started_at: datetime | None = _T_A,
+    ended_at: datetime | None = _T_A,
 ) -> Step:
     return Step(
         step_index=index,
@@ -61,6 +68,8 @@ def _step(
         status_source=status_source,
         tool_args=tool_args,
         tool_output=tool_output,
+        started_at=started_at,
+        ended_at=ended_at,
     )
 
 
@@ -77,6 +86,7 @@ def _hook_row(
     seq: int = 1,
     tool_input: dict[str, Any] | None = None,
     tool_output: str | None = None,
+    occurred_at: datetime | None = _T_A,
 ) -> HookEventRow:
     return HookEventRow(
         session_id="test-session",
@@ -85,6 +95,7 @@ def _hook_row(
         is_error=is_error,
         tool_input_redacted=tool_input or {"command": f"cmd-{seq}"},
         tool_output=tool_output or f"output-{seq}",
+        occurred_at=occurred_at,
     )
 
 
@@ -92,13 +103,21 @@ def _envelope(
     steps: list[Step],
     session_id: str | None = "test-session",
 ) -> TraceEnvelope:
-    """Build a minimal TraceEnvelope with optional session_id in metadata."""
+    """Build a minimal TraceEnvelope with optional session_id in metadata.
+
+    started_at/ended_at fall back from the steps' timestamps; we also stamp
+    envelope-level bounds so the trace window is always derivable.
+    """
     meta: dict[str, Any] | None = {"session_id": session_id} if session_id else None
+    starts = [s.started_at for s in steps if s.started_at is not None]
+    ends = [s.ended_at for s in steps if s.ended_at is not None]
     return TraceEnvelope(
         trace_id="aabbccdd" * 4,
         steps=steps,
         metadata=meta,
         error_count=sum(1 for s in steps if s.status is StepStatus.ERROR),
+        started_at=min(starts) if starts else _T_A,
+        ended_at=max(ends) if ends else _T_A,
     )
 
 
@@ -301,6 +320,133 @@ class TestEnrichEnvelopeWithHooks:
         # No crash.
 
 
+class TestTraceWindowing:
+    """Time-window guard prevents cross-trace bleed in multi-trace sessions."""
+
+    def _enrich(
+        self,
+        envelope: TraceEnvelope,
+        hook_rows: list[HookEventRow],
+    ) -> TraceEnvelope:
+        with patch(
+            "kairos.readers.hook_join.fetch_hook_events_for_session",
+            return_value=hook_rows,
+        ):
+            return enrich_envelope_with_hooks(envelope, dsn="fake://")
+
+    def test_cross_trace_bleed_prevented(self) -> None:
+        """REGRESSION: traceB's Bash must align to traceB's hook row, NOT traceA's.
+
+        Session has TWO traces:
+          traceA: Bash#1 (args A-bash, error), Read#1 (args A-read)
+          traceB: Bash#2 (args B-bash, ok)
+        The whole-session pool, ordered by seq, is [Bash#1, Read#1, Bash#2].
+        When enriching traceB (whose only Bash is ordinal 0), a naive
+        full-pool alignment would grab pool's Bash ordinal 0 = Bash#1 (traceA).
+        The time window must scope the pool to traceB's cluster first, so
+        traceB's Bash aligns to Bash#2.
+        """
+        # All three hook rows for the whole session, ordered by seq.
+        session_rows = [
+            _hook_row(
+                "Bash", is_error=True, seq=1,
+                tool_input={"command": "A-bash"}, tool_output="out-A-bash",
+                occurred_at=_T_A,
+            ),
+            _hook_row(
+                "Read", is_error=False, seq=2,
+                tool_input={"file_path": "A-read"}, tool_output="out-A-read",
+                occurred_at=_T_A + timedelta(seconds=1),
+            ),
+            _hook_row(
+                "Bash", is_error=False, seq=3,
+                tool_input={"command": "B-bash"}, tool_output="out-B-bash",
+                occurred_at=_T_B,
+            ),
+        ]
+
+        # traceB envelope: a single Bash step in traceB's time cluster.
+        b_step = _step(0, "Bash", started_at=_T_B, ended_at=_T_B)
+        env_b = _envelope([b_step])
+
+        enriched = self._enrich(env_b, session_rows)
+
+        # traceB's Bash must get traceB's row (B-bash, ok) — NOT traceA's
+        # Bash#1 (A-bash, error).
+        assert enriched.steps[0].tool_args == {"command": "B-bash"}
+        assert enriched.steps[0].tool_output == "out-B-bash"
+        assert enriched.steps[0].status is StepStatus.OK  # NOT ERROR from traceA
+
+    def test_trace_a_still_aligns_to_its_own_rows(self) -> None:
+        """The earlier trace (A) aligns to its own rows when enriched."""
+        session_rows = [
+            _hook_row(
+                "Bash", is_error=True, seq=1,
+                tool_input={"command": "A-bash"}, tool_output="out-A-bash",
+                occurred_at=_T_A,
+            ),
+            _hook_row(
+                "Read", is_error=False, seq=2,
+                tool_input={"file_path": "A-read"}, tool_output="out-A-read",
+                occurred_at=_T_A + timedelta(seconds=1),
+            ),
+            _hook_row(
+                "Bash", is_error=False, seq=3,
+                tool_input={"command": "B-bash"}, tool_output="out-B-bash",
+                occurred_at=_T_B,
+            ),
+        ]
+        a_bash = _step(0, "Bash", started_at=_T_A, ended_at=_T_A)
+        a_read = _step(1, "Read", started_at=_T_A + timedelta(seconds=1), ended_at=_T_A + timedelta(seconds=1))
+        env_a = _envelope([a_bash, a_read])
+
+        enriched = self._enrich(env_a, session_rows)
+
+        assert enriched.steps[0].tool_args == {"command": "A-bash"}
+        assert enriched.steps[0].status is StepStatus.ERROR  # traceA's Bash failed
+        assert enriched.steps[1].tool_args == {"file_path": "A-read"}
+
+    def test_no_window_skips_enrichment(self) -> None:
+        """No usable timestamps anywhere → skip (never align against full pool)."""
+        step = _step(0, "Bash", started_at=None, ended_at=None)
+        # Build envelope WITHOUT started_at/ended_at fallback.
+        env = TraceEnvelope(
+            trace_id="aabbccdd" * 4,
+            steps=[step],
+            metadata={"session_id": "test-session"},
+            started_at=None,
+            ended_at=None,
+        )
+        rows = [_hook_row("Bash", is_error=True, seq=1, tool_input={"command": "x"})]
+        enriched = self._enrich(env, rows)
+        # Skipped → untouched.
+        assert enriched.steps[0].status is StepStatus.OK
+        assert enriched.steps[0].tool_args is None
+
+    def test_envelope_timestamp_fallback_used(self) -> None:
+        """When steps lack timestamps but the envelope has them, window still works."""
+        step = _step(0, "Bash", started_at=None, ended_at=None)
+        env = TraceEnvelope(
+            trace_id="aabbccdd" * 4,
+            steps=[step],
+            metadata={"session_id": "test-session"},
+            started_at=_T_A,
+            ended_at=_T_A,
+        )
+        rows = [_hook_row("Bash", is_error=True, seq=1, tool_input={"command": "x"}, occurred_at=_T_A)]
+        enriched = self._enrich(env, rows)
+        assert enriched.steps[0].status is StepStatus.ERROR
+
+    def test_row_without_occurred_at_dropped(self) -> None:
+        """A hook row missing occurred_at cannot be windowed → not aligned."""
+        step = _step(0, "Bash", started_at=_T_A, ended_at=_T_A)
+        env = _envelope([step])
+        rows = [_hook_row("Bash", is_error=True, seq=1, occurred_at=None)]
+        enriched = self._enrich(env, rows)
+        # Dropped by window filter → step untouched.
+        assert enriched.steps[0].status is StepStatus.OK
+
+
 class TestFetchEnvelopeFromDbEnrichHooks:
     """Verify enrich_hooks=False leaves existing behavior unchanged."""
 
@@ -349,7 +495,7 @@ class TestHookJoinIntegration:
                     "INSERT INTO hook_events "
                     "  (session_id, seq, event_name, tool_name, is_error, "
                     "   tool_input_redacted, tool_output, occurred_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, now()) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
                     "ON CONFLICT (session_id, seq) DO NOTHING",
                     (
                         session_id,
@@ -359,6 +505,7 @@ class TestHookJoinIntegration:
                         row.get("is_error", False),
                         Jsonb(row.get("tool_input_redacted") or {}),
                         row.get("tool_output"),
+                        row.get("occurred_at", _T_A),
                     ),
                 )
             conn.commit()

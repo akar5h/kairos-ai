@@ -4,18 +4,29 @@ Mirrors the ordinal-per-tool-name alignment used by ``transcript_join.py`` but
 sources truth from the ``hook_events`` Postgres table instead of local JSONL
 transcript files.  Works for remote sessions without local transcripts.
 
-**Why no time-window guard?**
-transcript_join uses a ±60 s window because a session JSONL spans multiple
-traces in sequence — without windowing, calls from earlier/later traces would
-bleed in.  hook_events rows are already per-session; the (session_id, seq)
-primary key naturally scopes them to one session.  A single session may still
-span multiple traces, but a given trace covers a contiguous ordinal slice —
-ordinal alignment within that slice is sufficient; no time filter needed.
+**Time-window guard (REQUIRED — mirrors transcript_join).**
+A session spans MULTIPLE traces in sequence, so ``(session_id, seq)`` scopes
+rows to the session, NOT to a single trace.  Without a per-trace filter, the
+Nth tool-X step of a *later* trace would ordinal-align to an *earlier* trace's
+hook row (cross-trace bleed).  Exactly as ``transcript_join._window_calls``
+does, we first filter hook rows to ``[trace_start − pad, trace_end + pad]``
+(``pad = WINDOW_PAD_SECONDS = 60 s``, the same constant transcript_join uses)
+using each row's ``occurred_at``, THEN ordinal-align within the trace-scoped
+subset.
+
+The trace window is derived from the envelope's tool-step timestamps
+(min ``started_at`` .. max ``ended_at``), falling back to
+``envelope.started_at .. envelope.ended_at``.  When NO usable window can be
+derived, enrichment is SKIPPED (envelope returned unchanged) — we never risk
+bleed by aligning against the full session pool.  (This is the one place we
+deviate from transcript_join, which falls back to a loose un-windowed
+alignment; for the DB session-pool path the safe default is to skip.)
 
 **Alignment rule:**
-Within a session_id, for each tool_name, match the Nth envelope tool-step of
-that name to the Nth hook_events row of that name (ordered by seq).  Unmatched
-steps (no corresponding hook row) are left untouched.
+Within the trace-windowed rows, for each tool_name, match the Nth envelope
+tool-step of that name to the Nth surviving hook_events row of that name
+(ordered by seq).  Unmatched steps (no corresponding hook row) are left
+untouched.
 
 **Why not reuse phoenix._correct_tool_errors_from_transcript / _enrich_…?**
 Those functions accept ``wrapped: list[Any]`` (raw spans) and internally call
@@ -36,6 +47,7 @@ Public API::
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any
 
 from kairos.log import get_logger
@@ -44,6 +56,11 @@ logger = get_logger(__name__)
 
 # Event names that carry tool data (PostToolUse = success, PostToolUseFailure = error).
 _TOOL_EVENT_NAMES = ("PostToolUse", "PostToolUseFailure")
+
+# Pad applied to each side of the trace window — matches
+# transcript_join.WINDOW_PAD_SECONDS exactly (a session spans multiple traces;
+# the window isolates the rows belonging to THIS trace).
+WINDOW_PAD_SECONDS = 60
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
@@ -60,6 +77,8 @@ class HookEventRow:
     tool_input_redacted: dict[str, Any] | None
     """Redacted tool_use.input (already scrubbed by the hook before DB insert)."""
     tool_output: str | None
+    occurred_at: datetime | None
+    """When the hook fired — used to window rows to a single trace."""
 
 
 # ── DB fetch ──────────────────────────────────────────────────────────────────
@@ -80,7 +99,7 @@ def fetch_hook_events_for_session(session_id: str, dsn: str) -> list[HookEventRo
         with psycopg.connect(dsn, row_factory=dict_row) as conn:
             rows = conn.execute(
                 "SELECT session_id, seq, tool_name, is_error, "
-                "       tool_input_redacted, tool_output "
+                "       tool_input_redacted, tool_output, occurred_at "
                 "FROM hook_events "
                 "WHERE session_id = %s "
                 "  AND event_name = ANY(%s) "
@@ -102,6 +121,8 @@ def fetch_hook_events_for_session(session_id: str, dsn: str) -> list[HookEventRo
             continue  # no tool name → skip (shouldn't happen for PostToolUse rows)
         raw_input = row.get("tool_input_redacted")
         tool_input: dict[str, Any] | None = raw_input if isinstance(raw_input, dict) else None
+        raw_occurred = row.get("occurred_at")
+        occurred_at = raw_occurred if isinstance(raw_occurred, datetime) else None
         result.append(
             HookEventRow(
                 session_id=str(row["session_id"]),
@@ -110,10 +131,69 @@ def fetch_hook_events_for_session(session_id: str, dsn: str) -> list[HookEventRo
                 is_error=bool(row.get("is_error")),
                 tool_input_redacted=tool_input,
                 tool_output=row.get("tool_output"),
+                occurred_at=occurred_at,
             )
         )
 
     return result
+
+
+# ── Trace time window ─────────────────────────────────────────────────────────
+
+
+def _trace_window(envelope: Any) -> tuple[datetime | None, datetime | None]:
+    """Derive (start, end) for the trace from its tool-step timestamps.
+
+    Mirrors transcript_join._trace_time_range (min start .. max end) but sources
+    timestamps from the envelope's tool steps rather than raw spans.  Falls back
+    to ``envelope.started_at .. envelope.ended_at`` when no step timestamp is
+    usable.  Returns (None, None) when neither source yields a window — the
+    caller then skips enrichment to avoid cross-trace bleed.
+    """
+    from kairos.models.enums import StepType  # local import
+
+    starts: list[datetime] = []
+    ends: list[datetime] = []
+    for step in getattr(envelope, "steps", None) or []:
+        if step.step_type != StepType.TOOL_CALL:
+            continue
+        if isinstance(step.started_at, datetime):
+            starts.append(step.started_at)
+        if isinstance(step.ended_at, datetime):
+            ends.append(step.ended_at)
+
+    start = min(starts) if starts else None
+    end = max(ends) if ends else None
+
+    # Fallback to envelope-level timestamps for either missing bound.
+    if start is None:
+        env_start = getattr(envelope, "started_at", None)
+        if isinstance(env_start, datetime):
+            start = env_start
+    if end is None:
+        env_end = getattr(envelope, "ended_at", None)
+        if isinstance(env_end, datetime):
+            end = env_end
+
+    return start, end
+
+
+def _window_hook_rows(
+    rows: list[HookEventRow],
+    start: datetime,
+    end: datetime,
+    pad_seconds: int = WINDOW_PAD_SECONDS,
+) -> list[HookEventRow]:
+    """Filter hook rows to ``[start − pad, end + pad]`` by ``occurred_at``.
+
+    Mirrors transcript_join._window_calls.  Rows without an ``occurred_at`` are
+    dropped — they cannot be placed in a trace.  ``start`` / ``end`` are
+    non-optional; the caller skips enrichment when no window is derivable, so
+    there is no loose-fallback branch here.
+    """
+    pad = timedelta(seconds=pad_seconds)
+    lo, hi = start - pad, end + pad
+    return [r for r in rows if r.occurred_at is not None and lo <= r.occurred_at <= hi]
 
 
 # ── Ordinal alignment ─────────────────────────────────────────────────────────
@@ -226,7 +306,29 @@ def enrich_envelope_with_hooks(
     if not steps:
         return envelope
 
-    aligned = _align_hook_events(steps, hook_rows)
+    # Window hook rows to THIS trace before ordinal alignment — a session pool
+    # spans multiple traces, so un-windowed alignment bleeds an earlier trace's
+    # rows into this one.  No usable window → skip (never risk bleed).
+    win_start, win_end = _trace_window(envelope)
+    if win_start is None or win_end is None:
+        logger.debug(
+            "hook_join.no_trace_window",
+            session_id=session_id,
+            trace_id=getattr(envelope, "trace_id", None),
+            hint="envelope has no usable tool-step / envelope timestamps — skipping to avoid cross-trace bleed",
+        )
+        return envelope
+
+    windowed_rows = _window_hook_rows(hook_rows, win_start, win_end)
+    if not windowed_rows:
+        logger.debug(
+            "hook_join.no_windowed_rows",
+            session_id=session_id,
+            trace_id=getattr(envelope, "trace_id", None),
+        )
+        return envelope
+
+    aligned = _align_hook_events(steps, windowed_rows)
     if not aligned:
         logger.debug(
             "hook_join.no_aligned_steps",
@@ -274,6 +376,7 @@ def enrich_envelope_with_hooks(
         session_id=session_id,
         trace_id=getattr(envelope, "trace_id", None),
         hook_rows=len(hook_rows),
+        windowed_rows=len(windowed_rows),
         aligned=len(aligned),
         corrected=corrected,
         enriched_args=enriched_args,
