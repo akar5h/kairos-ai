@@ -80,6 +80,12 @@ from transcript_align import (  # type: ignore[import-untyped]  # noqa: E402
     NO_MATCH,
     TranscriptCall,
     align_trace_to_transcript,
+    attach_reactions,
+    build_conversation,
+    call_full_input,
+    call_full_output,
+    entry_frame_fields,
+    load_windowed_frame,
     redact,
 )
 
@@ -356,11 +362,19 @@ def build_haywire_step_list(
 
     # ── Build step entries ─────────────────────────────────────────────────────
     step_entries: list[dict[str, Any]] = []
+    prev_ts: datetime | None = None
     for step in steps:
         idx = step.step_index
         is_evidence = idx in always_show
         args_digest = _step_args_digest(step, transcript_map)
         out_digest = _step_output_digest(step, transcript_map)
+
+        call = transcript_map.get(idx) if step.step_type == StepType.TOOL_CALL else None
+        time_gap_s: float | None = None
+        if call is not None and call.ts is not None:
+            if prev_ts is not None:
+                time_gap_s = round((call.ts - prev_ts).total_seconds(), 1)
+            prev_ts = call.ts
 
         # detector_note: restart boundary or post-restart
         detector_note: str | None = None
@@ -390,6 +404,11 @@ def build_haywire_step_list(
             "status_source": step.status_source.value,
             "args_digest": args_digest,
             "output_digest": out_digest,
+            # Full redacted transcript content (labeling view) — "" when no match.
+            "input_full": call_full_input(call) if call is not None else "",
+            "output_full": call_full_output(call) if call is not None else "",
+            "is_error_struct": bool(call.is_error) if call is not None else False,
+            "time_gap_s": time_gap_s,
             "is_evidence": is_evidence,
             "collapsed": idx in collapsed_indices,
         }
@@ -480,6 +499,14 @@ def main() -> None:  # noqa: C901
             envelope, restart_indices, transcript_map, has_transcript
         )
 
+        # Conversation frame + per-step reaction (restart boundaries get the
+        # agent's stated next move — the key haywire-vs-recovered tell).
+        frame, windowed_events = load_windowed_frame(session_id, start, end)
+        frame_fields = entry_frame_fields(frame, windowed_events, start)
+        attach_reactions(
+            step_entries, transcript_map, windowed_events, restart_indices=restart_indices
+        )
+
         question = generate_haywire_question(restart_indices, restart_count, rework)
 
         phoenix_url = (
@@ -504,6 +531,12 @@ def main() -> None:  # noqa: C901
             "post_restart_rework": rework,
             "restart_step_indices": sorted(restart_indices),
             "has_transcript": has_transcript,
+            # Conversation frame (labeling view).
+            "task": frame_fields["task"],
+            "surface": frame_fields["surface"],
+            "user_events": frame_fields["user_events"],
+            # Merged chronological conversation (primary reading surface in app.py).
+            "conversation": build_conversation(session_id, start, end),
             # class field so answers.jsonl entries are distinguishable
             "class": "haywire",
         }

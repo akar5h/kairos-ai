@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -48,8 +49,14 @@ from transcript_align import (  # noqa: E402
     NO_MATCH,
     TranscriptCall,
     align_trace_to_transcript,
+    attach_reactions,
+    build_conversation,
     call_args_digest,
+    call_full_input,
+    call_full_output,
     call_output_digest,
+    entry_frame_fields,
+    load_windowed_frame,
     redact,
 )
 
@@ -310,6 +317,25 @@ def _tool_label(step: Step) -> str:
     return step.step_type.value
 
 
+# ── Secret-grep gate (mirrors build_haywire_queue) ────────────────────────────
+# Last-line defence: even after per-field redaction, grep the final JSON for
+# credential shapes. Any hit aborts the write — never silently leak.
+
+_SECRET_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"sk-[A-Za-z0-9-]{20,}"),
+    re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/-]{8,}=*"),
+    re.compile(r"\bghp_[A-Za-z0-9]{36,}"),
+    re.compile(r"\bAKIA[A-Z0-9]{16}"),
+    re.compile(r"-----BEGIN\s+[A-Z ]+PRIVATE KEY-----"),
+    re.compile(r"eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}"),
+]
+
+
+def _secret_grep_json(text: str) -> list[str]:
+    """Return matched secret-pattern strings found in *text*."""
+    return [pat.pattern for pat in _SECRET_PATTERNS if pat.search(text)]
+
+
 # ── Collapsed-run logic ───────────────────────────────────────────────────────
 
 
@@ -395,8 +421,17 @@ def build_step_list(
         i += 1
 
     step_entries: list[dict[str, Any]] = []
+    prev_ts: datetime | None = None
     for step in steps:
         is_evidence = step.step_index == evidence_step_index
+        call = transcript_map.get(step.step_index) if step.step_type == StepType.TOOL_CALL else None
+        # Time gap between this step and the previous timestamped step — a stall
+        # (long gap) or a burst (near-zero) is itself a signal.
+        time_gap_s: float | None = None
+        if call is not None and call.ts is not None:
+            if prev_ts is not None:
+                time_gap_s = round((call.ts - prev_ts).total_seconds(), 1)
+            prev_ts = call.ts
         step_entries.append(
             {
                 "index": step.step_index,
@@ -405,6 +440,13 @@ def build_step_list(
                 "status_source": step.status_source.value,
                 "args_digest": _step_args_digest(step, transcript_map),
                 "output_digest": _step_output_digest(step, transcript_map),
+                # Full redacted transcript content (labeling view) — "" when no match.
+                "input_full": call_full_input(call) if call is not None else "",
+                "output_full": call_full_output(call) if call is not None else "",
+                # Structured failure flag (the tool LITERALLY returned is_error),
+                # distinct from the inferred ``status``.
+                "is_error_struct": bool(call.is_error) if call is not None else False,
+                "time_gap_s": time_gap_s,
                 "is_evidence": is_evidence,
                 "collapsed": step.step_index in collapsed_indices,
             }
@@ -515,6 +557,11 @@ def build_entry(
 
     step_entries, collapsed_runs = build_step_list(envelope.steps, evidence_step_index, transcript_map)
 
+    # Conversation frame: task / surface / user interjections + per-step reaction.
+    frame, windowed_events = load_windowed_frame(session_id, start, end)
+    frame_fields = entry_frame_fields(frame, windowed_events, start)
+    attach_reactions(step_entries, transcript_map, windowed_events)
+
     phoenix_url = f"{endpoint.rstrip('/')}/projects/{project_node_id}/traces/{trace_id}"
 
     return {
@@ -530,6 +577,12 @@ def build_entry(
         "collapsed_runs": collapsed_runs,
         "tokens": _aggregate_tokens(envelope),
         "question": generate_question(verdict, failure_reason),
+        # Conversation frame (labeling view).
+        "task": frame_fields["task"],
+        "surface": frame_fields["surface"],
+        "user_events": frame_fields["user_events"],
+        # Merged chronological conversation (primary reading surface in app.py).
+        "conversation": build_conversation(session_id, start, end),
     }
 
 
@@ -643,7 +696,17 @@ def main() -> None:
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(entries, indent=2, default=str) + "\n")
+    output_json = json.dumps(entries, indent=2, default=str) + "\n"
+
+    # Secret-grep gate — never write if a credential shape survived redaction.
+    hits = _secret_grep_json(output_json)
+    if hits:
+        print(f"ERROR: secret-grep found {len(hits)} hit(s) in output: {hits}", file=sys.stderr)
+        print("  Output NOT written. Fix redaction before retrying.", file=sys.stderr)
+        sys.exit(2)
+    print("secret-grep: 0 hits (clean).", file=sys.stderr)
+
+    out_path.write_text(output_json)
     print(f"Wrote {out_path}", file=sys.stderr)
     print(str(out_path))
 

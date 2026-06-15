@@ -175,9 +175,181 @@ def _init_state(queue: list[dict[str, Any]], answers: dict[str, dict[str, Any]])
         st.session_state["current_index"] = 0
 
 
+# ── Conversation renderer ──────────────────────────────────────────────────────
+
+
+def _render_conversation(entry: dict[str, Any]) -> None:
+    """Render the merged chronological conversation as the primary reading surface.
+
+    Items are interleaved user turns, assistant reasoning, and tool calls in
+    timestamp order — read top to bottom like the real session.
+
+    Kinds:
+      user / interrupt  — left-aligned block (blue / red)
+      assistant_text    — muted grey reasoning block
+      tool              — monospace header + code input + optional output expander
+      api_error         — orange row
+      truncated         — grey caption
+    """
+    items: list[dict[str, Any]] = entry.get("conversation", [])
+    if not items:
+        st.caption("No conversation data available for this trace.")
+        return
+
+    for item in items:
+        kind = item.get("kind", "")
+        off = item.get("ts_offset_s")
+        off_str = f"+{off:.0f}s" if isinstance(off, (int, float)) else ""
+        small_off = f'<span style="color:#999;font-size:0.8em">{off_str}</span> ' if off_str else ""
+
+        if kind == "user":
+            text = item.get("text", "")
+            st.markdown(
+                f'<div style="color:#3498db;margin:6px 0">'
+                f'👤 {small_off}<span style="font-weight:bold">{text}</span></div>',
+                unsafe_allow_html=True,
+            )
+
+        elif kind == "interrupt":
+            text = item.get("text", "")
+            st.markdown(
+                f'<div style="color:#e74c3c;font-weight:bold;margin:6px 0">'
+                f'🛑 {small_off}{text}</div>',
+                unsafe_allow_html=True,
+            )
+
+        elif kind == "assistant_text":
+            text = item.get("text", "")
+            st.markdown(
+                f'<div style="color:#888;font-size:0.9em;margin:4px 0 4px 20px">'
+                f'🤖 {small_off}{text}</div>',
+                unsafe_allow_html=True,
+            )
+
+        elif kind == "tool":
+            tool_name = item.get("tool", "?")
+            input_full = item.get("input_full", "")
+            output_full = item.get("output_full", "")
+            is_error = bool(item.get("is_error"))
+
+            st.markdown(
+                f'<div style="font-family:monospace;font-size:0.85em;'
+                f'color:#5d6d7e;margin:4px 0">'
+                f'🔧 <strong>{tool_name}</strong>  {small_off}</div>',
+                unsafe_allow_html=True,
+            )
+            if input_full:
+                st.code(input_full)
+            if output_full:
+                if is_error:
+                    st.markdown(
+                        '<span style="color:#e74c3c;font-weight:bold;font-size:0.8em">'
+                        "⚠ tool returned error</span>",
+                        unsafe_allow_html=True,
+                    )
+                with st.expander("output", expanded=is_error):
+                    st.code(output_full)
+
+        elif kind == "api_error":
+            text = item.get("text", "")
+            st.markdown(
+                f'<div style="color:#f39c12;font-size:0.9em;margin:4px 0">'
+                f'⚙️ {small_off}{text}</div>',
+                unsafe_allow_html=True,
+            )
+
+        elif kind == "truncated":
+            dropped = item.get("dropped", 0)
+            st.caption(f"… {dropped} earlier items elided")
+
+
 # ── Step timeline renderer ─────────────────────────────────────────────────────
 
 _STEP_STATUS_ICON = {"ok": "✅", "error": "❌"}
+
+
+_FRAME_EVENT_STYLE = {
+    "user": ("👤", "#3498db"),
+    "interrupt": ("🛑", "#e74c3c"),
+    "api_error": ("⚙️", "#f39c12"),
+}
+
+
+def _render_conversation_frame(entry: dict[str, Any]) -> None:
+    """Render the user-turn / interrupt / api-error spine above the timeline.
+
+    Interrupts are loud (red): the user stepping in mid-trace is the highest-
+    precision 'agent went wrong' signal we have.
+    """
+    events: list[dict[str, Any]] = entry.get("user_events", [])
+    if not events:
+        return
+    st.markdown("#### Conversation frame")
+    for ev in events:
+        kind = ev.get("kind", "user")
+        icon, color = _FRAME_EVENT_STYLE.get(kind, ("👤", "#888"))
+        off = ev.get("ts_offset_s")
+        off_str = f"+{off:.0f}s" if isinstance(off, (int, float)) else ""
+        weight = "bold" if kind == "interrupt" else "normal"
+        st.markdown(
+            f'<div style="color:{color};font-weight:{weight};font-size:0.9em">'
+            f'{icon} <span style="color:#999;font-size:0.85em">{off_str}</span> '
+            f"{ev.get('text', '')}</div>",
+            unsafe_allow_html=True,
+        )
+    st.divider()
+
+
+def _render_step_summary(entry: dict[str, Any]) -> None:
+    """Quick gestalt: tool histogram + error count + restart features.
+
+    Counts every step (collapsed runs included — they remain in ``steps``),
+    so the owner sees Bash×N / Read×N / Edit×N / Write×N and how many failed
+    before scrolling the timeline.
+    """
+    steps: list[dict[str, Any]] = entry.get("steps", [])
+    if not steps:
+        return
+
+    tool_counts: dict[str, int] = {}
+    error_count = 0
+    error_tools: dict[str, int] = {}
+    for step in steps:
+        tool = step.get("tool", "?")
+        tool_counts[tool] = tool_counts.get(tool, 0) + 1
+        if step.get("status") == "error":
+            error_count += 1
+            error_tools[tool] = error_tools.get(tool, 0) + 1
+
+    # Tool histogram, busiest first.
+    hist = " · ".join(
+        f"{tool}×{n}" for tool, n in sorted(tool_counts.items(), key=lambda kv: -kv[1])
+    )
+    parts = [f"**{len(steps)} steps** — {hist}"]
+
+    if error_count:
+        err_detail = ", ".join(
+            f"{tool}×{n}" for tool, n in sorted(error_tools.items(), key=lambda kv: -kv[1])
+        )
+        parts.append(
+            f'<span style="color:#e74c3c;font-weight:bold">❌ {error_count} failed</span> '
+            f'<span style="color:#e74c3c">({err_detail})</span>'
+        )
+    else:
+        parts.append('<span style="color:#2ecc71">no failed steps</span>')
+
+    restart_count = entry.get("restart_count")
+    rework = entry.get("post_restart_rework")
+    if restart_count:
+        parts.append(
+            f'<span style="color:#f39c12">↻ {restart_count} restart(s), '
+            f"{rework or 0} arg-match rework</span>"
+        )
+
+    st.markdown(
+        '<div style="font-size:0.9em;line-height:1.8">' + " &nbsp;|&nbsp; ".join(parts) + "</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def _render_step_timeline(entry: dict[str, Any]) -> None:
@@ -228,6 +400,19 @@ def _render_step_timeline(entry: dict[str, Any]) -> None:
             st.markdown("---")
             st.markdown("**→ Evidence step ↓**")
 
+        is_error_struct = step.get("is_error_struct", False)
+        input_full = step.get("input_full", "")
+        output_full = step.get("output_full", "")
+        time_gap = step.get("time_gap_s")
+        reaction = step.get("reaction", "")
+
+        # Time gap — a stall (long gap) before this step is itself a signal.
+        if isinstance(time_gap, (int, float)) and time_gap > 5:
+            st.markdown(
+                f'<span style="font-size:0.75em;color:#999">⏱ +{time_gap:.0f}s</span>',
+                unsafe_allow_html=True,
+            )
+
         cols = st.columns([0.05, 0.15, 0.40, 0.35, 0.05])
         with cols[0]:
             st.markdown(f"{icon}")
@@ -238,13 +423,53 @@ def _render_step_timeline(entry: dict[str, Any]) -> None:
                 st.markdown(f"`{args}`")
         with cols[3]:
             if out:
+                # Error steps surface their output in red — this is the
+                # "what failed" signal the owner needs to judge haywire.
+                out_color = "#e74c3c" if status == "error" else "#888"
+                out_weight = "bold" if status == "error" else "normal"
                 st.markdown(
-                    f'<span style="font-family:monospace;color:#888;font-size:0.85em">{out}</span>',
+                    f'<span style="font-family:monospace;color:{out_color};'
+                    f'font-weight:{out_weight};font-size:0.85em">{out}</span>',
+                    unsafe_allow_html=True,
+                )
+            elif status == "error":
+                st.markdown(
+                    '<span style="color:#e74c3c;font-size:0.85em">(error — no output captured)</span>',
                     unsafe_allow_html=True,
                 )
         with cols[4]:
             if src and src != "none":
                 st.markdown(f'<span style="font-size:0.75em;color:#aaa">{src}</span>', unsafe_allow_html=True)
+
+        # Structured error badge — the tool LITERALLY returned is_error
+        # (distinct from the inferred status icon above).
+        if is_error_struct:
+            st.markdown(
+                '<span style="color:#e74c3c;font-weight:bold;font-size:0.8em">'
+                "⚠ tool returned error</span>",
+                unsafe_allow_html=True,
+            )
+
+        # Full redacted input/output — the document, not the digest. Errors
+        # auto-expand: that's where the "what failed" answer lives.
+        if input_full or output_full:
+            expanded = status == "error" or is_error_struct
+            with st.expander("▸ full input / output", expanded=expanded):
+                if input_full:
+                    st.markdown("**input**")
+                    st.code(input_full)
+                if output_full:
+                    st.markdown("**output**")
+                    st.code(output_full)
+
+        # Agent's stated reaction right after a failure/restart — the strongest
+        # haywire-vs-recovered tell.
+        if reaction:
+            st.markdown(
+                f'<span style="font-size:0.85em;color:#8e44ad;font-style:italic">'
+                f"↳ agent then: {reaction}</span>",
+                unsafe_allow_html=True,
+            )
 
         # Detector note (disagreement queue only — not present on normal queue entries)
         detector_note = step.get("detector_note")
@@ -347,11 +572,37 @@ def main() -> None:
                 f"cache={tokens.get('cache_read', 0):,}"
             )
 
+    # ── Task + surface (the frame: what was asked, on what) ───────────────────
+    task = entry.get("task", "")
+    if task:
+        st.markdown(f"> **Task:** {task}")
+    surface = entry.get("surface", {})
+    if surface:
+        chips = [
+            f"`{k}` {surface[k]}"
+            for k in ("cwd", "git_branch", "model", "permission_mode")
+            if surface.get(k)
+        ]
+        if chips:
+            st.markdown(
+                '<span style="font-size:0.8em;color:#888">' + " · ".join(chips) + "</span>",
+                unsafe_allow_html=True,
+            )
+
     st.divider()
 
-    # ── Step timeline ─────────────────────────────────────────────────────────
-    st.markdown("#### Step timeline")
-    _render_step_timeline(entry)
+    # ── Conversation (primary reading surface) ────────────────────────────────
+    st.markdown("#### Conversation")
+    _render_conversation(entry)
+
+    st.divider()
+
+    # ── Engine step-timeline (collapsed by default) ───────────────────────────
+    with st.expander("🔬 Engine step-timeline (restart analysis)", expanded=False):
+        _render_conversation_frame(entry)
+        st.markdown("#### Step timeline")
+        _render_step_summary(entry)
+        _render_step_timeline(entry)
 
     st.divider()
 

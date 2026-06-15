@@ -21,7 +21,7 @@ from __future__ import annotations
 import glob
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -307,3 +307,383 @@ def align_trace_to_transcript(
     calls = parse_transcript(path)
     windowed = window_calls(calls, start, end)
     return align_steps(steps, windowed)
+
+
+# ── Full-content builders (labeling view) ─────────────────────────────────────
+# The digest builders above one-line + truncate hard (160/240 chars) for the
+# compact timeline. These return the FULL redacted content, multi-line, with a
+# head+tail cap so a 50 KB test log doesn't bloat the queue JSON.
+
+FULL_CONTENT_CHARS = 4000
+
+
+def _head_tail(text: str, limit: int) -> str:
+    """Keep first + last ``limit//2`` chars, eliding the middle (with a marker).
+
+    Failures usually show at the tail (stack trace, final error) and the head
+    (the command/intent), so both ends are preserved.
+    """
+    if len(text) <= limit:
+        return text
+    half = limit // 2
+    elided = text[half:-half]
+    n_lines = elided.count("\n") + 1
+    return f"{text[:half]}\n…({n_lines} lines elided)…\n{text[-half:]}"
+
+
+def call_full_input(call: TranscriptCall, limit: int = FULL_CONTENT_CHARS) -> str:
+    """Full redacted, multi-line tool input (≤``limit`` chars, head+tail capped).
+
+    Prefers the meaningful field per tool (full value, not one-lined); falls
+    back to indented JSON of the whole input dict.
+    """
+    inp = call.tool_input
+    if inp is None:
+        return ""
+    if isinstance(inp, dict):
+        preferred = _ARG_KEY_BY_TOOL.get(call.name)
+        keys = (preferred, *_ARG_KEY_FALLBACK) if preferred else _ARG_KEY_FALLBACK
+        rendered: str | None = None
+        for key in keys:
+            if key and inp.get(key):
+                rendered = str(inp[key])
+                break
+        if rendered is None:
+            rendered = json.dumps(inp, indent=2, default=str) if inp else ""
+    else:
+        rendered = str(inp)
+    return redact(_head_tail(rendered, limit))
+
+
+def call_full_output(call: TranscriptCall, limit: int = FULL_CONTENT_CHARS) -> str:
+    """Full redacted, multi-line tool_result (≤``limit`` chars, head+tail capped)."""
+    if not call.output:
+        return ""
+    return redact(_head_tail(str(call.output), limit))
+
+
+# ── Conversation frame (task / intent / interrupts / surface) ─────────────────
+# Tool I/O alone can't answer "mechanical or failure?". The frame around the
+# tools — what the user asked, whether the user interrupted, whether it was an
+# API error vs an agent error — is the signal that resolves the ambiguity.
+
+_FRAME_TEXT_CHARS = 600
+
+
+@dataclass
+class FrameEvent:
+    """One non-tool conversational event from the transcript.
+
+    ``kind`` ∈ {"user", "interrupt", "assistant_text", "api_error"}.
+    ``text`` is already redacted and one-lined (≤``_FRAME_TEXT_CHARS``).
+    """
+
+    kind: str
+    ts: datetime | None
+    text: str
+
+
+@dataclass
+class TranscriptFrame:
+    """Session-level context + the ordered non-tool event stream."""
+
+    cwd: str | None = None
+    git_branch: str | None = None
+    version: str | None = None
+    model: str | None = None
+    permission_mode: str | None = None
+    events: list[FrameEvent] = field(default_factory=list)
+
+
+def _msg_text(msg: Any) -> str:
+    """Flatten a message's text content (str or list of blocks) to a string."""
+    if not isinstance(msg, dict):
+        return ""
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text", "")))
+        return "\n".join(parts)
+    return ""
+
+
+def _is_command_noise(text: str) -> bool:
+    """True for slash-command / local-command meta lines that aren't real turns."""
+    stripped = text.lstrip()
+    if stripped.startswith(("<command-name>", "<local-command", "<command-message>")):
+        return True
+    return bool(stripped.startswith("/") and len(stripped.split()) <= 2)
+
+
+def parse_frame(path: Path) -> TranscriptFrame:
+    """Single walk of a session jsonl → session context + non-tool events.
+
+    Tool calls are intentionally NOT duplicated here — they come from the
+    TranscriptCall path. Every emitted ``text`` is redacted.
+    """
+    frame = TranscriptFrame()
+
+    with path.open(encoding="utf-8", errors="replace") as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(rec, dict):
+                continue
+
+            # Session context — first non-null wins.
+            if frame.cwd is None and rec.get("cwd"):
+                frame.cwd = str(rec["cwd"])
+            if frame.git_branch is None and rec.get("gitBranch"):
+                frame.git_branch = str(rec["gitBranch"])
+            if frame.version is None and rec.get("version"):
+                frame.version = str(rec["version"])
+            if frame.permission_mode is None and rec.get("permissionMode"):
+                frame.permission_mode = str(rec["permissionMode"])
+
+            ts = _parse_ts(rec.get("timestamp"))
+            rec_type = rec.get("type")
+            msg = rec.get("message")
+            if frame.model is None and isinstance(msg, dict) and msg.get("model"):
+                frame.model = str(msg["model"])
+
+            # API error markers — infra failure, distinct from agent failure.
+            if rec.get("isApiErrorMessage"):
+                status = rec.get("apiErrorStatus") or ""
+                frame.events.append(FrameEvent("api_error", ts, redact(f"API error {status}".strip())))
+                continue
+
+            if rec.get("isMeta"):
+                continue
+
+            text = _msg_text(msg)
+            if not text.strip():
+                continue
+
+            if rec_type == "user":
+                if _is_command_noise(text):
+                    continue
+                kind = (
+                    "interrupt"
+                    if ("interrupted by user" in text.lower() or rec.get("interruptedMessageId"))
+                    else "user"
+                )
+                frame.events.append(FrameEvent(kind, ts, redact(_one_line(text, _FRAME_TEXT_CHARS))))
+            elif rec_type == "assistant":
+                frame.events.append(
+                    FrameEvent("assistant_text", ts, redact(_one_line(text, _FRAME_TEXT_CHARS)))
+                )
+
+    return frame
+
+
+def window_frame_events(
+    events: list[FrameEvent],
+    start: datetime | None,
+    end: datetime | None,
+    pad_seconds: int = WINDOW_PAD_SECONDS,
+) -> list[FrameEvent]:
+    """Filter frame events to the trace window [start − pad, end + pad].
+
+    Mirrors ``window_calls``: when start or end is unknown, no filtering (a
+    loose frame beats none); events without a ts are dropped only when the
+    window is defined.
+    """
+    if start is None or end is None:
+        return events
+    pad = timedelta(seconds=pad_seconds)
+    lo, hi = start - pad, end + pad
+    return [e for e in events if e.ts is not None and lo <= e.ts <= hi]
+
+
+def first_assistant_text_after(events: list[FrameEvent], ts: datetime | None) -> str | None:
+    """First assistant_text event chronologically after ``ts`` (the reaction)."""
+    if ts is None:
+        return None
+    for e in events:
+        if e.kind == "assistant_text" and e.ts is not None and e.ts > ts:
+            return e.text
+    return None
+
+
+def attach_reactions(
+    step_entries: list[dict[str, Any]],
+    transcript_map: dict[int, TranscriptCall | None],
+    windowed_events: list[FrameEvent],
+    *,
+    restart_indices: frozenset[int] | None = None,
+    max_chars: int = 400,
+) -> None:
+    """Mutate step dicts in place: attach the agent's reaction after a failure.
+
+    For each error step (``status=="error"`` or ``is_error_struct``) — plus any
+    restart-boundary step when ``restart_indices`` is given — set ``reaction``
+    to the first assistant_text turn that followed it. This is the strongest
+    haywire-vs-recovered tell: what the agent SAID it would do next.
+    """
+    restart = restart_indices or frozenset()
+    for se in step_entries:
+        idx = se.get("index")
+        interesting = se.get("status") == "error" or se.get("is_error_struct") or idx in restart
+        if not interesting:
+            continue
+        call = transcript_map.get(idx) if idx is not None else None
+        ts = call.ts if call is not None else None
+        reaction = first_assistant_text_after(windowed_events, ts)
+        if reaction:
+            se["reaction"] = reaction[:max_chars]
+
+
+def load_windowed_frame(
+    session_id: str | None,
+    start: datetime | None,
+    end: datetime | None,
+) -> tuple[TranscriptFrame | None, list[FrameEvent]]:
+    """Locate → parse → window the conversation frame for a trace.
+
+    Returns ``(None, [])`` when the transcript is unresolvable.
+    """
+    if not session_id:
+        return None, []
+    path = find_transcript(session_id)
+    if path is None:
+        return None, []
+    frame = parse_frame(path)
+    return frame, window_frame_events(frame.events, start, end)
+
+
+def build_conversation(
+    session_id: str | None,
+    start: datetime | None,
+    end: datetime | None,
+    *,
+    restart_indices: list[int] | None = None,  # noqa: ARG001 — reserved, not used here
+    max_items: int = 400,
+) -> list[dict[str, Any]]:
+    """Merge windowed frame events and tool calls into ONE time-ordered conversation.
+
+    Each item is a dict with ``kind`` ∈
+    {"user","interrupt","assistant_text","api_error","tool","truncated"}.
+
+    Frame events carry:
+        kind, ts_offset_s, text   (text already redacted by parse_frame)
+
+    Tool-call items carry:
+        kind="tool", ts_offset_s, tool, input_full, output_full, is_error
+
+    Items without a timestamp sort to the end (stable). The raw ``ts``
+    datetime is dropped before returning (not JSON-friendly). If the list
+    exceeds ``max_items`` the tail is dropped and a final
+    ``{"kind":"truncated","dropped":N}`` item is appended.
+
+    Returns [] when the transcript cannot be located.
+    restart_indices is accepted but intentionally not used: restart marking
+    belongs to the step-timeline path (which has step-index context).
+    """
+    if not session_id:
+        return []
+    path = find_transcript(session_id)
+    if path is None:
+        return []
+
+    frame = parse_frame(path)
+    calls = parse_transcript(path)
+
+    windowed_events = window_frame_events(frame.events, start, end)
+    windowed_calls = window_calls(calls, start, end)
+
+    def _offset(ts: datetime | None) -> float | None:
+        if ts is None or start is None:
+            return None
+        return round((ts - start).total_seconds(), 1)
+
+    items: list[tuple[datetime | None, dict[str, Any]]] = []
+
+    for ev in windowed_events:
+        items.append(
+            (
+                ev.ts,
+                {
+                    "kind": ev.kind,
+                    "ts_offset_s": _offset(ev.ts),
+                    "text": ev.text,  # already redacted by parse_frame
+                },
+            )
+        )
+
+    for call in windowed_calls:
+        items.append(
+            (
+                call.ts,
+                {
+                    "kind": "tool",
+                    "ts_offset_s": _offset(call.ts),
+                    "tool": call.name,
+                    "input_full": call_full_input(call),
+                    "output_full": call_full_output(call),
+                    "is_error": bool(call.is_error),
+                },
+            )
+        )
+
+    # Sort: items with a ts sort by ts; None-ts items sort to the end (stable).
+    items.sort(key=lambda pair: (pair[0] is None, pair[0]))
+
+    result = [item for _, item in items]
+
+    if len(result) > max_items:
+        dropped = len(result) - max_items
+        result = result[:max_items]
+        result.append({"kind": "truncated", "dropped": dropped})
+
+    return result
+
+
+def entry_frame_fields(
+    frame: TranscriptFrame | None,
+    windowed: list[FrameEvent],
+    trace_start: datetime | None,
+    *,
+    max_user_events: int = 30,
+    task_chars: int = 800,
+) -> dict[str, Any]:
+    """Build the entry-level frame fields: task, surface, user_events.
+
+    ``task`` is the first windowed user/interrupt turn (the originating
+    request). ``user_events`` excludes assistant_text (that feeds per-step
+    reactions, not the spine).
+    """
+    if frame is None:
+        return {"task": "", "surface": {}, "user_events": []}
+
+    def _offset(ev: FrameEvent) -> float | None:
+        if ev.ts is None or trace_start is None:
+            return None
+        return round((ev.ts - trace_start).total_seconds(), 1)
+
+    task = ""
+    for ev in windowed:
+        if ev.kind in ("user", "interrupt"):
+            task = ev.text[:task_chars]
+            break
+
+    user_events = [
+        {"kind": ev.kind, "ts_offset_s": _offset(ev), "text": ev.text}
+        for ev in windowed
+        if ev.kind in ("user", "interrupt", "api_error")
+    ][:max_user_events]
+
+    surface = {
+        "cwd": redact(frame.cwd) if frame.cwd else None,
+        "git_branch": frame.git_branch,
+        "version": frame.version,
+        "model": frame.model,
+        "permission_mode": frame.permission_mode,
+    }
+
+    return {"task": task, "surface": surface, "user_events": user_events}
