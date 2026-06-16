@@ -2,6 +2,7 @@
  * TraceList — renders a table of TraceSummary rows.
  * Pure presentation; data fetched by parent (Server Component page).
  */
+"use client";
 import Link from "next/link";
 import type { TraceSummary } from "@/types/api";
 import { ErrorBadge } from "@/components/StatusBadge";
