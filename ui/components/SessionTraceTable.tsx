@@ -1,3 +1,4 @@
+"use client";
 /**
  * SessionTraceTable — dense table of traces within a session.
  *

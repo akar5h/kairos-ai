@@ -38,7 +38,7 @@ credentials*.json
 data/
 *.sqlite
 *.db
-traces/
+/traces/
 *.jsonl.gz
 
 # Postgres volume data (kairos-pg Docker named volume mount — never commit)
