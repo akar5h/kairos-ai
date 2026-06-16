@@ -114,11 +114,7 @@ def _otlp_span_to_phoenix(
     # IDs: bytes → int (big-endian, matching hex representation)
     trace_id_int = int.from_bytes(otlp_span.trace_id, "big") if otlp_span.trace_id else 0
     span_id_int = int.from_bytes(otlp_span.span_id, "big") if otlp_span.span_id else 0
-    parent_span_id_int = (
-        int.from_bytes(otlp_span.parent_span_id, "big")
-        if otlp_span.parent_span_id
-        else None
-    )
+    parent_span_id_int = int.from_bytes(otlp_span.parent_span_id, "big") if otlp_span.parent_span_id else None
 
     # Status
     otlp_code = otlp_span.status.code if otlp_span.HasField("status") else OtlpStatus.STATUS_CODE_UNSET
@@ -160,6 +156,7 @@ def _decode_request(body: bytes, content_type: str) -> ExportTraceServiceRequest
     try:
         if content_type.startswith(_CT_JSON):
             from google.protobuf import json_format  # type: ignore[import-untyped]  # noqa: PLC0415
+
             json_format.Parse(body, req)
         else:
             # Default: treat as protobuf even if Content-Type is unexpected.

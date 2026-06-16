@@ -146,10 +146,10 @@ def test_stats_partial_excluded_from_binary() -> None:
 
 def test_stats_confusion_matrix_cells() -> None:
     rows = [
-        _make_row(task_id=1, bench_label="PASS", kairos_verdict="outcome_pass"),     # a
-        _make_row(task_id=2, bench_label="FAIL", reward=0.0, kairos_verdict="outcome_pass"),   # b
-        _make_row(task_id=3, bench_label="PASS", kairos_verdict="outcome_fail"),   # c
-        _make_row(task_id=4, bench_label="FAIL", reward=0.0, kairos_verdict="outcome_fail"),   # d
+        _make_row(task_id=1, bench_label="PASS", kairos_verdict="outcome_pass"),  # a
+        _make_row(task_id=2, bench_label="FAIL", reward=0.0, kairos_verdict="outcome_pass"),  # b
+        _make_row(task_id=3, bench_label="PASS", kairos_verdict="outcome_fail"),  # c
+        _make_row(task_id=4, bench_label="FAIL", reward=0.0, kairos_verdict="outcome_fail"),  # d
     ]
     stats = _compute_stats(rows)
     assert stats.a == 1

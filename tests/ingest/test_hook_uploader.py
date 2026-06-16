@@ -207,11 +207,10 @@ class TestIsDrainable:
         from kairos.ingest.hook_uploader import _is_drainable
 
         session_id = f"test-stale-{uuid.uuid4().hex[:8]}"
-        spool_file = _write_spool(
-            tmp_path, session_id, [_make_post_tool_use_record(session_id)]
-        )
+        spool_file = _write_spool(tmp_path, session_id, [_make_post_tool_use_record(session_id)])
         # Set mtime to 200 seconds ago.
         import os
+
         old_mtime = spool_file.stat().st_mtime - 200
         os.utime(spool_file, (old_mtime, old_mtime))
 
@@ -224,9 +223,7 @@ class TestIsDrainable:
         from kairos.ingest.hook_uploader import _is_drainable
 
         session_id = f"test-fresh-{uuid.uuid4().hex[:8]}"
-        spool_file = _write_spool(
-            tmp_path, session_id, [_make_post_tool_use_record(session_id)]
-        )
+        spool_file = _write_spool(tmp_path, session_id, [_make_post_tool_use_record(session_id)])
         # "now" is only 10 seconds after mtime — well within idle_seconds=90.
         now = spool_file.stat().st_mtime + 10.0
         records = [_make_post_tool_use_record(session_id)]
@@ -256,9 +253,7 @@ class TestDrainFileIdleGuard:
         from kairos.ingest.hook_uploader import _drain_file
 
         session_id = f"test-active-{uuid.uuid4().hex[:8]}"
-        spool_file = _write_spool(
-            tmp_path, session_id, [_make_post_tool_use_record(session_id)]
-        )
+        spool_file = _write_spool(tmp_path, session_id, [_make_post_tool_use_record(session_id)])
         # "now" is 10s after mtime → within idle window.
         now = spool_file.stat().st_mtime + 10.0
 
@@ -353,9 +348,7 @@ class TestDrainSpoolDB:
         from kairos.loop import db
 
         with db.get_connection() as conn:
-            rows = conn.execute(
-                "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
-            ).fetchall()
+            rows = conn.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public'").fetchall()
         found = {r[0] for r in rows}
         assert "hook_events" in found
 
@@ -364,9 +357,7 @@ class TestDrainSpoolDB:
         from kairos.loop import db
 
         with db.get_connection() as conn:
-            rows = conn.execute(
-                "SELECT indexname FROM pg_indexes WHERE tablename = 'hook_events'"
-            ).fetchall()
+            rows = conn.execute("SELECT indexname FROM pg_indexes WHERE tablename = 'hook_events'").fetchall()
         index_names = {r[0] for r in rows}
         assert "hook_events_session_tool_use_idx" in index_names
 
@@ -413,8 +404,7 @@ class TestDrainSpoolDB:
         # Rows should be in hook_events.
         with db.get_connection() as conn:
             rows = conn.execute(
-                "SELECT session_id, tool_use_id, event_name FROM hook_events "
-                "WHERE session_id = %s ORDER BY seq",
+                "SELECT session_id, tool_use_id, event_name FROM hook_events WHERE session_id = %s ORDER BY seq",
                 (session_id,),
             ).fetchall()
 

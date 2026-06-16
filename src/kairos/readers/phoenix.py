@@ -485,10 +485,7 @@ def spans_to_envelope(
     # A span is an orphan when it has a parent_id that is not present in this trace's
     # span set AND it is not a root span (root = parent is None).
     span_ids: set[int] = {s.context.span_id for s in wrapped}
-    orphans = [
-        s for s in wrapped
-        if s.parent is not None and s.parent.span_id not in span_ids
-    ]
+    orphans = [s for s in wrapped if s.parent is not None and s.parent.span_id not in span_ids]
     if orphans:
         envelope = envelope.model_copy(update={"integrity": "partial"})
         logger.warning(

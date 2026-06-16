@@ -201,10 +201,7 @@ class TestBuildAnalysisView:
         # The view still reports the human-readable project name.
         assert view.phoenix_project == "default"
         # But every link is built from the node id.
-        assert (
-            view.workflows[0].divergence[0].phoenix_url
-            == "http://localhost:6006/projects/UHJvamVjdDox/traces/div-1"
-        )
+        assert view.workflows[0].divergence[0].phoenix_url == "http://localhost:6006/projects/UHJvamVjdDox/traces/div-1"
         assert (
             view.workflows[0].correctness.deterministic_findings[0].phoenix_url
             == "http://localhost:6006/projects/UHJvamVjdDox/traces/det-1"
@@ -222,10 +219,7 @@ class TestBuildAnalysisView:
             phoenix_project="default",
             phoenix_project_id=None,
         )
-        assert (
-            view.workflows[0].divergence[0].phoenix_url
-            == "http://localhost:6006/projects/default/traces/div-1"
-        )
+        assert view.workflows[0].divergence[0].phoenix_url == "http://localhost:6006/projects/default/traces/div-1"
 
     def test_empty_string_project_id_falls_back_to_name(self) -> None:
         """An empty-string node id (failed resolution artifact) must not produce /projects//."""

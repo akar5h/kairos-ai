@@ -116,11 +116,7 @@ def _redact_arg_digest(raw_repr: str) -> str:
 
 def _tool_signature(trace: TraceEnvelope) -> str:
     """Canonical sorted-unique tool names used in the trace."""
-    tools = sorted({
-        s.tool_name
-        for s in trace.steps
-        if s.step_type == StepType.TOOL_CALL and s.tool_name
-    })
+    tools = sorted({s.tool_name for s in trace.steps if s.step_type == StepType.TOOL_CALL and s.tool_name})
     return "|".join(tools)
 
 
@@ -432,9 +428,7 @@ def _build_expectation_miss_candidates(
     """Build discovery candidates from expectation-miss candidates (LEARN stage)."""
     candidates: list[DiscoveryCandidate] = []
     for c in miss_candidates:
-        cid = hashlib.sha256(
-            f"expectation_miss:{c.trace_id}:{c.missing_tool}".encode()
-        ).hexdigest()[:24]
+        cid = hashlib.sha256(f"expectation_miss:{c.trace_id}:{c.missing_tool}".encode()).hexdigest()[:24]
         candidates.append(
             DiscoveryCandidate(
                 id=cid,
@@ -471,10 +465,7 @@ def _persist_candidates_pg(
     if not candidates:
         return 0
 
-    rows = [
-        (c.id, night_id, c.kind, c.trace_id, c.cluster_key, Jsonb(c.features))
-        for c in candidates
-    ]
+    rows = [(c.id, night_id, c.kind, c.trace_id, c.cluster_key, Jsonb(c.features)) for c in candidates]
 
     with conn.cursor() as cur:
         cur.executemany(

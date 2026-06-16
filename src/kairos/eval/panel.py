@@ -45,10 +45,10 @@ if TYPE_CHECKING:
 
 # Detectors in the panel — order is stable.
 DETECTOR_NAMES: list[str] = [
-    "unrecovered_error",    # D1
-    "struggle_ratio",       # D2
-    "coordination_waste",   # D3
-    "work_to_talk_ratio",   # D4
+    "unrecovered_error",  # D1
+    "struggle_ratio",  # D2
+    "coordination_waste",  # D3
+    "work_to_talk_ratio",  # D4
     "redundant_execution",  # tier-1 redundant detector
 ]
 
@@ -70,17 +70,17 @@ class DetectorMetrics:
     """Precision/recall + fire-rate for one detector."""
 
     name: str
-    precision: float | None    # None if no labeled entries for this detector
+    precision: float | None  # None if no labeled entries for this detector
     recall: float | None
-    fire_count: int            # absolute fires across corpus
-    fire_rate: float           # fire_count / corpus_size
+    fire_count: int  # absolute fires across corpus
+    fire_rate: float  # fire_count / corpus_size
 
     # Confusion matrix cells (where labeled)
     tp: int = 0
     fp: int = 0
     fn: int = 0
     tn: int = 0
-    labeled_count: int = 0     # entries with True/False truth for this detector
+    labeled_count: int = 0  # entries with True/False truth for this detector
 
 
 @dataclass
@@ -104,10 +104,10 @@ class OutcomeMetrics:
     tau_total: int = 0
     tau_computable: int = 0
     # Confusion matrix for tau-bench binary
-    tau_a: int = 0   # kairos PASS, tau PASS
-    tau_b: int = 0   # kairos PASS, tau FAIL
-    tau_c: int = 0   # kairos FAIL, tau PASS
-    tau_d: int = 0   # kairos FAIL, tau FAIL
+    tau_a: int = 0  # kairos PASS, tau PASS
+    tau_b: int = 0  # kairos PASS, tau FAIL
+    tau_c: int = 0  # kairos FAIL, tau PASS
+    tau_d: int = 0  # kairos FAIL, tau FAIL
 
 
 @dataclass
@@ -118,7 +118,7 @@ class MetricPanel:
     corpus_size: int
     outcome: OutcomeMetrics
     detectors: dict[str, DetectorMetrics]  # keyed by pattern_name
-    classes_covered: int          # detectors with >= 1 fire
+    classes_covered: int  # detectors with >= 1 fire
     severity_error_count: int
     severity_warning_count: int
     severity_info_count: int
@@ -432,8 +432,7 @@ def _compute_detector_metrics(
     """Compute precision/recall + fire-rate for one detector."""
     # Fire count across entire corpus
     fire_count = sum(
-        1 for tid, findings in findings_by_trace.items()
-        if any(f["pattern_name"] == detector_name for f in findings)
+        1 for tid, findings in findings_by_trace.items() if any(f["pattern_name"] == detector_name for f in findings)
     )
 
     # Precision/recall vs labels (where available)
@@ -446,10 +445,7 @@ def _compute_detector_metrics(
             if truth is None:
                 continue
             labeled_count += 1
-            fired = any(
-                f["pattern_name"] == detector_name
-                for f in findings_by_trace.get(entry.trace_id, [])
-            )
+            fired = any(f["pattern_name"] == detector_name for f in findings_by_trace.get(entry.trace_id, []))
             if truth is True and fired:
                 tp += 1
             elif truth is False and fired:

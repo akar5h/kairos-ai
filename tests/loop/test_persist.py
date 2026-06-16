@@ -445,6 +445,7 @@ class TestPersistFindingsRedaction:
 
         # No secret-pattern text in any scalar field.
         from kairos.loop.persist import grep_secrets
+
         for val in [str(tokens), str(struggle), outcome, workflow, agent]:
             hits = grep_secrets(val)
             assert not hits, f"Secret pattern found in column value {val!r}: {hits}"
@@ -646,8 +647,7 @@ class TestBaselineBreakOnHashChange:
             )
             # Check that a baseline_break sentinel row exists for test_night.
             row = conn.execute(
-                "SELECT baseline_break FROM nightly_rollup "
-                "WHERE night_id = %s AND baseline_break = true",
+                "SELECT baseline_break FROM nightly_rollup WHERE night_id = %s AND baseline_break = true",
                 (test_night,),
             ).fetchone()
 

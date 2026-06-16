@@ -226,9 +226,19 @@ class TestDeltaLiveDB:
                     baseline_break  = EXCLUDED.baseline_break
             """,
             (
-                night, self._WF, self._AGENT,
-                1, 1, outcome_rate, struggle_p50, struggle_p50,
-                0.0, 1000.0, Jsonb({}), config_hash, baseline_break,
+                night,
+                self._WF,
+                self._AGENT,
+                1,
+                1,
+                outcome_rate,
+                struggle_p50,
+                struggle_p50,
+                0.0,
+                1000.0,
+                Jsonb({}),
+                config_hash,
+                baseline_break,
             ),
         )
 
@@ -277,9 +287,7 @@ class TestDeltaLiveDB:
             # Seed a data row and a break sentinel in the same window.
             self._seed_row(conn, date(2026, 1, 24), 1.0, 0.5, self._TEST_HASH)
             # Break sentinel (different hash, baseline_break=True).
-            self._seed_row(
-                conn, date(2026, 1, 25), None, 0.0, self._TEST_HASH_B, baseline_break=True
-            )
+            self._seed_row(conn, date(2026, 1, 25), None, 0.0, self._TEST_HASH_B, baseline_break=True)
             self._seed_row(conn, date(2026, 1, 26), 1.0, 0.2, self._TEST_HASH_B)
             conn.commit()
 
@@ -384,9 +392,7 @@ class TestHonestyFixesLiveDB:
             rows = conn.execute("SELECT DISTINCT agent FROM nightly_rollup").fetchall()
 
         uuid_agents = [r[0] for r in rows if uuid_pat.fullmatch(r[0])]
-        assert not uuid_agents, (
-            f"UUID-suffix agents found in nightly_rollup: {uuid_agents}"
-        )
+        assert not uuid_agents, f"UUID-suffix agents found in nightly_rollup: {uuid_agents}"
 
     def test_coordination_waste_column_renamed(self) -> None:
         """Bug 2: coordination_waste_per_trace column must exist (not coordination_waste_rate)."""
@@ -394,8 +400,7 @@ class TestHonestyFixesLiveDB:
 
         with get_connection() as conn:
             rows = conn.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = 'nightly_rollup'"
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'nightly_rollup'"
             ).fetchall()
 
         col_names = {r[0] for r in rows}
@@ -456,6 +461,4 @@ class TestDeltaRealSeries:
         assert result.n_before >= 0
         assert result.n_after >= 0
         # Single config_hash across the 4-night series → no series break expected.
-        assert not result.series_break, (
-            f"Unexpected series_break=True on single-hash series: {result.explanation}"
-        )
+        assert not result.series_break, f"Unexpected series_break=True on single-hash series: {result.explanation}"

@@ -50,10 +50,7 @@ def _db_row_to_span(row: dict[str, Any]) -> _PhoenixSpan:
     status_code = _STATUS_MAP.get(status_str, StatusCode.UNSET)
 
     raw_events: list[dict[str, Any]] = row.get("events") or []
-    events = [
-        _SpanEvent(name=ev.get("name", ""), attributes=dict(ev.get("attributes") or {}))
-        for ev in raw_events
-    ]
+    events = [_SpanEvent(name=ev.get("name", ""), attributes=dict(ev.get("attributes") or {})) for ev in raw_events]
 
     # Timestamps stored as timestamptz; psycopg returns datetime objects.
     import datetime  # noqa: PLC0415

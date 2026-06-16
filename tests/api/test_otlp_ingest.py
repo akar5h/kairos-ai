@@ -71,7 +71,7 @@ def _make_otlp_request(
 
     # Build events
     otlp_events: list[OtlpSpan.Event] = []
-    for ev_name, ev_attrs in (events or []):
+    for ev_name, ev_attrs in events or []:
         ev_kv = [KeyValue(key=k, value=AnyValue(string_value=v)) for k, v in ev_attrs.items()]
         otlp_events.append(OtlpSpan.Event(name=ev_name, attributes=ev_kv))
 
@@ -88,10 +88,7 @@ def _make_otlp_request(
     )
 
     # Resource attrs
-    res_kv = [
-        KeyValue(key=k, value=AnyValue(string_value=v))
-        for k, v in (resource_attrs or {}).items()
-    ]
+    res_kv = [KeyValue(key=k, value=AnyValue(string_value=v)) for k, v in (resource_attrs or {}).items()]
     resource = Resource(attributes=res_kv)
 
     rs = ResourceSpans(
@@ -338,8 +335,10 @@ class TestOtlpTracesEndpoint:
         )
         body = req.SerializeToString()
 
-        with patch("kairos.api.otlp.persist_spans", return_value=1), \
-             patch("kairos.api.otlp._dsn", return_value="postgresql://test/test"):
+        with (
+            patch("kairos.api.otlp.persist_spans", return_value=1),
+            patch("kairos.api.otlp._dsn", return_value="postgresql://test/test"),
+        ):
             resp = client.post(
                 "/v1/traces",
                 content=body,
@@ -362,8 +361,10 @@ class TestOtlpTracesEndpoint:
         )
         body = req.SerializeToString()
 
-        with patch("kairos.api.otlp.persist_spans", return_value=1) as mock_persist, \
-             patch("kairos.api.otlp._dsn", return_value="postgresql://test/test"):
+        with (
+            patch("kairos.api.otlp.persist_spans", return_value=1) as mock_persist,
+            patch("kairos.api.otlp._dsn", return_value="postgresql://test/test"),
+        ):
             client.post(
                 "/v1/traces",
                 content=body,
@@ -395,8 +396,10 @@ class TestOtlpTracesEndpoint:
             captured_spans.extend(spans)
             return len(spans)
 
-        with patch("kairos.api.otlp.persist_spans", side_effect=capture_persist), \
-             patch("kairos.api.otlp._dsn", return_value="postgresql://test/test"):
+        with (
+            patch("kairos.api.otlp.persist_spans", side_effect=capture_persist),
+            patch("kairos.api.otlp._dsn", return_value="postgresql://test/test"),
+        ):
             client.post(
                 "/v1/traces",
                 content=body,
@@ -422,8 +425,10 @@ class TestOtlpTracesEndpoint:
             captured_spans.extend(spans)
             return len(spans)
 
-        with patch("kairos.api.otlp.persist_spans", side_effect=capture), \
-             patch("kairos.api.otlp._dsn", return_value="postgresql://test/test"):
+        with (
+            patch("kairos.api.otlp.persist_spans", side_effect=capture),
+            patch("kairos.api.otlp._dsn", return_value="postgresql://test/test"),
+        ):
             client.post(
                 "/v1/traces",
                 content=body,
@@ -454,8 +459,10 @@ class TestOtlpTracesEndpoint:
         req = ExportTraceServiceRequest()
         body = req.SerializeToString()
 
-        with patch("kairos.api.otlp.persist_spans") as mock_persist, \
-             patch("kairos.api.otlp._dsn", return_value="postgresql://test/test"):
+        with (
+            patch("kairos.api.otlp.persist_spans") as mock_persist,
+            patch("kairos.api.otlp._dsn", return_value="postgresql://test/test"),
+        ):
             resp = client.post(
                 "/v1/traces",
                 content=body,
@@ -485,8 +492,10 @@ class TestOtlpTracesEndpoint:
         req = _make_otlp_request()
         body = req.SerializeToString()
 
-        with patch("kairos.api.otlp.persist_spans", side_effect=Exception("DB down")), \
-             patch("kairos.api.otlp._dsn", return_value="postgresql://test/test"):
+        with (
+            patch("kairos.api.otlp.persist_spans", side_effect=Exception("DB down")),
+            patch("kairos.api.otlp._dsn", return_value="postgresql://test/test"),
+        ):
             resp = client.post(
                 "/v1/traces",
                 content=body,
@@ -508,8 +517,10 @@ class TestOtlpTracesEndpoint:
             captured.extend(spans)
             return len(spans)
 
-        with patch("kairos.api.otlp.persist_spans", side_effect=capture), \
-             patch("kairos.api.otlp._dsn", return_value="postgresql://test/test"):
+        with (
+            patch("kairos.api.otlp.persist_spans", side_effect=capture),
+            patch("kairos.api.otlp._dsn", return_value="postgresql://test/test"),
+        ):
             resp = client.post(
                 "/v1/traces",
                 content=json_body,

@@ -98,9 +98,7 @@ class TestMigrationIdempotency:
         # Second application — nothing new should be applied.
         applied_2 = db.apply_migrations()
 
-        assert applied_2 == [], (
-            f"Expected no new migrations on second run, got {applied_2}"
-        )
+        assert applied_2 == [], f"Expected no new migrations on second run, got {applied_2}"
         # Either first run applied something or the DB was already current.
         assert isinstance(applied_1, list)
 
@@ -119,9 +117,7 @@ class TestMigrationIdempotency:
             "schema_migrations",
         }
         with db.get_connection() as conn:
-            rows = conn.execute(
-                "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
-            ).fetchall()
+            rows = conn.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public'").fetchall()
         found = {row[0] for row in rows}
         missing = expected_tables - found
         assert not missing, f"Tables missing after migration: {missing}"

@@ -111,9 +111,7 @@ class TestOutcomeAnyMode:
         status_source must be NONE: rung 4 (textual) never overrides structured
         rungs 1–3, so the downgrade only applies to unstructured steps.
         """
-        edit_contradicted = _step(
-            0, "Edit", status_source=StepStatusSource.NONE, output="Error: ENOENT no such file"
-        )
+        edit_contradicted = _step(0, "Edit", status_source=StepStatusSource.NONE, output="Error: ENOENT no such file")
         trace = _trace([edit_contradicted])
         result = evaluate_outcome(trace, _op("any"))
         assert result.outcome_pass is False

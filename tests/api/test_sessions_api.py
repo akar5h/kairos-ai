@@ -318,9 +318,7 @@ class TestSearch:
     fetchall calls.  Dimension-specific tests verify bound params.
     """
 
-    def _multi_execute_conn(
-        self, return_sequences: list[list[dict[str, Any]]] | None = None
-    ) -> MagicMock:
+    def _multi_execute_conn(self, return_sequences: list[list[dict[str, Any]]] | None = None) -> MagicMock:
         """Mock conn with execute().fetchall() returning from a sequence."""
         conn = MagicMock()
         conn.__enter__ = lambda s: s
@@ -510,9 +508,7 @@ class TestSessionsApiIntegration:
         """A span with session.id in attributes should have session_id set."""
         with psycopg.connect(dsn) as conn:
             row = conn.execute(
-                "SELECT session_id FROM spans "
-                "WHERE attributes->>'session.id' IS NOT NULL "
-                "LIMIT 1"
+                "SELECT session_id FROM spans WHERE attributes->>'session.id' IS NOT NULL LIMIT 1"
             ).fetchone()
         assert row is not None, "No spans with session.id attribute found"
         assert row[0] is not None, "session_id not backfilled from attributes"
@@ -520,16 +516,14 @@ class TestSessionsApiIntegration:
     def test_trgm_index_created(self, dsn: str) -> None:
         with psycopg.connect(dsn) as conn:
             row = conn.execute(
-                "SELECT indexname FROM pg_indexes "
-                "WHERE tablename='spans' AND indexname='spans_attrs_trgm_gin_idx'"
+                "SELECT indexname FROM pg_indexes WHERE tablename='spans' AND indexname='spans_attrs_trgm_gin_idx'"
             ).fetchone()
         assert row is not None, "spans_attrs_trgm_gin_idx not found"
 
     def test_tool_name_expr_index_created(self, dsn: str) -> None:
         with psycopg.connect(dsn) as conn:
             row = conn.execute(
-                "SELECT indexname FROM pg_indexes "
-                "WHERE tablename='spans' AND indexname='spans_tool_name_expr_idx'"
+                "SELECT indexname FROM pg_indexes WHERE tablename='spans' AND indexname='spans_tool_name_expr_idx'"
             ).fetchone()
         assert row is not None, "spans_tool_name_expr_idx not found"
 
@@ -570,9 +564,7 @@ class TestSessionsApiIntegration:
 
     # ── GET /v1/sessions integration ─────────────────────────────────────────
 
-    def test_sessions_list_groups_correctly(
-        self, api_client: TestClient, dsn: str
-    ) -> None:
+    def test_sessions_list_groups_correctly(self, api_client: TestClient, dsn: str) -> None:
         sess = f"integ-sess-{self._unique_id(8)}"
         trace1 = self._unique_id(32)
         trace2 = self._unique_id(32)
@@ -600,9 +592,7 @@ class TestSessionsApiIntegration:
                 conn.execute("DELETE FROM spans WHERE trace_id = %s", (tid,))
             conn.commit()
 
-    def test_sessions_excludes_null_session_id(
-        self, api_client: TestClient, dsn: str
-    ) -> None:
+    def test_sessions_excludes_null_session_id(self, api_client: TestClient, dsn: str) -> None:
         """Spans with no session.id must not appear in /sessions."""
         trace_id = self._unique_id(32)
         span_id = self._unique_id(16)
@@ -626,9 +616,7 @@ class TestSessionsApiIntegration:
 
     # ── GET /v1/sessions/{id} integration ────────────────────────────────────
 
-    def test_session_detail_returns_traces(
-        self, api_client: TestClient, dsn: str
-    ) -> None:
+    def test_session_detail_returns_traces(self, api_client: TestClient, dsn: str) -> None:
         sess = f"integ-det-{self._unique_id(8)}"
         trace1 = self._unique_id(32)
         trace2 = self._unique_id(32)
@@ -652,17 +640,13 @@ class TestSessionsApiIntegration:
                 conn.execute("DELETE FROM spans WHERE trace_id = %s", (tid,))
             conn.commit()
 
-    def test_session_detail_404_for_unknown(
-        self, api_client: TestClient
-    ) -> None:
+    def test_session_detail_404_for_unknown(self, api_client: TestClient) -> None:
         resp = api_client.get("/v1/sessions/totally-unknown-session-xyz")
         assert resp.status_code == 404
 
     # ── GET /v1/traces/{id}/spans integration ────────────────────────────────
 
-    def test_trace_spans_returns_raw_spans(
-        self, api_client: TestClient, dsn: str
-    ) -> None:
+    def test_trace_spans_returns_raw_spans(self, api_client: TestClient, dsn: str) -> None:
         trace_id = self._unique_id(32)
         span_id1 = self._unique_id(16)
         span_id2 = self._unique_id(16)
@@ -689,9 +673,7 @@ class TestSessionsApiIntegration:
         resp = api_client.get(f"/v1/traces/{'0' * 32}/spans")
         assert resp.status_code == 404
 
-    def test_trace_spans_compact_vs_full(
-        self, api_client: TestClient, dsn: str
-    ) -> None:
+    def test_trace_spans_compact_vs_full(self, api_client: TestClient, dsn: str) -> None:
         trace_id = self._unique_id(32)
         span_id = self._unique_id(16)
 
@@ -729,9 +711,7 @@ class TestSessionsApiIntegration:
 
     # ── GET /v1/search integration ────────────────────────────────────────────
 
-    def test_search_dimension_id_match(
-        self, api_client: TestClient, dsn: str
-    ) -> None:
+    def test_search_dimension_id_match(self, api_client: TestClient, dsn: str) -> None:
         """Dimension 1: session_id prefix match."""
         sess = f"search-id-{self._unique_id(8)}"
         trace_id = self._unique_id(32)
@@ -750,9 +730,7 @@ class TestSessionsApiIntegration:
             conn.execute("DELETE FROM spans WHERE trace_id = %s", (trace_id,))
             conn.commit()
 
-    def test_search_dimension_tool_match(
-        self, api_client: TestClient, dsn: str
-    ) -> None:
+    def test_search_dimension_tool_match(self, api_client: TestClient, dsn: str) -> None:
         """Dimension 2: tool_name ILIKE match."""
         unique_tool = f"unique_tool_{self._unique_id(8)}"
         trace_id = self._unique_id(32)
@@ -771,9 +749,7 @@ class TestSessionsApiIntegration:
             conn.execute("DELETE FROM spans WHERE trace_id = %s", (trace_id,))
             conn.commit()
 
-    def test_search_dimension_content_match(
-        self, api_client: TestClient, dsn: str
-    ) -> None:
+    def test_search_dimension_content_match(self, api_client: TestClient, dsn: str) -> None:
         """Dimension 3: attributes::text ILIKE match."""
         unique_content = f"unique_content_val_{self._unique_id(8)}"
         trace_id = self._unique_id(32)
@@ -799,9 +775,7 @@ class TestSessionsApiIntegration:
             conn.execute("DELETE FROM spans WHERE trace_id = %s", (trace_id,))
             conn.commit()
 
-    def test_search_dimension_status_match(
-        self, api_client: TestClient, dsn: str
-    ) -> None:
+    def test_search_dimension_status_match(self, api_client: TestClient, dsn: str) -> None:
         """Dimension 4: q='error' → status_code='ERROR' filter."""
         trace_id = self._unique_id(32)
         span_id = self._unique_id(16)
@@ -820,9 +794,7 @@ class TestSessionsApiIntegration:
             conn.execute("DELETE FROM spans WHERE trace_id = %s", (trace_id,))
             conn.commit()
 
-    def test_search_content_hit_resolves_to_trace(
-        self, api_client: TestClient, dsn: str
-    ) -> None:
+    def test_search_content_hit_resolves_to_trace(self, api_client: TestClient, dsn: str) -> None:
         """Dimension 3 via hook_events: content match resolves to trace_id."""
         sess = f"hook-sess-{self._unique_id(8)}"
         trace_id = self._unique_id(32)

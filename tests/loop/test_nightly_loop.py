@@ -77,9 +77,7 @@ from kairos.models.trace import Step, TraceEnvelope  # noqa: E402
 def _make_trace(tid: str | None = None, tokens: int = 100) -> TraceEnvelope:
     return TraceEnvelope(
         trace_id=tid or str(uuid.uuid4()).replace("-", ""),
-        steps=[
-            Step(step_index=0, step_type=StepType.TOOL_CALL, tool_name="Bash", status=StepStatus.OK)
-        ],
+        steps=[Step(step_index=0, step_type=StepType.TOOL_CALL, tool_name="Bash", status=StepStatus.OK)],
         total_tokens=tokens,
         total_latency_ms=500,
     )

@@ -519,9 +519,7 @@ class TestStructuredEvidenceSideEffect:
     def test_no_output_and_status_source_none_still_non_computable(self) -> None:
         """Successful call, no output, status_source NONE → genuinely no evidence → non-computable."""
         op = _op()
-        trace = _trace(
-            [_step(0, "Write", status=StepStatus.OK, status_source=StepStatusSource.NONE, output=None)]
-        )
+        trace = _trace([_step(0, "Write", status=StepStatus.OK, status_source=StepStatusSource.NONE, output=None)])
         result = evaluate_outcome(trace, op)
         assert result.computable is False
         assert result.reason == "side effect computability unknown"

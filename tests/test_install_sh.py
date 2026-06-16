@@ -153,18 +153,12 @@ class TestInstallFirstRun:
         settings = _read_settings(installed_home)
         for event in _HOOK_EVENTS:
             entries = _kairos_entries_for_event(settings, event)
-            assert len(entries) == 1, (
-                f"Expected exactly 1 kairos entry for {event}, got {len(entries)}"
-            )
+            assert len(entries) == 1, f"Expected exactly 1 kairos entry for {event}, got {len(entries)}"
 
     def test_existing_hook_entry_preserved(self, installed_home: Path) -> None:
         settings = _read_settings(installed_home)
         post_tool_groups = settings.get("hooks", {}).get("PostToolUse", [])
-        existing_cmds = [
-            h.get("command", "")
-            for group in post_tool_groups
-            for h in group.get("hooks", [])
-        ]
+        existing_cmds = [h.get("command", "") for group in post_tool_groups for h in group.get("hooks", [])]
         assert any("auto-test.sh" in cmd for cmd in existing_cmds), (
             "Pre-existing PostToolUse hook was removed by install.sh"
         )
@@ -199,9 +193,7 @@ class TestInstallIdempotency:
         settings = _read_settings(double_installed_home)
         for event in _HOOK_EVENTS:
             entries = _kairos_entries_for_event(settings, event)
-            assert len(entries) == 1, (
-                f"Duplicate kairos entries for {event} after double install: got {len(entries)}"
-            )
+            assert len(entries) == 1, f"Duplicate kairos entries for {event} after double install: got {len(entries)}"
 
     def test_env_keys_present_not_duplicated(self, double_installed_home: Path) -> None:
         settings = _read_settings(double_installed_home)
@@ -227,18 +219,12 @@ class TestUninstallSurgical:
         settings = _read_settings(uninstalled_home)
         for event in _HOOK_EVENTS:
             entries = _kairos_entries_for_event(settings, event)
-            assert len(entries) == 0, (
-                f"Kairos entries still present for {event} after uninstall"
-            )
+            assert len(entries) == 0, f"Kairos entries still present for {event} after uninstall"
 
     def test_existing_hook_preserved(self, uninstalled_home: Path) -> None:
         settings = _read_settings(uninstalled_home)
         post_tool_groups = settings.get("hooks", {}).get("PostToolUse", [])
-        existing_cmds = [
-            h.get("command", "")
-            for group in post_tool_groups
-            for h in group.get("hooks", [])
-        ]
+        existing_cmds = [h.get("command", "") for group in post_tool_groups for h in group.get("hooks", [])]
         assert any("auto-test.sh" in cmd for cmd in existing_cmds), (
             "Pre-existing PostToolUse hook was removed by uninstall.sh"
         )

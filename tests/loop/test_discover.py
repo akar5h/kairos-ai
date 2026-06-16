@@ -232,9 +232,7 @@ def test_robust_z_outlier_flagged():
     mad = float(np.median(np.abs(arr - np.median(arr))))
     assert mad > 0, "MAD must be > 0 for this test to be meaningful"
 
-    assert abs(extreme_f.token_z) > ROBUST_Z_T, (
-        f"Expected |token_z| > {ROBUST_Z_T}, got {extreme_f.token_z}"
-    )
+    assert abs(extreme_f.token_z) > ROBUST_Z_T, f"Expected |token_z| > {ROBUST_Z_T}, got {extreme_f.token_z}"
     assert extreme_f.dominant_feature == "token_z"
 
 
@@ -444,13 +442,15 @@ def test_grep_secrets_detects_patterns():
 
 def test_grep_secrets_clean_text():
     """grep_secrets returns empty for clean numeric features JSON."""
-    payload = json.dumps({
-        "restart_count": 2,
-        "post_restart_rework": 1,
-        "struggle": 3.5,
-        "token_z": 4.2,
-        "latency_z": 0.5,
-    })
+    payload = json.dumps(
+        {
+            "restart_count": 2,
+            "post_restart_rework": 1,
+            "struggle": 3.5,
+            "token_z": 4.2,
+            "latency_z": 0.5,
+        }
+    )
     assert grep_secrets(payload) == []
 
 

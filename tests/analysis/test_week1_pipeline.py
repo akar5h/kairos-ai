@@ -1174,11 +1174,13 @@ class TestDay5MembershipDedup:
                 excluded_tools: [Edit]
         """)
         import tempfile
+
         with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
             f.write(yaml_content)
             tmp_path = f.name
 
         from kairos.taxonomy.business_context import BusinessContext
+
         with pytest.raises(ValueError, match="excluded_tools"):
             BusinessContext.from_yaml(tmp_path)
 

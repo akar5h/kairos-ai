@@ -94,14 +94,14 @@ def test_outcome_precision_recall_fixture():
     """Outcome precision/recall on a small fixture."""
     # 3 entries: 2 labeled (1 pass, 1 fail), 1 unknown
     entries = [
-        _make_entry("t1", outcome_truth="pass", source="spotcheck"),   # truth=pass
-        _make_entry("t2", outcome_truth="fail", source="spotcheck"),   # truth=fail
+        _make_entry("t1", outcome_truth="pass", source="spotcheck"),  # truth=pass
+        _make_entry("t2", outcome_truth="fail", source="spotcheck"),  # truth=fail
         _make_entry("t3", outcome_truth="unknown", source="spotcheck"),
     ]
     outcome_results = {
-        "t1": {"outcome_pass": True, "computable": True},    # TP
-        "t2": {"outcome_pass": True, "computable": True},    # FP (truth=fail, pred=pass)
-        "t3": {"outcome_pass": False, "computable": True},   # not counted (unknown)
+        "t1": {"outcome_pass": True, "computable": True},  # TP
+        "t2": {"outcome_pass": True, "computable": True},  # FP (truth=fail, pred=pass)
+        "t3": {"outcome_pass": False, "computable": True},  # not counted (unknown)
     }
     metrics = _compute_outcome_metrics(entries, outcome_results)
 
@@ -111,7 +111,7 @@ def test_outcome_precision_recall_fixture():
     assert metrics.owner_fn == 0
     assert metrics.owner_labeled_count == 2
     assert metrics.owner_precision == pytest.approx(0.5)  # 1/(1+1)
-    assert metrics.owner_recall == pytest.approx(1.0)     # 1/(1+0)
+    assert metrics.owner_recall == pytest.approx(1.0)  # 1/(1+0)
 
 
 def test_outcome_abstention_excluded():
@@ -140,10 +140,10 @@ def test_outcome_no_labels():
 def test_detector_precision_recall_fixture():
     """Detector precision/recall on a small labeled fixture."""
     entries = [
-        _make_entry("t1", d1=True),   # should fire
-        _make_entry("t2", d1=True),   # should fire
+        _make_entry("t1", d1=True),  # should fire
+        _make_entry("t2", d1=True),  # should fire
         _make_entry("t3", d1=False),  # should NOT fire
-        _make_entry("t4", d1=None),   # unknown → excluded
+        _make_entry("t4", d1=None),  # unknown → excluded
     ]
     # Engine fires on t1, t3 (t2 = FN, t4 = excluded)
     findings = {
@@ -152,16 +152,14 @@ def test_detector_precision_recall_fixture():
         "t3": [{"pattern_name": "unrecovered_error", "severity": "info"}],  # FP
         "t4": [],
     }
-    dm = _compute_detector_metrics(
-        "unrecovered_error", "D1", entries, findings, corpus_size=4
-    )
+    dm = _compute_detector_metrics("unrecovered_error", "D1", entries, findings, corpus_size=4)
     # TP=1 (t1), FP=1 (t3), FN=1 (t2), TN=0 (none in should-not-fire fired correctly)
     assert dm.tp == 1
     assert dm.fp == 1
     assert dm.fn == 1
     assert dm.labeled_count == 3
-    assert dm.precision == pytest.approx(0.5)   # 1/(1+1)
-    assert dm.recall == pytest.approx(0.5)      # 1/(1+1)
+    assert dm.precision == pytest.approx(0.5)  # 1/(1+1)
+    assert dm.recall == pytest.approx(0.5)  # 1/(1+1)
 
 
 def test_detector_fire_rate():
@@ -180,9 +178,7 @@ def test_detector_no_labels_gives_none():
     """When no entries are labeled for this detector, precision and recall are None."""
     entries = [_make_entry("t1", d1=None), _make_entry("t2", d1=None)]
     findings = {"t1": [{"pattern_name": "unrecovered_error", "severity": "info"}], "t2": []}
-    dm = _compute_detector_metrics(
-        "unrecovered_error", "D1", entries, findings, corpus_size=2
-    )
+    dm = _compute_detector_metrics("unrecovered_error", "D1", entries, findings, corpus_size=2)
     assert dm.precision is None
     assert dm.recall is None
     assert dm.fire_count == 1
@@ -190,8 +186,13 @@ def test_detector_no_labels_gives_none():
 
 def test_detector_names_coverage():
     """DETECTOR_NAMES includes all expected detectors."""
-    expected = {"unrecovered_error", "struggle_ratio", "coordination_waste",
-                "work_to_talk_ratio", "redundant_execution"}
+    expected = {
+        "unrecovered_error",
+        "struggle_ratio",
+        "coordination_waste",
+        "work_to_talk_ratio",
+        "redundant_execution",
+    }
     assert set(DETECTOR_NAMES) == expected
 
 
@@ -264,6 +265,7 @@ def test_call_spans_to_envelope_new_signature():
 
 def test_call_spans_to_envelope_no_signature():
     """A callable with no introspectable signature falls back to positional call."""
+
     # A builtin-like object: use a lambda wrapped so signature works, then a
     # callable whose signature raises — emulate via object with __call__.
     class Reader:

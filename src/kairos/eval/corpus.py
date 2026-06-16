@@ -81,10 +81,10 @@ _SPOTCHECK_TRUTH: dict[str, dict[str, Any]] = {
     # Row 1: 8f0780364da8cbffa1f0544951ecce44 — agree=Y, engine says fail/missing_side_effect
     # Comment: "it failed and looped into its own HTTP request" → haywire/coordination waste
     "8f0780364da8cbff": {
-        "outcome_truth": "fail",   # agree=Y means engine correct; engine said fail → truth=fail
-        "D1": None,   # not directly labeled
+        "outcome_truth": "fail",  # agree=Y means engine correct; engine said fail → truth=fail
+        "D1": None,  # not directly labeled
         "D2": None,
-        "D3": True,   # "looped into its own HTTP request" = coordination waste (curl repeats)
+        "D3": True,  # "looped into its own HTTP request" = coordination waste (curl repeats)
     },
     # Row 2: bd56871947a909a7... — agree=Y, engine says fail/critical_tool_error
     "bd56871947a909a7": {
@@ -104,8 +104,8 @@ _SPOTCHECK_TRUTH: dict[str, dict[str, Any]] = {
     # "restarts from stale session without recovering well" → D1 (unrecovered), D2 (struggle)
     "b1c3f0272403b740": {
         "outcome_truth": "fail",
-        "D1": True,    # stale session restart = unrecovered error pattern
-        "D2": True,    # "restarts from stale session" = struggle
+        "D1": True,  # stale session restart = unrecovered error pattern
+        "D2": True,  # "restarts from stale session" = struggle
         "D3": None,
     },
     # Row 5: ea9692b98678ac4e... — agree=N, engine WRONG (misclassified as Code Implementation)
@@ -113,7 +113,7 @@ _SPOTCHECK_TRUTH: dict[str, dict[str, Any]] = {
         "outcome_truth": "unknown",  # agree=N means engine incorrect → exclude from precision
         "D1": None,
         "D2": None,
-        "D3": True,   # digests show repeated Slack curl calls
+        "D3": True,  # digests show repeated Slack curl calls
     },
     # Row 6: 8b0336fad7f4b1ce... — agree=? (uncertain)
     "8b0336fad7f4b1ce": {
@@ -125,8 +125,8 @@ _SPOTCHECK_TRUTH: dict[str, dict[str, Any]] = {
     # Row 7: 5eee0136777444f3... — agree=Y, "terminated multiple times, agent runs haywire"
     "5eee0136777444f3": {
         "outcome_truth": "fail",
-        "D1": True,    # "once the shell terminates, the agent just runs haywire" = unrecovered
-        "D2": True,    # "terminated multiple times" = struggle
+        "D1": True,  # "once the shell terminates, the agent just runs haywire" = unrecovered
+        "D2": True,  # "terminated multiple times" = struggle
         "D3": None,
     },
     # Row 8: f07e36e3a13b9b48... — agree=Y, engine says fail/missing_side_effect
@@ -146,8 +146,8 @@ _SPOTCHECK_TRUTH: dict[str, dict[str, Any]] = {
     # Row 10: f788bf6a34304376... — agree=N, "no errors in traces"
     "f788bf6a34304376": {
         "outcome_truth": "unknown",  # agree=N → engine wrong → excluded
-        "D1": False,   # owner says "what errors?" → D1 should NOT fire
-        "D2": False,   # no struggle per owner
+        "D1": False,  # owner says "what errors?" → D1 should NOT fire
+        "D2": False,  # no struggle per owner
         "D3": None,
     },
     # Row 11: 8fe79bb7a022ad93... — agree=Y, pass
@@ -234,25 +234,29 @@ _ANSWERS_TRUTH: dict[str, dict[str, Any]] = {
     # 1c59051c - "inconclusive, no transcript data" → UNKNOWN
     "1c59051c3ba82897": {
         "outcome_truth": "unknown",
-        "D1": None, "D2": None, "D3": None,
+        "D1": None,
+        "D2": None,
+        "D3": None,
     },
     # d82c0771 - "looks good to me" → pass, clean
     "d82c0771ddc3eedf": {
         "outcome_truth": "pass",
-        "D1": False, "D2": False, "D3": None,
+        "D1": False,
+        "D2": False,
+        "D3": None,
     },
     # d38a760a - "Bash exit code 1, never re-attempted. That's my only concern."
     # verdict_shown=pass; owner sees an unrecovered error but thinks the trace still passed
     "d38a760ac7e43101": {
-        "outcome_truth": "pass",   # verdict_shown=pass; owner didn't reject it
-        "D1": True,    # "never re-attempted" = D1 should fire
+        "outcome_truth": "pass",  # verdict_shown=pass; owner didn't reject it
+        "D1": True,  # "never re-attempted" = D1 should fire
         "D2": None,
         "D3": None,
     },
     # 4d470c8f - "multiple continuous exit codes, instead of refire just moves on"
     "4d470c8f8b30ff48": {
         "outcome_truth": "pass",  # verdict_shown=pass
-        "D1": True,    # "exit codes, no refire" = D1 should fire
+        "D1": True,  # "exit codes, no refire" = D1 should fire
         "D2": None,
         "D3": None,
     },
@@ -260,53 +264,57 @@ _ANSWERS_TRUTH: dict[str, dict[str, Any]] = {
     # Two entries for this trace_id, last timestamp wins (2026-06-13T08:18:27)
     "6ceca8d505fbef5f": {
         "outcome_truth": "pass",  # verdict_shown=pass (engine says pass; owner notes silent failure)
-        "D1": None,   # D1 cannot see masked OK-status errors
+        "D1": None,  # D1 cannot see masked OK-status errors
         "D2": None,
         "D3": None,
     },
     # bc749219 - "bash command to create the PR failed. No reattempt."
     "bc749219d1bf0bac": {
         "outcome_truth": "pass",  # verdict_shown=pass
-        "D1": True,    # "bash command failed, no reattempt" = D1 should fire
+        "D1": True,  # "bash command failed, no reattempt" = D1 should fire
         "D2": None,
         "D3": None,
     },
     # 6a90e914 - "pass"
     "6a90e914578d25be": {
         "outcome_truth": "pass",
-        "D1": False, "D2": False, "D3": None,
+        "D1": False,
+        "D2": False,
+        "D3": None,
     },
     # ba036a1d - "LGTM" (two entries, both say LGTM)
     "ba036a1d86e17c79": {
         "outcome_truth": "pass",
-        "D1": False, "D2": False, "D3": None,
+        "D1": False,
+        "D2": False,
+        "D3": None,
     },
     # a1bd9de0 - non_computable; "git bash steps failing, not re-attempted... pass (partial)"
     "a1bd9de0d82346b3": {
         "outcome_truth": "unknown",  # non_computable; owner says partial pass
-        "D1": True,    # "git bash steps failing, not re-attempted"
-        "D2": True,    # failing steps = potential struggle
+        "D1": True,  # "git bash steps failing, not re-attempted"
+        "D2": True,  # failing steps = potential struggle
         "D3": None,
     },
     # 6071761a - non_computable; "reading files that do not exist multiple times; skill silent failure"
     "6071761adb63e378": {
         "outcome_truth": "unknown",  # non_computable
-        "D1": None,   # Read errors may fire D1; Skill masked as OK
+        "D1": None,  # Read errors may fire D1; Skill masked as OK
         "D2": None,
         "D3": None,
     },
     # f645a282 - non_computable; "read failed but succeeded finally; silent failures"
     "f645a282052fec46": {
         "outcome_truth": "unknown",
-        "D1": None,   # partial: read eventually succeeded = recovered
+        "D1": None,  # partial: read eventually succeeded = recovered
         "D2": None,
         "D3": None,
     },
     # 0939a81a - non_computable; "failures stacking, exit code 4, no follow-up... failure"
     "0939a81a37d91050": {
         "outcome_truth": "fail",  # owner explicitly says failure
-        "D1": True,    # "no follow-up" = unrecovered
-        "D2": True,    # "failures stacking" = struggle
+        "D1": True,  # "no follow-up" = unrecovered
+        "D2": True,  # "failures stacking" = struggle
         "D3": None,
     },
     # 92eb1ef5 - non_computable; "repetitive bash, can't gauge intent, no verdict"
@@ -351,8 +359,8 @@ class CorpusEntry:
     """
 
     trace_id: str
-    source: str           # "taubench" | "spotcheck" | "answers" | "live"
-    outcome_truth: str    # "pass" | "fail" | "partial" | "unknown"
+    source: str  # "taubench" | "spotcheck" | "answers" | "live"
+    outcome_truth: str  # "pass" | "fail" | "partial" | "unknown"
     detector_truth: dict[str, bool | None] = field(default_factory=dict)
     """Keys: D1, D2, D3, D4, redundant_execution. Value: True=should fire, False=should not, None=unknown."""
     tau_reward: float | None = None
@@ -372,7 +380,7 @@ class EvalCorpus:
 
     entries: list[CorpusEntry]
     corpus_hash: str
-    trace_ids: list[str]   # sorted, stable
+    trace_ids: list[str]  # sorted, stable
 
     # Composition counts
     tau_bench_count: int = 0
@@ -386,10 +394,7 @@ class EvalCorpus:
 
     def labeled_for_detector(self, detector: str) -> list[CorpusEntry]:
         """Entries with a known detector truth (True or False) for `detector`."""
-        return [
-            e for e in self.entries
-            if e.detector_truth.get(detector) is not None
-        ]
+        return [e for e in self.entries if e.detector_truth.get(detector) is not None]
 
 
 # ── Tau-bench loader ──────────────────────────────────────────────────────────
@@ -416,7 +421,7 @@ def _load_taubench(corpus_dir: Path) -> list[CorpusEntry]:
                 continue
             seen_trace_ids.add(trace_id)
 
-            label = rec["label"]          # PASS | FAIL | PARTIAL
+            label = rec["label"]  # PASS | FAIL | PARTIAL
             reward = float(rec["reward"])
 
             if label == "PASS":
@@ -431,7 +436,7 @@ def _load_taubench(corpus_dir: Path) -> list[CorpusEntry]:
                     trace_id=trace_id,
                     source="taubench",
                     outcome_truth=outcome_truth,
-                    detector_truth={},   # tau-bench has no detector labels
+                    detector_truth={},  # tau-bench has no detector labels
                     tau_reward=reward,
                 )
             )
@@ -663,9 +668,7 @@ def build_corpus(
     reference them only by filename.
     """
     resolved = _load_spotcheck_resolved(snapshot_dir / _SPOTCHECK_RESOLVED.name)
-    snapshotted = _load_snapshot_manifest(
-        snapshot_dir / _SNAPSHOT_MANIFEST.name, snapshot_dir
-    )
+    snapshotted = _load_snapshot_manifest(snapshot_dir / _SNAPSHOT_MANIFEST.name, snapshot_dir)
 
     entries: list[CorpusEntry] = []
     seen_ids: set[str] = set()
@@ -764,7 +767,8 @@ def _load_snapshot_manifest(
         return {str(t) for t in data.get("snapshotted_trace_ids", [])}
     if snapshot_dir.exists():
         return {
-            p.stem for p in snapshot_dir.glob("*.json")
+            p.stem
+            for p in snapshot_dir.glob("*.json")
             if p.name not in {_SPOTCHECK_RESOLVED.name, _SNAPSHOT_MANIFEST.name}
         }
     return set()
@@ -808,9 +812,7 @@ def snapshot_phoenix_spans(
     client = Client(base_url=endpoint)
 
     # One bulk fetch, then group by trace_id (avoids N round-trips).
-    all_spans = list(
-        client.spans.get_spans(project_identifier=project, limit=span_limit)
-    )
+    all_spans = list(client.spans.get_spans(project_identifier=project, limit=span_limit))
     by_trace: dict[str, list[dict[str, Any]]] = {}
     for span in all_spans:
         span_dict: dict[str, Any] = dict(span)

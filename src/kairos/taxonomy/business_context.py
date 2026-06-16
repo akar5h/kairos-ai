@@ -132,10 +132,7 @@ class BusinessContext:
                 raise ValueError(msg)
             match_mode = op_data.get("side_effect_match", "all")
             if match_mode not in ("all", "any"):
-                msg = (
-                    f"Operation '{op_data['name']}': side_effect_match must be "
-                    f"'all' or 'any', got {match_mode!r}."
-                )
+                msg = f"Operation '{op_data['name']}': side_effect_match must be 'all' or 'any', got {match_mode!r}."
                 raise ValueError(msg)
             excluded = op_data.get("excluded_tools", [])
             conflict = set(excluded) & set(op_data.get("expected_tools", []))

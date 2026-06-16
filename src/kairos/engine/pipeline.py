@@ -406,8 +406,7 @@ def run_pipeline(
         return pw.operation_name if pw is not None else None
 
     primary_per_trace: dict[str, str | None] = {
-        trace_id: _primary_name(memberships)
-        for trace_id, memberships in memberships_per_envelope.items()
+        trace_id: _primary_name(memberships) for trace_id, memberships in memberships_per_envelope.items()
     }
 
     # Step 3: count secondary memberships per trace (memberships that are not the primary).
@@ -495,11 +494,7 @@ def run_pipeline(
 
     # Step 7: correlation-key rollup (Day 9).
     # Collect all per-trace OutcomeResults from the per-workflow summaries.
-    all_outcome_results = [
-        result
-        for ws in workflows
-        for result in ws.outcome.per_trace_results
-    ]
+    all_outcome_results = [result for ws in workflows for result in ws.outcome.per_trace_results]
     unit_summaries = rollup_units(
         envelopes,
         all_outcome_results,

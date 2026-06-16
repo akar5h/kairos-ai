@@ -94,6 +94,7 @@ def test_terminal_status_stop() -> None:
         {"role": "user", "content": "###STOP###"},
     ]
     from kairos.models.enums import TerminalStatus
+
     assert _terminal_status(traj) == TerminalStatus.COMPLETED
 
 
@@ -115,6 +116,7 @@ def test_terminal_status_transfer() -> None:
         {"role": "user", "content": "###STOP###"},
     ]
     from kairos.models.enums import TerminalStatus
+
     assert _terminal_status(traj) == TerminalStatus.HUMAN_ESCALATION
 
 
@@ -125,6 +127,7 @@ def test_terminal_status_no_stop_completed() -> None:
         {"role": "assistant", "content": "Done."},
     ]
     from kairos.models.enums import TerminalStatus
+
     assert _terminal_status(traj) == TerminalStatus.COMPLETED
 
 
@@ -177,6 +180,7 @@ def test_normalize_traj_terminal_completed() -> None:
     traj = _minimal_traj()
     env = _normalize_traj(traj, "test-id", 19, None, 0)
     from kairos.models.enums import TerminalStatus
+
     assert env.terminal_status == TerminalStatus.COMPLETED
 
 
@@ -229,20 +233,29 @@ def test_build_corpus_skip_empty_traj(tmp_path: Path) -> None:
             {
                 "mode": "baseline",
                 "checkpoint_rows": [
-                    {"task_id": 1, "reward": 0.0, "traj": [], "trial": 0},    # empty traj → skip
-                    {"task_id": 2, "reward": 1.0, "traj": [                  # valid row
-                        {"role": "user", "content": "help"},
-                        {"role": "assistant", "content": "ok", "tool_calls": [
+                    {"task_id": 1, "reward": 0.0, "traj": [], "trial": 0},  # empty traj → skip
+                    {
+                        "task_id": 2,
+                        "reward": 1.0,
+                        "traj": [  # valid row
+                            {"role": "user", "content": "help"},
                             {
-                                "id": "c1",
-                                "function": {"name": "get_user_details", "arguments": "{}"},
-                                "type": "function",
-                                "index": 0,
-                            }
-                        ]},
-                        {"role": "tool", "tool_call_id": "c1", "name": "get_user_details", "content": "{}"},
-                        {"role": "user", "content": "###STOP###"},
-                    ], "trial": 0},
+                                "role": "assistant",
+                                "content": "ok",
+                                "tool_calls": [
+                                    {
+                                        "id": "c1",
+                                        "function": {"name": "get_user_details", "arguments": "{}"},
+                                        "type": "function",
+                                        "index": 0,
+                                    }
+                                ],
+                            },
+                            {"role": "tool", "tool_call_id": "c1", "name": "get_user_details", "content": "{}"},
+                            {"role": "user", "content": "###STOP###"},
+                        ],
+                        "trial": 0,
+                    },
                 ],
                 "kairos_run_dir": None,
             }
@@ -264,14 +277,18 @@ def test_build_corpus_labels_written(tmp_path: Path) -> None:
     """labels.jsonl is written with correct fields."""
     traj_valid: list[dict[str, Any]] = [
         {"role": "user", "content": "help"},
-        {"role": "assistant", "content": "ok", "tool_calls": [
-            {
-                "id": "c1",
-                "function": {"name": "update_reservation_flights", "arguments": "{}"},
-                "type": "function",
-                "index": 0,
-            }
-        ]},
+        {
+            "role": "assistant",
+            "content": "ok",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "function": {"name": "update_reservation_flights", "arguments": "{}"},
+                    "type": "function",
+                    "index": 0,
+                }
+            ],
+        },
         {"role": "tool", "tool_call_id": "c1", "name": "update_reservation_flights", "content": "{}"},
         {"role": "user", "content": "###STOP###"},
     ]

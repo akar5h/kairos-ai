@@ -35,6 +35,7 @@ _skip_no_db = pytest.mark.skipif(
 
 # ── Fixture rollup data (no DB required) ──────────────────────────────────────
 
+
 def _make_fixture_rows() -> list[dict[str, Any]]:
     """Return a minimal set of nightly_rollup rows covering all dashboard paths."""
     return [
@@ -193,11 +194,17 @@ def test_dashboard_boots_headless() -> None:
 
     proc = subprocess.Popen(
         [
-            sys.executable, "-m", "streamlit", "run",
+            sys.executable,
+            "-m",
+            "streamlit",
+            "run",
             str(app_path),
-            "--server.port", str(port),
-            "--server.headless", "true",
-            "--browser.gatherUsageStats", "false",
+            "--server.port",
+            str(port),
+            "--server.headless",
+            "true",
+            "--browser.gatherUsageStats",
+            "false",
         ],
         env=env,
         stdout=subprocess.PIPE,

@@ -97,10 +97,11 @@ def _normalise_agent(raw: str) -> str:
     "unknown" passes through unchanged.
     """
     if raw.startswith(_PC_CLAUDE_PREFIX):
-        suffix = raw[len(_PC_CLAUDE_PREFIX):]
+        suffix = raw[len(_PC_CLAUDE_PREFIX) :]
         if _UUID_RE.fullmatch(suffix):
             return _UUID_AGENT_BUCKET
     return raw
+
 
 logger = get_logger(__name__)
 
@@ -149,18 +150,22 @@ def compute_config_hash(
     # Serialise the business context in a stable, hash-friendly way.
     ops = []
     for op in context.operations:
-        ops.append({
-            "name": op.name,
-            "expected_tools": sorted(op.expected_tools),
-            "required_side_effect_tools": sorted(op.required_side_effect_tools),
-            "side_effect_match": op.side_effect_match,
-            "excluded_tools": sorted(op.excluded_tools),
-        })
-    parts.append({
-        "agent_name": context.agent_name,
-        "correlation_key": context.correlation_key,
-        "operations": sorted(ops, key=lambda o: o["name"]),
-    })
+        ops.append(
+            {
+                "name": op.name,
+                "expected_tools": sorted(op.expected_tools),
+                "required_side_effect_tools": sorted(op.required_side_effect_tools),
+                "side_effect_match": op.side_effect_match,
+                "excluded_tools": sorted(op.excluded_tools),
+            }
+        )
+    parts.append(
+        {
+            "agent_name": context.agent_name,
+            "correlation_key": context.correlation_key,
+            "operations": sorted(ops, key=lambda o: o["name"]),
+        }
+    )
 
     if detector_thresholds:
         parts.append({"thresholds": dict(sorted(detector_thresholds.items()))})
@@ -177,8 +182,7 @@ def _latest_persisted_hash(night_id: date, conn: psycopg.Connection[Any]) -> str
     Returns None when no prior rows exist.
     """
     row = conn.execute(
-        "SELECT config_hash FROM nightly_rollup "
-        "WHERE night_id < %s ORDER BY night_id DESC LIMIT 1",
+        "SELECT config_hash FROM nightly_rollup WHERE night_id < %s ORDER BY night_id DESC LIMIT 1",
         (night_id,),
     ).fetchone()
     return row[0] if row else None
@@ -212,10 +216,7 @@ def _build_trace_to_struggle(
     envelopes: Sequence[TraceEnvelope],
 ) -> dict[str, float]:
     """Build trace_id → struggle scalar (error_count / max(1, step_count))."""
-    return {
-        e.trace_id: e.error_count / max(1, e.step_count)
-        for e in envelopes
-    }
+    return {e.trace_id: e.error_count / max(1, e.step_count) for e in envelopes}
 
 
 def _build_trace_to_tokens(envelopes: Sequence[TraceEnvelope]) -> dict[str, int]:
@@ -306,20 +307,22 @@ def persist_findings(
         # SECURITY: only integer indices, never raw output.
         evidence_steps = _safe_evidence_steps(finding)
 
-        rows.append((
-            night_id,
-            tid,
-            unit_id,
-            workflow,
-            agent,
-            finding.pattern_name,  # detector
-            finding.severity,
-            evidence_steps,
-            tokens,
-            struggle,
-            outcome,
-            config_hash,
-        ))
+        rows.append(
+            (
+                night_id,
+                tid,
+                unit_id,
+                workflow,
+                agent,
+                finding.pattern_name,  # detector
+                finding.severity,
+                evidence_steps,
+                tokens,
+                struggle,
+                outcome,
+                config_hash,
+            )
+        )
 
     with conn.cursor() as cur:
         cur.executemany(
@@ -405,14 +408,16 @@ def persist_nightly_rollup(
     hash_changed = prior_hash is not None and prior_hash != config_hash
 
     # Per-workflow, per-agent accumulators.
-    buckets: dict[tuple[str, str], dict[str, Any]] = defaultdict(lambda: {
-        "unit_ids": set(),
-        "trace_ids": set(),
-        "outcomes": [],       # bool per computable unit
-        "struggles": [],      # float per trace
-        "tokens": [],         # int per unit
-        "finding_counts": Counter(),
-    })
+    buckets: dict[tuple[str, str], dict[str, Any]] = defaultdict(
+        lambda: {
+            "unit_ids": set(),
+            "trace_ids": set(),
+            "outcomes": [],  # bool per computable unit
+            "struggles": [],  # float per trace
+            "tokens": [],  # int per unit
+            "finding_counts": Counter(),
+        }
+    )
 
     # Walk unit_summaries to fill buckets.
     for us in result.unit_summaries:
@@ -468,7 +473,13 @@ def persist_nightly_rollup(
                     night_id,
                     "_config_change_",
                     "_",
-                    0, 0, None, 0.0, 0.0, 0.0, 0.0,
+                    0,
+                    0,
+                    None,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
                     Jsonb({}),
                     config_hash,
                     True,

@@ -56,9 +56,7 @@ class TestSpansMigrationApplies:
         db.apply_migrations()
 
         with db.get_connection() as conn:
-            rows = conn.execute(
-                "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
-            ).fetchall()
+            rows = conn.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public'").fetchall()
         found = {row[0] for row in rows}
         assert "spans" in found, f"'spans' table missing; found: {found}"
 
@@ -68,9 +66,7 @@ class TestSpansMigrationApplies:
         db.apply_migrations()
 
         with db.get_connection() as conn:
-            rows = conn.execute(
-                "SELECT indexname FROM pg_indexes WHERE tablename = 'spans'"
-            ).fetchall()
+            rows = conn.execute("SELECT indexname FROM pg_indexes WHERE tablename = 'spans'").fetchall()
         index_names = {row[0] for row in rows}
         assert "spans_trace_id_idx" in index_names, f"Index missing; found: {index_names}"
 

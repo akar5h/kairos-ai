@@ -82,7 +82,10 @@ def _make_test_panel() -> MetricPanel:
             tau_abstention_rate=0.1,
             tau_total=50,
             tau_computable=45,
-            tau_a=25, tau_b=5, tau_c=3, tau_d=12,
+            tau_a=25,
+            tau_b=5,
+            tau_c=3,
+            tau_d=12,
         ),
         detectors={
             "struggle_ratio": DetectorMetrics(
@@ -101,10 +104,7 @@ def _make_test_panel() -> MetricPanel:
     )
 
 
-@pytest.mark.skipif(
-    not os.environ.get("KAIROS_PG_DSN"),
-    reason="KAIROS_PG_DSN not set — skipping DB round-trip test"
-)
+@pytest.mark.skipif(not os.environ.get("KAIROS_PG_DSN"), reason="KAIROS_PG_DSN not set — skipping DB round-trip test")
 def test_store_and_load_round_trip():
     """Store a run and load it back by run_id."""
     panel = _make_test_panel()
@@ -136,10 +136,7 @@ def test_store_and_load_round_trip():
     assert record.panel["corpus_size"] == 50
 
 
-@pytest.mark.skipif(
-    not os.environ.get("KAIROS_PG_DSN"),
-    reason="KAIROS_PG_DSN not set — skipping DB round-trip test"
-)
+@pytest.mark.skipif(not os.environ.get("KAIROS_PG_DSN"), reason="KAIROS_PG_DSN not set — skipping DB round-trip test")
 def test_store_idempotent():
     """Storing the same run twice (same inputs) is idempotent (ON CONFLICT DO NOTHING)."""
     panel = _make_test_panel()
@@ -167,10 +164,7 @@ def test_store_idempotent():
     assert run_id_1 == run_id_2
 
 
-@pytest.mark.skipif(
-    not os.environ.get("KAIROS_PG_DSN"),
-    reason="KAIROS_PG_DSN not set — skipping DB round-trip test"
-)
+@pytest.mark.skipif(not os.environ.get("KAIROS_PG_DSN"), reason="KAIROS_PG_DSN not set — skipping DB round-trip test")
 def test_load_nonexistent_run_returns_none():
     """load_run with an unknown run_id returns None."""
     result = load_run("0" * 32)

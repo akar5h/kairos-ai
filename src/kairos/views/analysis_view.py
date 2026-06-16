@@ -502,7 +502,9 @@ def _correctness_view(
     # Build a trace_id → TraceEnvelope lookup for evidence resolution.
     envelope_map: dict[str, object] = {e.trace_id: e for e in summary.member_envelopes}
     outcome_rows = _build_outcome_rows(
-        outcome.per_trace_results, envelope_map, link,
+        outcome.per_trace_results,
+        envelope_map,
+        link,
         primary_trace_ids=set(summary.primary_trace_ids),
     )
     return CorrectnessView(

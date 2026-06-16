@@ -757,9 +757,7 @@ class TestReadApiIntegration:
     def _unique_trace_id(self) -> str:
         return uuid.uuid4().hex + uuid.uuid4().hex[:0]  # 32 hex chars
 
-    def test_traces_list_returns_seeded_span(
-        self, api_client: TestClient, dsn: str
-    ) -> None:
+    def test_traces_list_returns_seeded_span(self, api_client: TestClient, dsn: str) -> None:
         trace_id = self._unique_trace_id()
         span_id = uuid.uuid4().hex[:16]
 
@@ -786,9 +784,7 @@ class TestReadApiIntegration:
         resp = api_client.get("/v1/traces/00000000000000000000000000000000")
         assert resp.status_code == 404
 
-    def test_findings_seeded_and_retrieved(
-        self, api_client: TestClient, dsn: str
-    ) -> None:
+    def test_findings_seeded_and_retrieved(self, api_client: TestClient, dsn: str) -> None:
         import datetime
 
         trace_id = self._unique_trace_id()
@@ -814,14 +810,10 @@ class TestReadApiIntegration:
 
         # Cleanup.
         with psycopg.connect(dsn) as conn:
-            conn.execute(
-                "DELETE FROM findings WHERE trace_id = %s", (trace_id,)
-            )
+            conn.execute("DELETE FROM findings WHERE trace_id = %s", (trace_id,))
             conn.commit()
 
-    def test_labels_seeded_and_retrieved(
-        self, api_client: TestClient, dsn: str
-    ) -> None:
+    def test_labels_seeded_and_retrieved(self, api_client: TestClient, dsn: str) -> None:
         trace_id = self._unique_trace_id()
         label_id = uuid.uuid4().hex
 
@@ -846,9 +838,7 @@ class TestReadApiIntegration:
             conn.execute("DELETE FROM labels WHERE id = %s", (label_id,))
             conn.commit()
 
-    def test_post_label_then_get_round_trip(
-        self, api_client: TestClient, dsn: str
-    ) -> None:
+    def test_post_label_then_get_round_trip(self, api_client: TestClient, dsn: str) -> None:
         """POST /v1/labels appends a row that GET /v1/labels reads back."""
         trace_id = self._unique_trace_id()
 
@@ -878,9 +868,7 @@ class TestReadApiIntegration:
                 conn.execute("DELETE FROM labels WHERE id = %s", (new_id,))
                 conn.commit()
 
-    def test_post_label_minimal_nullable_fields(
-        self, api_client: TestClient, dsn: str
-    ) -> None:
+    def test_post_label_minimal_nullable_fields(self, api_client: TestClient, dsn: str) -> None:
         """Migration 0014: optional columns accept NULL on insert."""
         trace_id = self._unique_trace_id()
 
@@ -899,9 +887,7 @@ class TestReadApiIntegration:
             conn.execute("DELETE FROM labels WHERE id = %s", (new_id,))
             conn.commit()
 
-    def test_clusters_seeded_and_retrieved(
-        self, api_client: TestClient, dsn: str
-    ) -> None:
+    def test_clusters_seeded_and_retrieved(self, api_client: TestClient, dsn: str) -> None:
         import datetime
 
         from psycopg.types.json import Jsonb

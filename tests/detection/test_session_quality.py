@@ -86,19 +86,24 @@ def _code_op(
 class TestUnrecoveredError:
     def test_no_fire_clean_trace(self) -> None:
         """No ERROR steps → no findings."""
-        trace = _make_trace("t1", [
-            _step(0, "Edit", StepStatus.OK, tool_args={"file_path": "/a.py"}),
-            _step(1, "Bash", StepStatus.OK, tool_args={"command": "ls"}),
-        ])
+        trace = _make_trace(
+            "t1",
+            [
+                _step(0, "Edit", StepStatus.OK, tool_args={"file_path": "/a.py"}),
+                _step(1, "Bash", StepStatus.OK, tool_args={"command": "ls"}),
+            ],
+        )
         assert detect_unrecovered_error(trace) == []
 
     def test_fire_unrecovered_error(self) -> None:
         """ERROR with no later same-tool similar-arg call → fires."""
-        trace = _make_trace("t2", [
-            _step(0, "Edit", StepStatus.ERROR, tool_args={"file_path": "/a.py"},
-                  error_message="File not found"),
-            _step(1, "Bash", StepStatus.OK, tool_args={"command": "ls"}),
-        ])
+        trace = _make_trace(
+            "t2",
+            [
+                _step(0, "Edit", StepStatus.ERROR, tool_args={"file_path": "/a.py"}, error_message="File not found"),
+                _step(1, "Bash", StepStatus.OK, tool_args={"command": "ls"}),
+            ],
+        )
         findings = detect_unrecovered_error(trace)
         assert len(findings) == 1
         assert findings[0].pattern_name == "unrecovered_error"
@@ -106,20 +111,26 @@ class TestUnrecoveredError:
 
     def test_no_fire_when_recovered_same_tool_same_args(self) -> None:
         """ERROR followed by near-identical args call → recovered, no finding."""
-        trace = _make_trace("t3", [
-            _step(0, "Edit", StepStatus.ERROR, tool_args={"file_path": "/a.py", "old_string": "foo"}),
-            _step(1, "Edit", StepStatus.OK, tool_args={"file_path": "/a.py", "old_string": "foo"}),
-        ])
+        trace = _make_trace(
+            "t3",
+            [
+                _step(0, "Edit", StepStatus.ERROR, tool_args={"file_path": "/a.py", "old_string": "foo"}),
+                _step(1, "Edit", StepStatus.OK, tool_args={"file_path": "/a.py", "old_string": "foo"}),
+            ],
+        )
         assert detect_unrecovered_error(trace) == []
 
     def test_no_fire_different_args_not_recovery(self) -> None:
         """ERROR on /a.py; retry on /b.py (jaccard low) → NOT a recovery, fires."""
         a_args = {"file_path": "/a.py", "old_string": "foo", "new_string": "bar"}
         b_args = {"file_path": "/b.py", "old_string": "zzz", "new_string": "yyy"}
-        trace = _make_trace("t4", [
-            _step(0, "Edit", StepStatus.ERROR, tool_args=a_args),
-            _step(1, "Edit", StepStatus.OK, tool_args=b_args),
-        ])
+        trace = _make_trace(
+            "t4",
+            [
+                _step(0, "Edit", StepStatus.ERROR, tool_args=a_args),
+                _step(1, "Edit", StepStatus.OK, tool_args=b_args),
+            ],
+        )
         # Different file, different args → jaccard will be very low → unrecovered
         findings = detect_unrecovered_error(trace)
         assert len(findings) == 1
@@ -127,31 +138,39 @@ class TestUnrecoveredError:
     def test_severity_always_info_required_side_effect(self) -> None:
         """D1 always ships at info (deterministic ceiling ~0.62; owner 2026-06-13)."""
         op = _code_op(required=["Edit", "Write"])
-        trace = _make_trace("t5", [
-            _step(0, "Edit", StepStatus.ERROR, tool_args={"file_path": "/a.py"}),
-        ])
+        trace = _make_trace(
+            "t5",
+            [
+                _step(0, "Edit", StepStatus.ERROR, tool_args={"file_path": "/a.py"}),
+            ],
+        )
         findings = detect_unrecovered_error(trace, operation=op)
         assert findings[0].severity == "info"
 
     def test_severity_always_info_non_required_tool(self) -> None:
         """info regardless of whether the tool is a required side-effect tool."""
         op = _code_op(required=["Write"])  # Edit not in required
-        trace = _make_trace("t6", [
-            _step(0, "Edit", StepStatus.ERROR, tool_args={"file_path": "/a.py"}),
-        ])
+        trace = _make_trace(
+            "t6",
+            [
+                _step(0, "Edit", StepStatus.ERROR, tool_args={"file_path": "/a.py"}),
+            ],
+        )
         findings = detect_unrecovered_error(trace, operation=op)
         assert findings[0].severity == "info"
 
     def test_session_restart_not_counted_as_recovery(self) -> None:
         """Recovery after a session-restart boundary is NOT counted → fires."""
-        trace = _make_trace("t7", [
-            _step(0, "Edit", StepStatus.ERROR, tool_args={"file_path": "/a.py"}),
-            # Bash restart boundary
-            _step(1, "Bash", StepStatus.OK,
-                  tool_args={"command": "cat ~/.claude/system_prompt.txt"}),
-            # Same tool after restart: should NOT count as recovery
-            _step(2, "Edit", StepStatus.OK, tool_args={"file_path": "/a.py"}),
-        ])
+        trace = _make_trace(
+            "t7",
+            [
+                _step(0, "Edit", StepStatus.ERROR, tool_args={"file_path": "/a.py"}),
+                # Bash restart boundary
+                _step(1, "Bash", StepStatus.OK, tool_args={"command": "cat ~/.claude/system_prompt.txt"}),
+                # Same tool after restart: should NOT count as recovery
+                _step(2, "Edit", StepStatus.OK, tool_args={"file_path": "/a.py"}),
+            ],
+        )
         findings = detect_unrecovered_error(trace, recovery_window=10)
         assert len(findings) == 1
 
@@ -184,16 +203,18 @@ class TestUnrecoveredError:
 class TestStruggleRatio:
     def test_no_fire_clean_trace(self) -> None:
         """Clean trace with no errors or redundant → no finding."""
-        trace = _make_trace("s1", [
-            _step(0, "Edit", StepStatus.OK, tool_args={"f": "a"}),
-            _step(1, "Write", StepStatus.OK, tool_args={"f": "b"}),
-        ])
+        trace = _make_trace(
+            "s1",
+            [
+                _step(0, "Edit", StepStatus.OK, tool_args={"f": "a"}),
+                _step(1, "Write", StepStatus.OK, tool_args={"f": "b"}),
+            ],
+        )
         assert detect_struggle_ratio(trace) == []
 
     def test_fire_high_error_ratio(self) -> None:
         """Many errors, few successes → fires."""
-        steps = [_step(i, "Bash", StepStatus.ERROR, tool_args={"command": f"c{i}"})
-                 for i in range(10)]
+        steps = [_step(i, "Bash", StepStatus.ERROR, tool_args={"command": f"c{i}"}) for i in range(10)]
         steps.append(_step(10, "Edit", StepStatus.OK, tool_args={"f": "x"}))
         trace = _make_trace("s2", steps)
         findings = detect_struggle_ratio(trace, struggle_t=2.0)
@@ -220,9 +241,13 @@ class TestStruggleRatio:
     def test_tool_use_error_counted_as_rejected(self) -> None:
         """Rejected tool calls (tool_use_error in error_message) counted."""
         steps = [
-            _step(0, "Edit", StepStatus.ERROR,
-                  error_message="<tool_use_error>File not read yet</tool_use_error>",
-                  tool_args={"f": "a"}),
+            _step(
+                0,
+                "Edit",
+                StepStatus.ERROR,
+                error_message="<tool_use_error>File not read yet</tool_use_error>",
+                tool_args={"f": "a"},
+            ),
             _step(1, "Edit", StepStatus.OK, tool_args={"f": "b"}),
         ]
         trace = _make_trace("s4", steps)
@@ -243,20 +268,20 @@ class TestStruggleRatio:
 class TestCoordinationWaste:
     def test_no_fire_clean_trace(self) -> None:
         """Varied tool calls, no curl → no finding."""
-        trace = _make_trace("c1", [
-            _step(0, "Edit", StepStatus.OK, tool_args={"f": "a"}),
-            _step(1, "Write", StepStatus.OK, tool_args={"f": "b"}),
-            _step(2, "Bash", StepStatus.OK, tool_args={"command": "ls"}),
-        ])
+        trace = _make_trace(
+            "c1",
+            [
+                _step(0, "Edit", StepStatus.OK, tool_args={"f": "a"}),
+                _step(1, "Write", StepStatus.OK, tool_args={"f": "b"}),
+                _step(2, "Bash", StepStatus.OK, tool_args={"command": "ls"}),
+            ],
+        )
         assert detect_coordination_waste(trace, repeat_t=3, curl_t=0.7) == []
 
     def test_fire_repeat_identical_args(self) -> None:
         """3+ identical-arg calls of same tool → fires."""
         args = {"command": "curl http://api/status"}
-        steps = [
-            _step(i, "Bash", StepStatus.OK, tool_args=args, tool_args_normalized=args)
-            for i in range(4)
-        ]
+        steps = [_step(i, "Bash", StepStatus.OK, tool_args=args, tool_args_normalized=args) for i in range(4)]
         trace = _make_trace("c2", steps)
         findings = detect_coordination_waste(trace, repeat_t=3, curl_t=0.99)
         assert len(findings) == 1
@@ -283,10 +308,7 @@ class TestCoordinationWaste:
         which is exactly threshold (not 2×), so severity stays info.
         """
         args = {"command": "git status --short"}
-        steps = [
-            _step(i, "Bash", StepStatus.OK, tool_args=args, tool_args_normalized=args)
-            for i in range(3)
-        ]
+        steps = [_step(i, "Bash", StepStatus.OK, tool_args=args, tool_args_normalized=args) for i in range(3)]
         trace = _make_trace("c4", steps)
         findings = detect_coordination_waste(trace, repeat_t=3, curl_t=0.99)
         # Count=3 at threshold (< 2×threshold=6), curl_fraction=0.0 → info
@@ -296,20 +318,14 @@ class TestCoordinationWaste:
     def test_severity_warning_at_double_threshold(self) -> None:
         """Double the threshold count → warning severity."""
         args = {"command": "curl http://api/status"}
-        steps = [
-            _step(i, "Bash", StepStatus.OK, tool_args=args, tool_args_normalized=args)
-            for i in range(6)
-        ]
+        steps = [_step(i, "Bash", StepStatus.OK, tool_args=args, tool_args_normalized=args) for i in range(6)]
         trace = _make_trace("c5", steps)
         findings = detect_coordination_waste(trace, repeat_t=3, curl_t=0.99)
         assert findings[0].severity == "warning"
 
     def test_different_args_no_repeat_violation(self) -> None:
         """Same tool but different args → no repeat violation."""
-        steps = [
-            _step(i, "Bash", StepStatus.OK, tool_args={"command": f"ls /dir{i}"})
-            for i in range(5)
-        ]
+        steps = [_step(i, "Bash", StepStatus.OK, tool_args={"command": f"ls /dir{i}"}) for i in range(5)]
         trace = _make_trace("c6", steps)
         findings = detect_coordination_waste(trace, repeat_t=3, curl_t=0.99)
         assert not findings
@@ -327,10 +343,13 @@ class TestWorkToTalkRatio:
             required_side_effect_tools=["Read"],
             expected_tools=["Read", "Grep"],
         )
-        trace = _make_trace("w1", [
-            _llm_step(0, total_tokens=10000),
-            _step(1, "Read", StepStatus.OK),
-        ])
+        trace = _make_trace(
+            "w1",
+            [
+                _llm_step(0, total_tokens=10000),
+                _step(1, "Read", StepStatus.OK),
+            ],
+        )
         assert detect_work_to_talk_ratio(trace, operation=op) == []
 
     def test_no_fire_op_exempt_coordination(self) -> None:
@@ -341,9 +360,12 @@ class TestWorkToTalkRatio:
             required_side_effect_tools=["Skill"],
             expected_tools=["Bash", "Skill"],
         )
-        trace = _make_trace("w2", [
-            _llm_step(0, total_tokens=5000),
-        ])
+        trace = _make_trace(
+            "w2",
+            [
+                _llm_step(0, total_tokens=5000),
+            ],
+        )
         assert detect_work_to_talk_ratio(trace, operation=op) == []
 
     def test_fire_low_ratio(self) -> None:
@@ -402,8 +424,7 @@ class TestWorkToTalkRatio:
 class TestLearnToolExpectations:
     def _clean_trace(self, trace_id: str, tools: list[str]) -> TraceEnvelope:
         """Make a trace where all listed tools succeed (clean for Code Implementation)."""
-        steps = [_step(i, t, StepStatus.OK, tool_args={"f": str(i)})
-                 for i, t in enumerate(tools)]
+        steps = [_step(i, t, StepStatus.OK, tool_args={"f": str(i)}) for i, t in enumerate(tools)]
         return _make_trace(trace_id, steps)
 
     def test_abstain_below_expect_min_n(self) -> None:
@@ -424,8 +445,7 @@ class TestLearnToolExpectations:
     def test_no_candidates_when_all_traces_have_tool(self) -> None:
         """All clean traces have all expected tools → no candidates."""
         op = _code_op(required=["Edit"], expected=["Edit", "Read"])
-        traces = [self._clean_trace(f"t{i}", ["Edit", "Read"])
-                  for i in range(EXPECT_MIN_N + 1)]
+        traces = [self._clean_trace(f"t{i}", ["Edit", "Read"]) for i in range(EXPECT_MIN_N + 1)]
         result = learn_tool_expectations(traces, op, expect_t=0.9, expect_min_n=EXPECT_MIN_N)
         assert not result.abstained
         assert result.candidates == []
@@ -444,9 +464,7 @@ class TestLearnToolExpectations:
         # 1 additional trace with Edit (clean) but missing Read
         # It IS clean (Edit present = side-effect satisfied) but missing Read
         missing_read = self._clean_trace("miss1", ["Edit"])
-        result = learn_tool_expectations(
-            clean + [missing_read], op, expect_t=0.9, expect_min_n=5
-        )
+        result = learn_tool_expectations(clean + [missing_read], op, expect_t=0.9, expect_min_n=5)
         assert not result.abstained
         # Read presence = 10/11 ≈ 0.909 >= 0.9 → expected
         # miss1 has no OK Read call → candidate
@@ -486,9 +504,12 @@ class TestLearnToolExpectations:
 class TestDetectSessionQuality:
     def test_returns_list_of_findings(self) -> None:
         """Orchestrator returns a flat list."""
-        trace = _make_trace("orch1", [
-            _step(0, "Edit", StepStatus.OK, tool_args={"f": "a"}),
-        ])
+        trace = _make_trace(
+            "orch1",
+            [
+                _step(0, "Edit", StepStatus.OK, tool_args={"f": "a"}),
+            ],
+        )
         result = detect_session_quality([trace])
         assert isinstance(result, list)
 
@@ -499,12 +520,18 @@ class TestDetectSessionQuality:
 
     def test_multiple_traces_aggregated(self) -> None:
         """Findings from multiple traces are concatenated."""
-        t1 = _make_trace("orch3a", [
-            _step(0, "Edit", StepStatus.ERROR, tool_args={"f": "a"}),
-        ])
-        t2 = _make_trace("orch3b", [
-            _step(0, "Edit", StepStatus.ERROR, tool_args={"f": "b"}),
-        ])
+        t1 = _make_trace(
+            "orch3a",
+            [
+                _step(0, "Edit", StepStatus.ERROR, tool_args={"f": "a"}),
+            ],
+        )
+        t2 = _make_trace(
+            "orch3b",
+            [
+                _step(0, "Edit", StepStatus.ERROR, tool_args={"f": "b"}),
+            ],
+        )
         findings = detect_session_quality([t1, t2])
         trace_ids = {f.trace_id for f in findings}
         assert "orch3a" in trace_ids
@@ -522,6 +549,7 @@ class TestD2ArgsRequiredForRedundancy:
     def test_sequential_distinct_bash_commands_not_redundant(self) -> None:
         """56 sequential Bash steps with no args → redundant_steps == 0."""
         from kairos.detection.session_quality import _count_redundant_steps
+
         steps = [
             _step(i, "Bash", StepStatus.OK)  # no tool_args → empty
             for i in range(56)
@@ -531,26 +559,23 @@ class TestD2ArgsRequiredForRedundancy:
     def test_sequential_same_tool_different_args_not_redundant(self) -> None:
         """Same tool, different args per step → not redundant."""
         from kairos.detection.session_quality import _count_redundant_steps
-        steps = [
-            _step(i, "Bash", StepStatus.OK, tool_args={"command": f"ls /dir{i}"})
-            for i in range(10)
-        ]
+
+        steps = [_step(i, "Bash", StepStatus.OK, tool_args={"command": f"ls /dir{i}"}) for i in range(10)]
         assert _count_redundant_steps(steps) == 0
 
     def test_true_identical_arg_repeats_are_redundant(self) -> None:
         """Same tool, identical args → counted as redundant."""
         from kairos.detection.session_quality import _count_redundant_steps
+
         args = {"command": "curl http://api/status"}
-        steps = [
-            _step(i, "Bash", StepStatus.OK, tool_args=args)
-            for i in range(4)
-        ]
+        steps = [_step(i, "Bash", StepStatus.OK, tool_args=args) for i in range(4)]
         # 3 consecutive pairs of (Bash,args)~(Bash,args) → 3 redundant
         assert _count_redundant_steps(steps) == 3
 
     def test_post_error_retry_not_redundant(self) -> None:
         """Error step followed by same-tool same-args step → NOT redundant (retry)."""
         from kairos.detection.session_quality import _count_redundant_steps
+
         args = {"file_path": "/a.py"}
         steps = [
             _step(0, "Edit", StepStatus.ERROR, tool_args=args),
@@ -580,18 +605,24 @@ class TestD1EmptyArgsFallback:
 
     def test_no_args_ok_retry_counts_as_recovery(self) -> None:
         """No args on either side: a later OK call of same tool → recovered, no fire."""
-        trace = _make_trace("d1_fallback1", [
-            _step(0, "Edit", StepStatus.ERROR),   # no args
-            _step(1, "Edit", StepStatus.OK),      # no args, but OK → recovery
-        ])
+        trace = _make_trace(
+            "d1_fallback1",
+            [
+                _step(0, "Edit", StepStatus.ERROR),  # no args
+                _step(1, "Edit", StepStatus.OK),  # no args, but OK → recovery
+            ],
+        )
         assert detect_unrecovered_error(trace) == []
 
     def test_no_args_no_ok_retry_fires(self) -> None:
         """No args, error step with no same-tool OK follow-up → fires."""
-        trace = _make_trace("d1_fallback2", [
-            _step(0, "Edit", StepStatus.ERROR),
-            _step(1, "Bash", StepStatus.OK),
-        ])
+        trace = _make_trace(
+            "d1_fallback2",
+            [
+                _step(0, "Edit", StepStatus.ERROR),
+                _step(1, "Bash", StepStatus.OK),
+            ],
+        )
         findings = detect_unrecovered_error(trace)
         assert len(findings) == 1
         assert findings[0].evidence["tool"] == "Edit"
@@ -600,10 +631,13 @@ class TestD1EmptyArgsFallback:
         """When args present, jaccard must pass — OK retry with different args NOT recovery."""
         a_args = {"file_path": "/a.py", "old_string": "foo", "new_string": "bar"}
         b_args = {"file_path": "/b.py", "old_string": "zzz", "new_string": "yyy"}
-        trace = _make_trace("d1_fallback3", [
-            _step(0, "Edit", StepStatus.ERROR, tool_args=a_args),
-            _step(1, "Edit", StepStatus.OK, tool_args=b_args),  # args differ → not recovery
-        ])
+        trace = _make_trace(
+            "d1_fallback3",
+            [
+                _step(0, "Edit", StepStatus.ERROR, tool_args=a_args),
+                _step(1, "Edit", StepStatus.OK, tool_args=b_args),  # args differ → not recovery
+            ],
+        )
         findings = detect_unrecovered_error(trace)
         assert len(findings) == 1
 
@@ -624,10 +658,7 @@ class TestD3EmptyArgsGuard:
     def test_real_args_still_fire_repeat(self) -> None:
         """Steps with real identical args → repeat still fires."""
         args = {"command": "git status"}
-        steps = [
-            _step(i, "Bash", StepStatus.OK, tool_args=args, tool_args_normalized=args)
-            for i in range(4)
-        ]
+        steps = [_step(i, "Bash", StepStatus.OK, tool_args=args, tool_args_normalized=args) for i in range(4)]
         trace = _make_trace("d3_empty2", steps)
         findings = detect_coordination_waste(trace, repeat_t=3, curl_t=0.99)
         assert len(findings) == 1
@@ -638,8 +669,9 @@ class TestD3EmptyArgsGuard:
         args = {"command": "git status"}
         steps = (
             [_step(i, "Bash", StepStatus.OK) for i in range(5)]  # no args
-            + [_step(i + 5, "Bash", StepStatus.OK, tool_args=args, tool_args_normalized=args)
-               for i in range(2)]  # real args but only 2 → below repeat_t=3
+            + [
+                _step(i + 5, "Bash", StepStatus.OK, tool_args=args, tool_args_normalized=args) for i in range(2)
+            ]  # real args but only 2 → below repeat_t=3
         )
         trace = _make_trace("d3_empty3", steps)
         findings = detect_coordination_waste(trace, repeat_t=3, curl_t=0.99)

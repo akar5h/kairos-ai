@@ -119,8 +119,7 @@ def apply_migrations(migrations_dir: Path | None = None) -> list[str]:
 
             conn.execute(sql_file.read_text())
             conn.execute(
-                "INSERT INTO schema_migrations (version) VALUES (%s) "
-                "ON CONFLICT (version) DO NOTHING",
+                "INSERT INTO schema_migrations (version) VALUES (%s) ON CONFLICT (version) DO NOTHING",
                 (version,),
             )
             conn.commit()

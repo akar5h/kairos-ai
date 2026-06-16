@@ -366,28 +366,20 @@ def get_cluster_traces(
     try:
         with _connect() as conn:
             rows = conn.execute(
-                "SELECT trace_id, labeled "
-                "FROM discovery_queue "
-                "WHERE cluster_key = %s "
-                "ORDER BY night_id DESC, id",
+                "SELECT trace_id, labeled FROM discovery_queue WHERE cluster_key = %s ORDER BY night_id DESC, id",
                 (cluster_key,),
             ).fetchall()
     except Exception:
         logger.exception("read.get_cluster_traces failed cluster_key=%s", cluster_key)
         raise fastapi.HTTPException(status_code=500, detail="Database error") from None
 
-    return [
-        ClusterTraceMember(trace_id=row["trace_id"], labeled=bool(row["labeled"]))
-        for row in rows
-    ]
+    return [ClusterTraceMember(trace_id=row["trace_id"], labeled=bool(row["labeled"])) for row in rows]
 
 
 @router.get("/findings", response_model=list[FindingRow])
 def get_findings(
     trace_id: str | None = fastapi.Query(None, description="Filter by trace_id."),
-    night_id: str | None = fastapi.Query(
-        None, description="Filter by night_id (YYYY-MM-DD)."
-    ),
+    night_id: str | None = fastapi.Query(None, description="Filter by night_id (YYYY-MM-DD)."),
 ) -> list[FindingRow]:
     """Return findings rows.
 
@@ -812,11 +804,7 @@ def search(
                 filter_parts.append("attributes::text ILIKE %s")
                 filter_params.append(like_q)
 
-                session_where = (
-                    "WHERE session_id IS NOT NULL AND ("
-                    + " OR ".join(filter_parts)
-                    + ")"
-                )
+                session_where = "WHERE session_id IS NOT NULL AND (" + " OR ".join(filter_parts) + ")"
                 session_params: list[object] = list(filter_params) + [limit]
 
                 session_sql = f"""

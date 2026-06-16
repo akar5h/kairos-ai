@@ -38,7 +38,10 @@ def _make_panel(
             tau_abstention_rate=0.1,
             tau_total=100,
             tau_computable=90,
-            tau_a=50, tau_b=10, tau_c=5, tau_d=25,
+            tau_a=50,
+            tau_b=10,
+            tau_c=5,
+            tau_d=25,
         ),
         detectors={
             "struggle_ratio": DetectorMetrics(
@@ -256,18 +259,9 @@ def _diff(name: str, before: float, after: float) -> MetricDiff:
 def _aggregate(diffs: list[MetricDiff]) -> CompareResult:
     """Mirror compare()'s tier-based verdict aggregation for unit testing."""
     regression = [d.name for d in diffs if d.tier == "gate" and d.verdict == "regressed"]
-    improved = [
-        d.name for d in diffs
-        if d.tier in {"gate", "review"} and d.verdict == "improved"
-    ]
-    review = [
-        d.name for d in diffs
-        if d.tier == "review" and d.verdict in {"regressed", "improved"}
-    ]
-    info = [
-        d.name for d in diffs
-        if d.tier == "info" and d.delta is not None and abs(d.delta) > 1e-9
-    ]
+    improved = [d.name for d in diffs if d.tier in {"gate", "review"} and d.verdict == "improved"]
+    review = [d.name for d in diffs if d.tier == "review" and d.verdict in {"regressed", "improved"}]
+    info = [d.name for d in diffs if d.tier == "info" and d.delta is not None and abs(d.delta) > 1e-9]
     verdict = "REGRESSED" if regression else "PASS"
     return CompareResult(
         before_ref="before",
@@ -303,7 +297,7 @@ def test_gate_volume_only_change_is_pass():
 def test_gate_metric_drop_is_regressed():
     """A GATE-metric drop beyond epsilon → REGRESSED."""
     diffs = [
-        _diff("outcome.owner_precision", 0.80, 0.60),   # GATE drop → fail
+        _diff("outcome.owner_precision", 0.80, 0.60),  # GATE drop → fail
         _diff("detector.struggle_ratio.fire_count", 10.0, 50.0),  # INFO rise
     ]
     result = _aggregate(diffs)
@@ -315,7 +309,7 @@ def test_gate_detector_precision_drop_is_pass_with_review():
     """A detector precision/recall drop → PASS but surfaced in REVIEW (human decides)."""
     diffs = [
         _diff("detector.coordination_waste.recall", 1.0, 0.5),  # REVIEW drop
-        _diff("outcome.tau_kappa", 0.169, 0.169),               # GATE flat
+        _diff("outcome.tau_kappa", 0.169, 0.169),  # GATE flat
     ]
     result = _aggregate(diffs)
     assert result.verdict == "PASS"

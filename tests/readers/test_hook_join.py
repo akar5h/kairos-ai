@@ -289,14 +289,14 @@ class TestEnrichEnvelopeWithHooks:
         steps = [_step(0, "Bash"), _step(1, "Edit"), _step(2, "Bash")]
         env = _envelope(steps)
         rows = [
-            _hook_row("Bash", is_error=True, seq=1),   # Bash ordinal 0 → step 0
+            _hook_row("Bash", is_error=True, seq=1),  # Bash ordinal 0 → step 0
             _hook_row("Edit", is_error=False, seq=2),  # Edit ordinal 0 → step 1
             _hook_row("Bash", is_error=False, seq=3),  # Bash ordinal 1 → step 2
         ]
         enriched = self._enrich(env, rows, monkeypatch)
-        assert enriched.steps[0].status is StepStatus.ERROR   # Bash 0 → error
-        assert enriched.steps[1].status is StepStatus.OK       # Edit 0 → ok
-        assert enriched.steps[2].status is StepStatus.OK       # Bash 1 → ok
+        assert enriched.steps[0].status is StepStatus.ERROR  # Bash 0 → error
+        assert enriched.steps[1].status is StepStatus.OK  # Edit 0 → ok
+        assert enriched.steps[2].status is StepStatus.OK  # Bash 1 → ok
 
     def test_more_steps_than_rows_no_crash(self, monkeypatch: pytest.MonkeyPatch) -> None:
         steps = [_step(0, "Bash"), _step(1, "Bash"), _step(2, "Bash")]
@@ -349,18 +349,27 @@ class TestTraceWindowing:
         # All three hook rows for the whole session, ordered by seq.
         session_rows = [
             _hook_row(
-                "Bash", is_error=True, seq=1,
-                tool_input={"command": "A-bash"}, tool_output="out-A-bash",
+                "Bash",
+                is_error=True,
+                seq=1,
+                tool_input={"command": "A-bash"},
+                tool_output="out-A-bash",
                 occurred_at=_T_A,
             ),
             _hook_row(
-                "Read", is_error=False, seq=2,
-                tool_input={"file_path": "A-read"}, tool_output="out-A-read",
+                "Read",
+                is_error=False,
+                seq=2,
+                tool_input={"file_path": "A-read"},
+                tool_output="out-A-read",
                 occurred_at=_T_A + timedelta(seconds=1),
             ),
             _hook_row(
-                "Bash", is_error=False, seq=3,
-                tool_input={"command": "B-bash"}, tool_output="out-B-bash",
+                "Bash",
+                is_error=False,
+                seq=3,
+                tool_input={"command": "B-bash"},
+                tool_output="out-B-bash",
                 occurred_at=_T_B,
             ),
         ]
@@ -381,18 +390,27 @@ class TestTraceWindowing:
         """The earlier trace (A) aligns to its own rows when enriched."""
         session_rows = [
             _hook_row(
-                "Bash", is_error=True, seq=1,
-                tool_input={"command": "A-bash"}, tool_output="out-A-bash",
+                "Bash",
+                is_error=True,
+                seq=1,
+                tool_input={"command": "A-bash"},
+                tool_output="out-A-bash",
                 occurred_at=_T_A,
             ),
             _hook_row(
-                "Read", is_error=False, seq=2,
-                tool_input={"file_path": "A-read"}, tool_output="out-A-read",
+                "Read",
+                is_error=False,
+                seq=2,
+                tool_input={"file_path": "A-read"},
+                tool_output="out-A-read",
                 occurred_at=_T_A + timedelta(seconds=1),
             ),
             _hook_row(
-                "Bash", is_error=False, seq=3,
-                tool_input={"command": "B-bash"}, tool_output="out-B-bash",
+                "Bash",
+                is_error=False,
+                seq=3,
+                tool_input={"command": "B-bash"},
+                tool_output="out-B-bash",
                 occurred_at=_T_B,
             ),
         ]
@@ -596,8 +614,13 @@ class TestHookJoinIntegration:
                 session_id,
                 [
                     {"event_name": "SessionStart", "tool_name": None, "is_error": None},
-                    {"event_name": "PostToolUse", "tool_name": "Edit", "is_error": False,
-                     "tool_input_redacted": {"file_path": "/tmp/x.py"}, "tool_output": "ok"},
+                    {
+                        "event_name": "PostToolUse",
+                        "tool_name": "Edit",
+                        "is_error": False,
+                        "tool_input_redacted": {"file_path": "/tmp/x.py"},
+                        "tool_output": "ok",
+                    },
                     {"event_name": "SessionEnd", "tool_name": None, "is_error": None},
                 ],
             )

@@ -60,7 +60,7 @@ class RefEvalResult:
     """k-run evaluation at one git ref."""
 
     ref: str
-    ref_full: str          # resolved full SHA
+    ref_full: str  # resolved full SHA
     k: int
     panels: list[MetricPanel]
     corpus_hash: str
@@ -73,9 +73,9 @@ class MetricDiff:
     name: str
     before: float | None
     after: float | None
-    delta: float | None     # after - before; None if either side is None
-    verdict: str            # "improved" | "regressed" | "unchanged" | "unknown"
-    tier: str = "info"      # "gate" | "review" | "info" — see metric tiers below
+    delta: float | None  # after - before; None if either side is None
+    verdict: str  # "improved" | "regressed" | "unchanged" | "unknown"
+    tier: str = "info"  # "gate" | "review" | "info" — see metric tiers below
 
 
 @dataclass
@@ -89,7 +89,7 @@ class CompareResult:
     k: int
     corpus_hash: str
     diffs: list[MetricDiff]
-    verdict: str            # "PASS" | "REGRESSED" | "UNKNOWN"
+    verdict: str  # "PASS" | "REGRESSED" | "UNKNOWN"
     targeted_metrics: list[str] = field(default_factory=list)
     """Metrics that the change was intended to improve (informational)."""
     regression_metrics: list[str] = field(default_factory=list)
@@ -110,7 +110,9 @@ def _resolve_ref(ref: str, repo: Path = _REPO_ROOT) -> str:
     """Resolve a git ref to its full SHA."""
     result = subprocess.run(  # noqa: S603
         ["git", "rev-parse", "--verify", ref],  # noqa: S607
-        capture_output=True, text=True, cwd=str(repo)
+        capture_output=True,
+        text=True,
+        cwd=str(repo),
     )
     if result.returncode != 0:
         raise ValueError(f"Cannot resolve git ref '{ref}': {result.stderr.strip()}")
@@ -129,12 +131,12 @@ def _create_worktree(ref_sha: str, worktree_path: Path, repo: Path = _REPO_ROOT)
         return
     result = subprocess.run(  # noqa: S603
         ["git", "worktree", "add", "--detach", str(worktree_path), ref_sha],  # noqa: S607
-        capture_output=True, text=True, cwd=str(repo)
+        capture_output=True,
+        text=True,
+        cwd=str(repo),
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"git worktree add failed for ref {ref_sha}: {result.stderr.strip()}"
-        )
+        raise RuntimeError(f"git worktree add failed for ref {ref_sha}: {result.stderr.strip()}")
 
 
 def _remove_worktree(worktree_path: Path, repo: Path = _REPO_ROOT) -> None:
@@ -142,7 +144,8 @@ def _remove_worktree(worktree_path: Path, repo: Path = _REPO_ROOT) -> None:
     with contextlib.suppress(Exception):
         subprocess.run(  # noqa: S603
             ["git", "worktree", "remove", "--force", str(worktree_path)],  # noqa: S607
-            capture_output=True, cwd=str(repo)
+            capture_output=True,
+            cwd=str(repo),
         )
     # Belt-and-suspenders: if the directory still exists, remove it manually.
     if worktree_path.exists():
@@ -150,7 +153,8 @@ def _remove_worktree(worktree_path: Path, repo: Path = _REPO_ROOT) -> None:
     # Prune stale worktree refs.
     subprocess.run(  # noqa: S603
         ["git", "worktree", "prune"],  # noqa: S607
-        capture_output=True, cwd=str(repo)
+        capture_output=True,
+        cwd=str(repo),
     )
 
 
@@ -237,9 +241,7 @@ def _run_panel_in_worktree(
     Returns the MetricPanel from the subprocess stdout.
     """
     # Write the runner script to a temp file
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False, prefix="kairos_eval_"
-    ) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, prefix="kairos_eval_") as f:
         f.write(_PANEL_RUNNER_SCRIPT)
         runner_path = f.name
 
@@ -248,8 +250,12 @@ def _run_panel_in_worktree(
     try:
         result = subprocess.run(  # noqa: S603
             [  # noqa: S607
-                "uv", "run", "--project", str(worktree_path),
-                "python", runner_path,
+                "uv",
+                "run",
+                "--project",
+                str(worktree_path),
+                "python",
+                runner_path,
                 str(worktree_path),
                 str(host_src),
                 str(taubench_dir),
@@ -274,11 +280,9 @@ def _run_panel_in_worktree(
     # Parse the JSON panel from stdout (last JSON block in output)
     stdout = result.stdout.strip()
     # Find the JSON block (skip any uv output before it)
-    json_match = re.search(r'\{.*\}', stdout, re.DOTALL)
+    json_match = re.search(r"\{.*\}", stdout, re.DOTALL)
     if not json_match:
-        raise RuntimeError(
-            f"No JSON found in panel runner stdout:\n{stdout[:2000]}"
-        )
+        raise RuntimeError(f"No JSON found in panel runner stdout:\n{stdout[:2000]}")
 
     panel_dict = json.loads(json_match.group())
     return _panel_from_dict(panel_dict)
@@ -484,13 +488,15 @@ def _extract_metric_values(panel: MetricPanel) -> dict[str, float | None]:
 _GATE_EPSILON: float = 0.01
 
 # GATE tier — grounded quality metrics, higher-is-better. A drop fails the gate.
-_GATE_METRICS: frozenset[str] = frozenset({
-    "outcome.owner_precision",
-    "outcome.owner_recall",
-    "outcome.tau_kappa",
-    "outcome.tau_fail_precision",
-    "outcome.tau_fail_recall",
-})
+_GATE_METRICS: frozenset[str] = frozenset(
+    {
+        "outcome.owner_precision",
+        "outcome.owner_recall",
+        "outcome.tau_kappa",
+        "outcome.tau_fail_precision",
+        "outcome.tau_fail_recall",
+    }
+)
 
 
 def _metric_tier(name: str) -> str:
@@ -498,9 +504,7 @@ def _metric_tier(name: str) -> str:
     if name in _GATE_METRICS:
         return "gate"
     # Detector precision/recall vs labels → REVIEW (human decides).
-    if name.startswith("detector.") and (
-        name.endswith(".precision") or name.endswith(".recall")
-    ):
+    if name.startswith("detector.") and (name.endswith(".precision") or name.endswith(".recall")):
         return "review"
     # Everything else (volume, severity counts, abstention, aggregate) → INFO.
     return "info"
@@ -599,29 +603,16 @@ def compare(
         delta = (av - bv) if (av is not None and bv is not None) else None
         verdict = _classify_delta(name, delta)
         tier = _metric_tier(name)
-        diffs.append(
-            MetricDiff(name=name, before=bv, after=av, delta=delta, verdict=verdict, tier=tier)
-        )
+        diffs.append(MetricDiff(name=name, before=bv, after=av, delta=delta, verdict=verdict, tier=tier))
 
     # GATE: only grounded-quality drops fail the gate.
-    regression_metrics = [
-        d.name for d in diffs if d.tier == "gate" and d.verdict == "regressed"
-    ]
+    regression_metrics = [d.name for d in diffs if d.tier == "gate" and d.verdict == "regressed"]
     # IMPROVEMENTS: GATE/REVIEW metrics that rose (volume rises are not credited).
-    improved_metrics = [
-        d.name for d in diffs
-        if d.tier in {"gate", "review"} and d.verdict == "improved"
-    ]
+    improved_metrics = [d.name for d in diffs if d.tier in {"gate", "review"} and d.verdict == "improved"]
     # REVIEW: detector precision/recall changes (both directions) — human review.
-    review_metrics = [
-        d.name for d in diffs
-        if d.tier == "review" and d.verdict in {"regressed", "improved"}
-    ]
+    review_metrics = [d.name for d in diffs if d.tier == "review" and d.verdict in {"regressed", "improved"}]
     # INFO: any volume metric that actually moved — diagnostic only.
-    info_metrics = [
-        d.name for d in diffs
-        if d.tier == "info" and d.delta is not None and abs(d.delta) > 1e-9
-    ]
+    info_metrics = [d.name for d in diffs if d.tier == "info" and d.delta is not None and abs(d.delta) > 1e-9]
 
     # Verdict = REGRESSED iff a GATE metric dropped > epsilon; else PASS.
     verdict = "REGRESSED" if regression_metrics else "PASS"
@@ -739,8 +730,7 @@ def _write_compare_report(
     for diff in result.diffs:
         delta_str = f"Δ{_fmt(diff.delta, 4)}" if diff.delta is not None else "—"
         lines.append(
-            f"| `{diff.name}` | {diff.tier} | {_fmt(diff.before)} | {_fmt(diff.after)} "
-            f"| {delta_str} | {diff.verdict} |"
+            f"| `{diff.name}` | {diff.tier} | {_fmt(diff.before)} | {_fmt(diff.after)} | {delta_str} | {diff.verdict} |"
         )
     lines.append("")
     lines += [

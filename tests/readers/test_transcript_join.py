@@ -63,9 +63,7 @@ def _call(
 
 
 def _write_jsonl(lines: list[dict[str, Any]]) -> Path:
-    with tempfile.NamedTemporaryFile(
-        suffix=".jsonl", delete=False, mode="w", encoding="utf-8"
-    ) as f:
+    with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False, mode="w", encoding="utf-8") as f:
         for line in lines:
             f.write(json.dumps(line) + "\n")
     return Path(f.name)
@@ -170,18 +168,14 @@ class TestParseTranscript:
             path.unlink(missing_ok=True)
 
     def test_corrupt_line_skipped(self) -> None:
-        with tempfile.NamedTemporaryFile(
-            suffix=".jsonl", delete=False, mode="w", encoding="utf-8"
-        ) as f:
+        with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False, mode="w", encoding="utf-8") as f:
             f.write("NOT JSON\n")
             f.write(
                 json.dumps(
                     {
                         "type": "assistant",
                         "timestamp": "2026-06-10T08:00:00.000Z",
-                        "message": {
-                            "content": [{"type": "tool_use", "id": "t", "name": "Bash", "input": {}}]
-                        },
+                        "message": {"content": [{"type": "tool_use", "id": "t", "name": "Bash", "input": {}}]},
                     }
                 )
                 + "\n"
@@ -326,9 +320,7 @@ class TestToolErrorsFromTranscript:
 
         ts_base = "2026-06-10T08:00:01.000Z"
         lines = _cc_transcript_lines(tool_name="Edit", is_error=True, ts=ts_base)
-        transcript_path.write_text(
-            "\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8"
-        )
+        transcript_path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
 
         span_start_ns = int(datetime(2026, 6, 10, 8, 0, 0, tzinfo=UTC).timestamp() * 1e9)
         span_end_ns = int(datetime(2026, 6, 10, 8, 0, 10, tzinfo=UTC).timestamp() * 1e9)
@@ -360,9 +352,7 @@ class TestToolErrorsFromTranscript:
 
         ts_base = "2026-06-10T08:00:01.000Z"
         lines = _cc_transcript_lines(tool_name="Bash", is_error=False, ts=ts_base)
-        transcript_path.write_text(
-            "\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8"
-        )
+        transcript_path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
 
         span_start_ns = int(datetime(2026, 6, 10, 8, 0, 0, tzinfo=UTC).timestamp() * 1e9)
         span_end_ns = int(datetime(2026, 6, 10, 8, 0, 10, tzinfo=UTC).timestamp() * 1e9)
@@ -522,9 +512,7 @@ class TestPhoenixSpansToEnvelopeTranscriptCorrection:
         """error_count is updated when corrections flip steps."""
         monkeypatch.setattr(
             "kairos.readers.phoenix.tool_errors_from_transcript",
-            lambda spans, steps: {
-                s.step_index: True for s in steps if s.step_type is StepType.TOOL_CALL
-            },
+            lambda spans, steps: {s.step_index: True for s in steps if s.step_type is StepType.TOOL_CALL},
         )
 
         from kairos.readers.phoenix import spans_to_envelope
@@ -540,9 +528,7 @@ class TestPhoenixSpansToEnvelopeTranscriptCorrection:
         """A step already ERROR (from execution-child success=False) stays ERROR."""
         monkeypatch.setattr(
             "kairos.readers.phoenix.tool_errors_from_transcript",
-            lambda spans, steps: {
-                s.step_index: True for s in steps if s.step_type is StepType.TOOL_CALL
-            },
+            lambda spans, steps: {s.step_index: True for s in steps if s.step_type is StepType.TOOL_CALL},
         )
 
         from kairos.readers.phoenix import spans_to_envelope
@@ -631,9 +617,7 @@ class TestToolArgsFromTranscript:
                 },
             },
         ]
-        transcript_path.write_text(
-            "\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8"
-        )
+        transcript_path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
 
         span_start_ns = int(datetime(2026, 6, 10, 8, 0, 0, tzinfo=UTC).timestamp() * 1e9)
         span_end_ns = int(datetime(2026, 6, 10, 8, 0, 10, tzinfo=UTC).timestamp() * 1e9)
@@ -686,15 +670,11 @@ class TestToolArgsFromTranscript:
                 "type": "user",
                 "timestamp": "2026-06-10T08:00:02.000Z",
                 "message": {
-                    "content": [
-                        {"type": "tool_result", "tool_use_id": "tu_sec_01", "is_error": False, "content": "ok"}
-                    ]
+                    "content": [{"type": "tool_result", "tool_use_id": "tu_sec_01", "is_error": False, "content": "ok"}]
                 },
             },
         ]
-        transcript_path.write_text(
-            "\n".join(json.dumps(line) for line in lines_) + "\n", encoding="utf-8"
-        )
+        transcript_path.write_text("\n".join(json.dumps(line) for line in lines_) + "\n", encoding="utf-8")
 
         span_start_ns = int(datetime(2026, 6, 10, 8, 0, 0, tzinfo=UTC).timestamp() * 1e9)
         span_end_ns = int(datetime(2026, 6, 10, 8, 0, 10, tzinfo=UTC).timestamp() * 1e9)
@@ -753,8 +733,9 @@ class TestToolArgsFromTranscript:
 
         monkeypatch.setattr(
             "kairos.readers.phoenix.tool_args_from_transcript",
-            lambda spans, steps: {s.step_index: {"file_path": "/TRANSCRIPT"} for s in steps
-                                   if s.step_type is StepType.TOOL_CALL},
+            lambda spans, steps: {
+                s.step_index: {"file_path": "/TRANSCRIPT"} for s in steps if s.step_type is StepType.TOOL_CALL
+            },
         )
         monkeypatch.setattr(
             "kairos.readers.phoenix.tool_errors_from_transcript",

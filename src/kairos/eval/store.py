@@ -46,7 +46,7 @@ class EvalRunRecord:
     corpus_hash: str
     config_hash: str | None
     k: int
-    panel: dict[str, Any]   # MetricPanel.to_dict()
+    panel: dict[str, Any]  # MetricPanel.to_dict()
     verdict: str
     ts: datetime
 
@@ -93,8 +93,15 @@ def store_run(
             ON CONFLICT (run_id) DO NOTHING
             """,
             (
-                run_id, ref, ref_full, corpus_hash, config_hash,
-                k, panel_json, verdict, ts,
+                run_id,
+                ref,
+                ref_full,
+                corpus_hash,
+                config_hash,
+                k,
+                panel_json,
+                verdict,
+                ts,
             ),
         )
         conn.commit()

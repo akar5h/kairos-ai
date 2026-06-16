@@ -42,15 +42,17 @@ if TYPE_CHECKING:
 # ── Valid metric names ────────────────────────────────────────────────────────
 
 #: Scalar columns in nightly_rollup that delta() can operate on.
-VALID_METRICS: frozenset[str] = frozenset({
-    "outcome_rate",
-    "struggle_p50",
-    "struggle_p90",
-    "coordination_waste_per_trace",
-    "tokens_per_unit",
-    "units",
-    "traces",
-})
+VALID_METRICS: frozenset[str] = frozenset(
+    {
+        "outcome_rate",
+        "struggle_p50",
+        "struggle_p90",
+        "coordination_waste_per_trace",
+        "tokens_per_unit",
+        "units",
+        "traces",
+    }
+)
 
 
 # ── Data classes ──────────────────────────────────────────────────────────────
@@ -130,9 +132,7 @@ class GuardrailCheckResult:
 def _dsn() -> str:
     dsn = os.environ.get("KAIROS_PG_DSN", "").strip()
     if not dsn:
-        raise RuntimeError(
-            "KAIROS_PG_DSN is not set — cannot compute deltas without a DB connection."
-        )
+        raise RuntimeError("KAIROS_PG_DSN is not set — cannot compute deltas without a DB connection.")
     return dsn
 
 
@@ -147,10 +147,7 @@ def _build_where_clause(
     allowed_scope_keys = {"workflow", "agent", "config_hash"}
     for k, v in scope.items():
         if k not in allowed_scope_keys:
-            raise ValueError(
-                f"scope key {k!r} is not allowed. "
-                f"Valid keys: {sorted(allowed_scope_keys)}"
-            )
+            raise ValueError(f"scope key {k!r} is not allowed. Valid keys: {sorted(allowed_scope_keys)}")
         where += f" AND {k} = %s"
         params.append(v)
     return where, params
@@ -182,8 +179,7 @@ def _has_baseline_break(
 ) -> bool:
     """Return True if any baseline_break sentinel row falls in [window_start, window_end]."""
     row = conn.execute(
-        "SELECT 1 FROM nightly_rollup "
-        "WHERE night_id BETWEEN %s AND %s AND baseline_break = true LIMIT 1",
+        "SELECT 1 FROM nightly_rollup WHERE night_id BETWEEN %s AND %s AND baseline_break = true LIMIT 1",
         (window_start, window_end),
     ).fetchone()
     return row is not None
@@ -243,13 +239,9 @@ def delta(
         series_break = break_before or break_after
         explanation_parts: list[str] = []
         if break_before:
-            explanation_parts.append(
-                f"baseline_break in before-window [{b_start}..{b_end}]"
-            )
+            explanation_parts.append(f"baseline_break in before-window [{b_start}..{b_end}]")
         if break_after:
-            explanation_parts.append(
-                f"baseline_break in after-window [{a_start}..{a_end}]"
-            )
+            explanation_parts.append(f"baseline_break in after-window [{a_start}..{a_end}]")
 
         pts_before = _fetch_points(metric, scope, b_start, b_end, _conn)
         pts_after = _fetch_points(metric, scope, a_start, a_end, _conn)
@@ -336,11 +328,7 @@ def guardrail_check(
             continue
         # For rate guardrails (outcome_rate, escalation_rate), degradation = rate fell.
         if g.delta < 0:
-            desc = (
-                f"{g.metric} degraded: "
-                f"{g.mean_before:.4f} → {g.mean_after:.4f} "
-                f"(delta={g.delta:+.4f})"
-            )
+            desc = f"{g.metric} degraded: {g.mean_before:.4f} → {g.mean_after:.4f} (delta={g.delta:+.4f})"
             degraded.append((g, desc))
 
     regression = primary_improved and bool(degraded)
@@ -348,18 +336,14 @@ def guardrail_check(
     if regression:
         guardrail_names = ", ".join(g.metric for g, _ in degraded)
         summary = (
-            f"REGRESSION: {primary.metric} changed by {primary.delta:+.4f} "
-            f"but guardrail(s) degraded: {guardrail_names}"
+            f"REGRESSION: {primary.metric} changed by {primary.delta:+.4f} but guardrail(s) degraded: {guardrail_names}"
         )
     elif primary.delta is None:
         summary = f"INCONCLUSIVE: {primary.metric} — insufficient data for delta"
     elif primary.delta == 0.0:
         summary = f"NO CHANGE: {primary.metric} delta=0"
     else:
-        summary = (
-            f"OK: {primary.metric} delta={primary.delta:+.4f}, "
-            f"no guardrail degradation"
-        )
+        summary = f"OK: {primary.metric} delta={primary.delta:+.4f}, no guardrail degradation"
 
     return GuardrailCheckResult(
         primary=primary,

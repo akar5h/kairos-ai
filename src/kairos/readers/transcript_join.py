@@ -59,10 +59,10 @@ logger = get_logger(__name__)
 # Pattern list is additive; order does not matter.
 
 _SECRET_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"sk-[A-Za-z0-9_\-]{20,}", re.ASCII),           # OpenAI / Anthropic sk- keys
-    re.compile(r"ghp_[A-Za-z0-9]{36}", re.ASCII),              # GitHub PAT
-    re.compile(r"AKIA[0-9A-Z]{16}", re.ASCII),                 # AWS access key
-    re.compile(r"Bearer\s+\S+", re.IGNORECASE),                # Bearer tokens
+    re.compile(r"sk-[A-Za-z0-9_\-]{20,}", re.ASCII),  # OpenAI / Anthropic sk- keys
+    re.compile(r"ghp_[A-Za-z0-9]{36}", re.ASCII),  # GitHub PAT
+    re.compile(r"AKIA[0-9A-Z]{16}", re.ASCII),  # AWS access key
+    re.compile(r"Bearer\s+\S+", re.IGNORECASE),  # Bearer tokens
     re.compile(r"-----BEGIN [A-Z ]+-----.*?-----END [A-Z ]+-----", re.DOTALL),  # PEM certs
     # JWT: three base64url segments joined by dots
     re.compile(r"eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+", re.ASCII),

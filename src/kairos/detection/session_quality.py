@@ -72,9 +72,7 @@ WTT_T: float = 0.05
 
 # Op names exempt from D4 (research / coordination — low side-effects expected).
 # These match the operation names in config/context.yaml exactly.
-D4_EXEMPT_OPS: frozenset[str] = frozenset(
-    {"Codebase Research", "Paperclip Coordination"}
-)
+D4_EXEMPT_OPS: frozenset[str] = frozenset({"Codebase Research", "Paperclip Coordination"})
 
 # LEARN stage — tool presence rate threshold for expectation-miss candidates.
 # 0.9 means: tool is present in ≥90% of clean traces → expected in every trace.
@@ -179,9 +177,7 @@ def detect_unrecovered_error(
       feeds triage/discovery, never as an alarm. Owner decision 2026-06-13.
     """
     tool_steps = [s for s in trace.steps if s.step_type == StepType.TOOL_CALL and s.tool_name]
-    required_side_effects: frozenset[str] = frozenset(
-        operation.required_side_effect_tools if operation else []
-    )
+    required_side_effects: frozenset[str] = frozenset(operation.required_side_effect_tools if operation else [])
     restart_indices = _find_session_restart_indices(trace.steps)
 
     findings: list[Finding] = []
@@ -310,9 +306,7 @@ def detect_struggle_ratio(
     rejected_tool_calls = sum(
         1
         for s in tool_steps
-        if s.status == StepStatus.ERROR
-        and s.error_message is not None
-        and "tool_use_error" in s.error_message.lower()
+        if s.status == StepStatus.ERROR and s.error_message is not None and "tool_use_error" in s.error_message.lower()
     )
 
     redundant_steps = _count_redundant_steps(trace.steps)
@@ -322,9 +316,7 @@ def detect_struggle_ratio(
     if operation and operation.required_side_effect_tools:
         side_effect_tools = frozenset(operation.required_side_effect_tools)
         side_effect_successes = sum(
-            1
-            for s in tool_steps
-            if s.status == StepStatus.OK and s.tool_name in side_effect_tools
+            1 for s in tool_steps if s.status == StepStatus.OK and s.tool_name in side_effect_tools
         )
     else:
         side_effect_successes = sum(1 for s in tool_steps if s.status == StepStatus.OK)
@@ -349,9 +341,7 @@ def detect_struggle_ratio(
                 "rejected_tool_calls": rejected_tool_calls,
                 "side_effect_successes": side_effect_successes,
             },
-            affected_step_indices=[
-                s.step_index for s in tool_steps if s.status == StepStatus.ERROR
-            ],
+            affected_step_indices=[s.step_index for s in tool_steps if s.status == StepStatus.ERROR],
             estimated_token_waste=sum(s.total_tokens or 0 for s in tool_steps if s.status == StepStatus.ERROR),
         )
     ]
@@ -415,12 +405,14 @@ def detect_coordination_waste(
     repeat_violations: list[dict[str, Any]] = []
     for (tool_name, args_repr), indices in arg_counts.items():
         if len(indices) >= repeat_t:
-            repeat_violations.append({
-                "tool": tool_name,
-                "count": len(indices),
-                "step_indices": indices,
-                "args_repr": args_repr[:120],  # truncate for evidence field
-            })
+            repeat_violations.append(
+                {
+                    "tool": tool_name,
+                    "count": len(indices),
+                    "step_indices": indices,
+                    "args_repr": args_repr[:120],  # truncate for evidence field
+                }
+            )
 
     # Compute coordination-curl fraction for Bash steps.
     bash_steps = [s for s in tool_steps if s.tool_name == "Bash"]
@@ -491,9 +483,7 @@ def detect_work_to_talk_ratio(
     if operation and operation.required_side_effect_tools:
         side_effect_tools = frozenset(operation.required_side_effect_tools)
         side_effect_successes = sum(
-            1
-            for s in tool_steps
-            if s.status == StepStatus.OK and s.tool_name in side_effect_tools
+            1 for s in tool_steps if s.status == StepStatus.OK and s.tool_name in side_effect_tools
         )
     else:
         side_effect_successes = sum(1 for s in tool_steps if s.status == StepStatus.OK)
@@ -591,8 +581,7 @@ def _is_clean_trace(
     side_effect_successes = sum(
         1
         for s in tool_steps
-        if s.status == StepStatus.OK
-        and s.tool_name in frozenset(operation.required_side_effect_tools)
+        if s.status == StepStatus.OK and s.tool_name in frozenset(operation.required_side_effect_tools)
     )
     if side_effect_successes == 0:
         return False
@@ -644,10 +633,7 @@ def learn_tool_expectations(
             1
             for t in clean_traces
             if any(
-                s.step_type == StepType.TOOL_CALL
-                and s.tool_name == tool
-                and s.status == StepStatus.OK
-                for s in t.steps
+                s.step_type == StepType.TOOL_CALL and s.tool_name == tool and s.status == StepStatus.OK for s in t.steps
             )
         )
         tool_presence[tool] = present_count / clean_n
@@ -662,9 +648,7 @@ def learn_tool_expectations(
         trace_tools = frozenset(
             s.tool_name
             for s in trace.steps
-            if s.step_type == StepType.TOOL_CALL
-            and s.tool_name is not None
-            and s.status == StepStatus.OK
+            if s.step_type == StepType.TOOL_CALL and s.tool_name is not None and s.status == StepStatus.OK
         )
         for tool in expected_tools:
             if tool not in trace_tools:
@@ -706,16 +690,8 @@ def detect_session_quality(
     """
     findings: list[Finding] = []
     for trace in traces:
-        findings.extend(
-            detect_unrecovered_error(trace, operation, recovery_window=recovery_window)
-        )
-        findings.extend(
-            detect_struggle_ratio(trace, operation, struggle_t=struggle_t)
-        )
-        findings.extend(
-            detect_coordination_waste(trace, repeat_t=repeat_t, curl_t=curl_t)
-        )
-        findings.extend(
-            detect_work_to_talk_ratio(trace, operation, wtt_t=wtt_t)
-        )
+        findings.extend(detect_unrecovered_error(trace, operation, recovery_window=recovery_window))
+        findings.extend(detect_struggle_ratio(trace, operation, struggle_t=struggle_t))
+        findings.extend(detect_coordination_waste(trace, repeat_t=repeat_t, curl_t=curl_t))
+        findings.extend(detect_work_to_talk_ratio(trace, operation, wtt_t=wtt_t))
     return findings

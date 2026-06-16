@@ -175,9 +175,7 @@ class TestBuildHaywireStepList:
         restart_idx = 15
         envelope = _make_envelope(steps)
         restart_indices = frozenset({restart_idx})
-        entries, collapsed_runs = bhq.build_haywire_step_list(
-            envelope, restart_indices, {}, has_transcript=True
-        )
+        entries, collapsed_runs = bhq.build_haywire_step_list(envelope, restart_indices, {}, has_transcript=True)
         # There should be at least one collapsed run (the 10 pre-window Bash steps).
         assert len(collapsed_runs) >= 1
 

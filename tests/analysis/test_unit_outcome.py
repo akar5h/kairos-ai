@@ -279,7 +279,7 @@ class TestRollupUnitsGrouping:
         t2 = _trace("t2", ["Edit"], correlation_key_value="issue-1", started_at=ts2)
         results = [
             _result("t1", outcome_pass=False, computable=True),  # earlier, fails
-            _result("t2", outcome_pass=True, computable=True),   # later, passes
+            _result("t2", outcome_pass=True, computable=True),  # later, passes
         ]
         units = rollup_units([t1, t2], results, {}, correlation_key="paperclip.issue")
         assert len(units) == 1
@@ -309,7 +309,7 @@ class TestRollupUnitsGrouping:
         results = [
             _result("t1", outcome_pass=True, computable=True),
             _result("t2", outcome_pass=False, computable=True),  # t2 fails
-            _result("t3", computable=False),                     # t3 not computable
+            _result("t3", computable=False),  # t3 not computable
         ]
         units = rollup_units([t1, t2, t3], results, {}, correlation_key="paperclip.issue")
         # Last computable = t2 (fails) even though t3 is chronologically last.

@@ -56,8 +56,7 @@ def _span_to_row(span: Any) -> dict[str, Any]:
         attributes: dict[str, Any] = dict(span.get("attributes") or {})
         raw_events = span.get("events") or []
         events: list[dict[str, Any]] = [
-            {"name": ev.get("name", ""), "attributes": dict(ev.get("attributes") or {})}
-            for ev in raw_events
+            {"name": ev.get("name", ""), "attributes": dict(ev.get("attributes") or {})} for ev in raw_events
         ]
         resource: dict[str, Any] = {}
     else:

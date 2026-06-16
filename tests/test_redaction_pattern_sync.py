@@ -69,9 +69,7 @@ class TestPatternSync:
         hook_strs = [p.pattern for p in hook]
         src_strs = [p.pattern for p in src]
         assert hook_strs == src_strs, (
-            "Pattern strings differ between hook and transcript_join.\n"
-            f"hook:  {hook_strs}\n"
-            f"src:   {src_strs}"
+            f"Pattern strings differ between hook and transcript_join.\nhook:  {hook_strs}\nsrc:   {src_strs}"
         )
 
     def test_pattern_flags_identical(self) -> None:
@@ -80,9 +78,7 @@ class TestPatternSync:
         hook_flags = [p.flags for p in hook]
         src_flags = [p.flags for p in src]
         assert hook_flags == src_flags, (
-            "Pattern flags differ between hook and transcript_join.\n"
-            f"hook:  {hook_flags}\n"
-            f"src:   {src_flags}"
+            f"Pattern flags differ between hook and transcript_join.\nhook:  {hook_flags}\nsrc:   {src_flags}"
         )
 
 
@@ -128,9 +124,7 @@ class TestDBUrlPattern:
     def test_does_not_mangle_benign(self, text: str, src_patterns: list[Any]) -> None:
         result = _redact(text, src_patterns)
         # should not introduce [REDACTED] for benign URLs
-        assert "[REDACTED]" not in result, (
-            f"Benign text was mangled: {text!r} → {result!r}"
-        )
+        assert "[REDACTED]" not in result, f"Benign text was mangled: {text!r} → {result!r}"
 
 
 class TestAssignmentPatterns:
@@ -168,9 +162,7 @@ class TestAssignmentPatterns:
     @pytest.mark.parametrize("text", BENIGN)
     def test_does_not_mangle_benign(self, text: str, src_patterns: list[Any]) -> None:
         result = _redact(text, src_patterns)
-        assert "[REDACTED]" not in result, (
-            f"Benign text was mangled: {text!r} → {result!r}"
-        )
+        assert "[REDACTED]" not in result, f"Benign text was mangled: {text!r} → {result!r}"
 
 
 class TestGitHubFinePAT:
@@ -183,7 +175,7 @@ class TestGitHubFinePAT:
     ]
 
     BENIGN = [
-        "github_pat_short",           # too short — under 22 chars after prefix
+        "github_pat_short",  # too short — under 22 chars after prefix
         "see github.com/pat for docs",
     ]
 
@@ -195,25 +187,23 @@ class TestGitHubFinePAT:
     @pytest.mark.parametrize("text", BENIGN)
     def test_does_not_mangle_benign(self, text: str, src_patterns: list[Any]) -> None:
         result = _redact(text, src_patterns)
-        assert "[REDACTED]" not in result, (
-            f"Benign text was mangled: {text!r} → {result!r}"
-        )
+        assert "[REDACTED]" not in result, f"Benign text was mangled: {text!r} → {result!r}"
 
 
 class TestSlackTokenPattern:
     """xox{b,a,p,r,s}- Slack tokens must be redacted."""
 
     SECRETS = [
-        "xox" "b-12345678901-abcdefghij",
-        "xox" "a-abcdefghijklmnopqrstuvwxyz",
-        "xox" "p-" + "abc123-" * 3,
-        "xox" "r-longtoken1234567890",
-        "xox" "s-some-slack-token-here",
+        "xox" + "b-12345678901-abcdefghij",
+        "xox" + "a-abcdefghijklmnopqrstuvwxyz",
+        "xox" + "p-" + "abc123-" * 3,
+        "xox" + "r-longtoken1234567890",
+        "xox" + "s-some-slack-token-here",
     ]
 
     BENIGN = [
         "xox is a scrabble word",
-        "xoxo-hugs-and-kisses",   # 'o' not in [baprs]
+        "xoxo-hugs-and-kisses",  # 'o' not in [baprs]
         "the slack app config",
     ]
 
@@ -225,9 +215,7 @@ class TestSlackTokenPattern:
     @pytest.mark.parametrize("text", BENIGN)
     def test_does_not_mangle_benign(self, text: str, src_patterns: list[Any]) -> None:
         result = _redact(text, src_patterns)
-        assert "[REDACTED]" not in result, (
-            f"Benign text was mangled: {text!r} → {result!r}"
-        )
+        assert "[REDACTED]" not in result, f"Benign text was mangled: {text!r} → {result!r}"
 
 
 # ── 3. REGRESSION — original six patterns still work ──────────────────────────
@@ -246,9 +234,7 @@ class TestOriginalPatternsRegression:
     ]
 
     @pytest.mark.parametrize("desc,secret", CASES)
-    def test_original_pattern_still_redacts(
-        self, desc: str, secret: str, src_patterns: list[Any]
-    ) -> None:
+    def test_original_pattern_still_redacts(self, desc: str, secret: str, src_patterns: list[Any]) -> None:
         result = _redact(secret, src_patterns)
         assert "[REDACTED]" in result, f"Original pattern '{desc}' stopped working: {secret!r}"
         assert secret not in result
@@ -313,7 +299,7 @@ class TestHookSubprocessNewPatterns:
         assert "[REDACTED]" in raw
 
     def test_slack_token_redacted_in_hook_spool(self, tmp_path: Path) -> None:
-        tok = "xox" "b-12345678901-abcdefghijklmno"
+        tok = "xox" + "b-12345678901-abcdefghijklmno"
         raw = self._run_hook(f"curl -H 'Authorization: {tok}' https://slack.com/api/chat.postMessage", tmp_path)
         assert tok not in raw, "Slack token survived hook spool"
         assert "[REDACTED]" in raw

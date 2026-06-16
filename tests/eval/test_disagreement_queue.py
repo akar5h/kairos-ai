@@ -239,8 +239,7 @@ class TestDetectorNoteAttachment:
             "unrecovered_error",
             severity="warning",
             affected_step_indices=[3],
-            evidence={"tool": "Edit", "step_index": 3, "recovery_window": 10,
-                      "in_required_side_effects": True},
+            evidence={"tool": "Edit", "step_index": 3, "recovery_window": 10, "in_required_side_effects": True},
         )
         note = bdq._d1_note_for_step(3, [f], None)
         assert note is not None
@@ -279,8 +278,7 @@ class TestDetectorNoteAttachment:
             "unrecovered_error",
             severity="error",
             affected_step_indices=[7],
-            evidence={"tool": "Write", "step_index": 7, "recovery_window": 10,
-                      "in_required_side_effects": True},
+            evidence={"tool": "Write", "step_index": 7, "recovery_window": 10, "in_required_side_effects": True},
         )
         note = bdq._d1_note_for_step(7, [f], None)
         assert note is not None

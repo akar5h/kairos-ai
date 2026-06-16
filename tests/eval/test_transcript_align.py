@@ -231,18 +231,14 @@ class TestParseTranscript:
                     "type": "assistant",
                     "timestamp": "2026-06-10T07:00:00.000Z",
                     "message": {
-                        "content": [
-                            {"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "ls"}}
-                        ]
+                        "content": [{"type": "tool_use", "id": "tu_1", "name": "Bash", "input": {"command": "ls"}}]
                     },
                 },
                 {
                     "type": "user",
                     "timestamp": "2026-06-10T07:00:01.000Z",
                     "message": {
-                        "content": [
-                            {"type": "tool_result", "tool_use_id": "tu_1", "content": "file_a\nfile_b"}
-                        ]
+                        "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "file_a\nfile_b"}]
                     },
                 },
             ]
@@ -272,9 +268,7 @@ class TestParseTranscript:
                     "type": "user",
                     "timestamp": "2026-06-10T07:00:01.000Z",
                     "message": {
-                        "content": [
-                            {"type": "tool_result", "tool_use_id": "tu_1", "is_error": True, "content": "boom"}
-                        ]
+                        "content": [{"type": "tool_result", "tool_use_id": "tu_1", "is_error": True, "content": "boom"}]
                     },
                 },
             ]
