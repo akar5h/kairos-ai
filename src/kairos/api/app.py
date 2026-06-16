@@ -17,7 +17,10 @@ Environment variables::
 
 from __future__ import annotations
 
+import os
+
 import fastapi
+from fastapi.middleware.cors import CORSMiddleware
 
 from kairos.api.otlp import router as otlp_router
 from kairos.api.read import router as read_router
@@ -29,6 +32,21 @@ def create_app() -> fastapi.FastAPI:
         title="Kairos",
         description="Kairos AI — OTLP ingest + P2 read API",
         version="0.1.0",
+    )
+
+    # CORS: allow the UI (and other browser clients) to call the read API.
+    # Defaults to localhost dev origins; override via KAIROS_CORS_ORIGINS
+    # (comma-separated). The read API is non-mutating, so this is low-risk.
+    origins_env = os.environ.get(
+        "KAIROS_CORS_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    )
+    allow_origins = [o.strip() for o in origins_env.split(",") if o.strip()]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allow_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     @app.get("/health", tags=["meta"])
