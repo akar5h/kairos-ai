@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+:root {
+  /* Dark-first engineering palette */
+  --bg-base: #0d0d0f;
+  --bg-surface: #141417;
+  --bg-elevated: #1c1c21;
+  --bg-border: #2a2a32;
+
+  --text-primary: #e8e8ed;
+  --text-secondary: #8e8ea0;
+  --text-muted: #55555f;
+  --text-link: #7c91f5;
+
+  --accent-blue: #4a6cf7;
+  --accent-blue-dim: rgba(74, 108, 247, 0.12);
+  --accent-red: #e5534b;
+  --accent-red-dim: rgba(229, 83, 75, 0.12);
+  --accent-amber: #d97706;
+  --accent-amber-dim: rgba(217, 119, 6, 0.12);
+  --accent-green: #3fb950;
+  --accent-green-dim: rgba(63, 185, 80, 0.12);
+  --accent-purple: #a78bfa;
+
+  --font-mono: "Berkeley Mono", "JetBrains Mono", "Fira Code",
+    ui-monospace, "Cascadia Code", monospace;
+}
+
+@theme inline {
+  --color-background: var(--bg-base);
+  --color-foreground: var(--text-primary);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+html {
+  color-scheme: dark;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  min-height: 100vh;
+}
+
+/* Scrollbar — subtle dark */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-surface);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bg-border);
+  border-radius: 3px;
+}
+
+/* Code / pre */
+code,
+pre,
+kbd {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}

@@ -75,8 +75,10 @@ eval/review/haywire_queue.json
 # Streamlit dashboard cache
 eval/dashboard/.streamlit/
 
-# Node modules (scripts/package.json installs)
+# Node modules
 scripts/node_modules/
+ui/node_modules/
+ui/.next/
 
 # Kairos analysis output views (generated output — never commit)
 kairos-analysis-views/
