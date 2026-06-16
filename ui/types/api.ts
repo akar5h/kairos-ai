@@ -249,3 +249,32 @@ export interface LabelRow {
   label_class: string;
   ts: string;
 }
+
+// ── CreateLabel (POST /v1/labels body) ───────────────────────────────────────
+
+export type Verdict = "tp" | "fp" | "fn";
+
+export interface CreateLabelBody {
+  trace_id: string;
+  answer: string;
+  question?: string;
+  verdict?: Verdict | null;
+  label_class?: string;
+}
+
+// ── ClusterSummary (GET /v1/clusters) ─────────────────────────────────────────
+
+export interface ClusterSummary {
+  cluster_key: string;
+  trace_count: number;
+  min_night_id: string | null;
+  kinds: string[];
+  sample_features: Record<string, unknown>;
+}
+
+// ── ClusterTraceMember (GET /v1/clusters/{cluster_key}/traces) ────────────────
+
+export interface ClusterTraceMember {
+  trace_id: string;
+  labeled: boolean;
+}

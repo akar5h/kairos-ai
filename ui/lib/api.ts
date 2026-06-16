@@ -5,6 +5,9 @@
  * All functions throw on non-2xx so callers can handle errors uniformly.
  */
 import type {
+  ClusterSummary,
+  ClusterTraceMember,
+  CreateLabelBody,
   FindingRow,
   LabelRow,
   RawSpan,
@@ -78,6 +81,20 @@ export async function getTraceSpans(
   return apiFetch<RawSpan[]>(`/v1/traces/${traceId}/spans${qs}`);
 }
 
+// ── Clusters ──────────────────────────────────────────────────────────────────
+
+export async function getClusters(): Promise<ClusterSummary[]> {
+  return apiFetch<ClusterSummary[]>("/v1/clusters");
+}
+
+export async function getClusterTraces(
+  clusterKey: string,
+): Promise<ClusterTraceMember[]> {
+  return apiFetch<ClusterTraceMember[]>(
+    `/v1/clusters/${encodeURIComponent(clusterKey)}/traces`,
+  );
+}
+
 // ── Search ────────────────────────────────────────────────────────────────────
 
 export async function search(opts: {
@@ -99,4 +116,22 @@ export async function getFindings(traceId: string): Promise<FindingRow[]> {
 
 export async function getLabels(traceId: string): Promise<LabelRow[]> {
   return apiFetch<LabelRow[]>(`/v1/labels?trace_id=${traceId}`);
+}
+
+/**
+ * Create a label (POST /v1/labels). Append-only — runs client-side.
+ * Returns the created LabelRow (201). Throws on non-2xx.
+ */
+export async function createLabel(body: CreateLabelBody): Promise<LabelRow> {
+  const res = await fetch(`${BASE}/v1/labels`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => res.statusText);
+    throw new Error(`${res.status} ${detail}`);
+  }
+  return res.json() as Promise<LabelRow>;
 }

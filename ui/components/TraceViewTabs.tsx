@@ -2,7 +2,7 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 
-type TabView = "conversation" | "timeline" | "spans";
+type TabView = "conversation" | "timeline" | "spans" | "labels";
 
 interface TraceViewTabsProps {
   currentView: TabView;
@@ -13,6 +13,7 @@ const TABS: { id: TabView; label: string }[] = [
   { id: "spans", label: "Raw Spans" },
   { id: "conversation", label: "Conversation" },
   { id: "timeline", label: "Step Timeline" },
+  { id: "labels", label: "Labels" },
 ];
 
 export function TraceViewTabs({ currentView, enrichHooks }: TraceViewTabsProps) {

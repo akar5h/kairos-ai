@@ -23,10 +23,11 @@ import {
 } from "@/lib/format";
 import type { FindingRow, LabelRow } from "@/types/api";
 import { TraceViewTabs } from "@/components/TraceViewTabs";
+import { LabelingPanel } from "@/components/LabelingPanel";
 
 export const dynamic = "force-dynamic";
 
-type TabView = "spans" | "conversation" | "timeline";
+type TabView = "spans" | "conversation" | "timeline" | "labels";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -39,7 +40,7 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 }
 
 function parseView(v: string | undefined): TabView {
-  if (v === "conversation" || v === "timeline") return v;
+  if (v === "conversation" || v === "timeline" || v === "labels") return v;
   return "spans"; // default to raw spans
 }
 
@@ -186,6 +187,8 @@ export default async function TraceDetailPage({ params, searchParams }: PageProp
               <StepTimeline envelope={envelope} />
             </div>
           ) : null
+        ) : view === "labels" ? (
+          <LabelingPanel traceId={id} initialLabels={labels} />
         ) : envelope ? (
           <ConversationView envelope={envelope} />
         ) : null}

@@ -68,6 +68,12 @@ export default function RootLayout({
             >
               sessions
             </Link>
+            <Link
+              href="/clusters"
+              className="hover:text-[var(--text-primary)] transition-colors"
+            >
+              clusters
+            </Link>
           </nav>
 
           {/* Global search — takes remaining space */}

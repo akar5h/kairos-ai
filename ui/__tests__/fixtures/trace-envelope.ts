@@ -2,7 +2,16 @@
  * Synthetic fixtures for tests.
  * All data is fabricated — no real traces, no secrets.
  */
-import type { TraceEnvelope, TraceSummary, SessionSummary, TraceInSession, RawSpan } from "@/types/api";
+import type {
+  TraceEnvelope,
+  TraceSummary,
+  SessionSummary,
+  TraceInSession,
+  RawSpan,
+  ClusterSummary,
+  ClusterTraceMember,
+  LabelRow,
+} from "@/types/api";
 
 export const FIXTURE_TRACE_ID = "abcdef1234567890abcdef1234567890";
 export const FIXTURE_SESSION_ID = "sess-alpha-001";
@@ -265,5 +274,48 @@ export const FIXTURE_RAW_SPANS: RawSpan[] = [
     start_time: "2024-03-15T10:00:02Z",
     end_time: "2024-03-15T10:00:02.012Z",
     attributes: { tool_name: "Bash", "kairos.span.kind": "tool_call" },
+  },
+];
+
+export const FIXTURE_CLUSTER_KEY = "tool_misuse::Bash|exit_nonzero";
+
+export const FIXTURE_CLUSTERS: ClusterSummary[] = [
+  {
+    cluster_key: FIXTURE_CLUSTER_KEY,
+    trace_count: 12,
+    min_night_id: "2024-03-14",
+    kinds: ["tool_call", "llm"],
+    sample_features: { detector: "exit_nonzero", tool: "Bash" },
+  },
+  {
+    cluster_key: "retrieval_drift::empty_chunks",
+    trace_count: 5,
+    min_night_id: "2024-03-15",
+    kinds: ["retrieval"],
+    sample_features: { detector: "empty_chunks" },
+  },
+  {
+    cluster_key: "unclustered",
+    trace_count: 1,
+    min_night_id: null,
+    kinds: [],
+    sample_features: {},
+  },
+];
+
+export const FIXTURE_CLUSTER_TRACES: ClusterTraceMember[] = [
+  { trace_id: FIXTURE_TRACE_ID, labeled: true },
+  { trace_id: "bbbbbb2234567890bbbbbb2234567890", labeled: false },
+];
+
+export const FIXTURE_LABELS: LabelRow[] = [
+  {
+    id: "lbl-0001",
+    trace_id: FIXTURE_TRACE_ID,
+    question: "Did the agent misuse Bash?",
+    answer: "Yes — ran cat on a nonexistent file.",
+    verdict: "tp",
+    label_class: "tool_misuse",
+    ts: "2024-03-15T11:00:00Z",
   },
 ];
