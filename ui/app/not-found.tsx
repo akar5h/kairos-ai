@@ -17,7 +17,7 @@ export default function NotFound() {
         className="text-xs"
         style={{ color: "var(--text-link)" }}
       >
-        ← Back to traces
+        ← Back to sessions
       </Link>
     </div>
   );

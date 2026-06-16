@@ -19,14 +19,16 @@ export function CopyButton({ text, label = "Copy" }: { text: string; label?: str
     <button
       onClick={handleCopy}
       aria-label={copied ? "Copied" : label}
-      className="text-xs rounded px-1.5 py-0.5 transition-colors cursor-pointer"
+      className="text-xs rounded px-1 cursor-pointer"
       style={{
-        background: copied ? "var(--accent-blue-dim)" : "transparent",
+        background: copied ? "var(--accent-blue-dim)" : "var(--bg-elevated)",
         color: copied ? "var(--accent-blue)" : "var(--text-muted)",
         border: "1px solid var(--bg-border)",
+        fontSize: 10,
+        lineHeight: "16px",
       }}
     >
-      {copied ? "copied" : "copy"}
+      {copied ? "✓" : "copy"}
     </button>
   );
 }

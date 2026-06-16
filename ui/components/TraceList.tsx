@@ -1,6 +1,7 @@
 /**
  * TraceList — renders a table of TraceSummary rows.
  * Pure presentation; data fetched by parent (Server Component page).
+ * Light theme — uses CSS custom properties from globals.css.
  */
 "use client";
 import Link from "next/link";
@@ -36,13 +37,19 @@ export function TraceList({ traces }: TraceListProps) {
         <thead>
           <tr
             className="text-xs uppercase tracking-wider text-left"
-            style={{ color: "var(--text-muted)", borderBottom: "1px solid var(--bg-border)" }}
+            style={{
+              color: "var(--text-muted)",
+              borderBottom: "1px solid var(--bg-border)",
+              background: "var(--bg-surface)",
+              position: "sticky",
+              top: 0,
+            }}
           >
-            <th className="px-4 py-3 font-medium w-48">Trace ID</th>
-            <th className="px-4 py-3 font-medium">Started</th>
-            <th className="px-4 py-3 font-medium text-right">Spans</th>
-            <th className="px-4 py-3 font-medium text-right">Errors</th>
-            <th className="px-4 py-3 font-medium w-8" aria-label="Actions" />
+            <th className="px-4 py-2 font-semibold w-48" style={{ fontSize: 10, letterSpacing: "0.06em" }}>Trace ID</th>
+            <th className="px-4 py-2 font-semibold" style={{ fontSize: 10, letterSpacing: "0.06em" }}>Started</th>
+            <th className="px-4 py-2 font-semibold text-right" style={{ fontSize: 10, letterSpacing: "0.06em" }}>Spans</th>
+            <th className="px-4 py-2 font-semibold text-right" style={{ fontSize: 10, letterSpacing: "0.06em" }}>Errors</th>
+            <th className="px-4 py-2 font-semibold w-8" aria-label="Actions" />
           </tr>
         </thead>
         <tbody>
@@ -60,33 +67,32 @@ function TraceRow({ trace }: { trace: TraceSummary }) {
 
   return (
     <tr
-      className="group transition-colors"
+      className="group console-row"
       style={{
-        borderBottom: "1px solid var(--bg-border)",
-        background: hasErrors ? "rgba(229,83,75,0.03)" : "transparent",
+        background: hasErrors ? "rgba(220,38,38,0.03)" : "transparent",
       }}
       onMouseEnter={(e) => {
-        (e.currentTarget as HTMLTableRowElement).style.background = "var(--bg-elevated)";
+        (e.currentTarget as HTMLTableRowElement).style.background = "var(--bg-hover)";
       }}
       onMouseLeave={(e) => {
         (e.currentTarget as HTMLTableRowElement).style.background =
-          hasErrors ? "rgba(229,83,75,0.03)" : "transparent";
+          hasErrors ? "rgba(220,38,38,0.03)" : "transparent";
       }}
     >
       {/* Trace ID */}
-      <td className="px-4 py-3">
+      <td className="px-4 py-2">
         <div className="flex items-center gap-2">
           <Link
             href={`/traces/${trace.trace_id}`}
             className="font-mono text-xs hover:underline"
-            style={{ color: "var(--text-link)" }}
+            style={{ color: "var(--accent-blue)", fontSize: 12 }}
             title={trace.trace_id}
           >
             {shortTraceId(trace.trace_id)}
           </Link>
           <span
             className="font-mono text-xs hidden sm:inline"
-            style={{ color: "var(--text-muted)" }}
+            style={{ color: "var(--text-muted)", fontSize: 11 }}
           >
             {trace.trace_id.slice(8, 16)}…
           </span>
@@ -95,24 +101,24 @@ function TraceRow({ trace }: { trace: TraceSummary }) {
       </td>
 
       {/* Started */}
-      <td className="px-4 py-3" style={{ color: "var(--text-secondary)" }}>
+      <td className="px-4 py-2" style={{ color: "var(--text-secondary)", fontSize: 12 }}>
         <time dateTime={trace.started_at ?? ""} title={trace.started_at ?? undefined}>
           {relativeTime(trace.started_at)}
         </time>
       </td>
 
       {/* Span count */}
-      <td className="px-4 py-3 text-right font-mono tabular-nums" style={{ color: "var(--text-secondary)" }}>
+      <td className="px-4 py-2 text-right font-mono tabular-nums" style={{ color: "var(--text-secondary)", fontSize: 12 }}>
         {trace.span_count}
       </td>
 
       {/* Error count */}
-      <td className="px-4 py-3 text-right">
+      <td className="px-4 py-2 text-right">
         <ErrorBadge count={trace.error_count} />
       </td>
 
       {/* Link arrow */}
-      <td className="px-4 py-3 text-right">
+      <td className="px-4 py-2 text-right">
         <Link
           href={`/traces/${trace.trace_id}`}
           aria-label={`View trace ${shortTraceId(trace.trace_id)}`}

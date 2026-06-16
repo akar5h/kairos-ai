@@ -1,72 +1,74 @@
 /**
- * Traces list page — GET /v1/traces with since/limit controls.
+ * Sessions list page (home /) — dense light console table.
  *
- * Server component: fetches data server-side, no client JS for the initial
- * render. Filter controls are URL searchParams (shareable state).
+ * GET /v1/sessions?q=&since=&limit=
+ * Columns: SESSION | TRACES | SPANS | ERR | STARTED | TOOLS
  */
-import { Suspense } from "react";
 import type { Metadata } from "next";
-import Link from "next/link";
-import { getTraces } from "@/lib/api";
-import { TraceList } from "@/components/TraceList";
-import { TracesFilterBar } from "@/components/TracesFilterBar";
+import { Suspense } from "react";
+import { getSessions } from "@/lib/api";
+import { SessionTable } from "@/components/SessionTable";
+import { SessionsFilterBar } from "@/components/SessionsFilterBar";
 
 export const metadata: Metadata = {
-  title: "Traces — Kairos",
+  title: "Sessions — Kairos",
 };
 
-// Force dynamic rendering so `since` searchParam doesn't get cached
 export const dynamic = "force-dynamic";
 
 interface PageProps {
-  searchParams: Promise<{ since?: string; limit?: string }>;
+  searchParams: Promise<{ q?: string; since?: string; limit?: string }>;
 }
 
-export default async function TracesPage({ searchParams }: PageProps) {
+export default async function SessionsPage({ searchParams }: PageProps) {
   const params = await searchParams;
-  const limit = Math.min(Math.max(parseInt(params.limit ?? "50", 10) || 50, 1), 1000);
+  const limit = Math.min(Math.max(parseInt(params.limit ?? "100", 10) || 100, 1), 1000);
   const since = params.since ?? undefined;
+  const q = params.q ?? undefined;
 
-  let traces = null;
+  let sessions = null;
   let error: string | null = null;
 
   try {
-    traces = await getTraces({ since, limit });
+    sessions = await getSessions({ q, since, limit });
   } catch (e) {
     error = e instanceof Error ? e.message : "Unknown error";
   }
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
-      {/* Page header */}
+      {/* Sub-header */}
       <div
-        className="flex items-center justify-between px-6 py-4 border-b shrink-0"
-        style={{ borderColor: "var(--bg-border)" }}
+        className="flex items-center justify-between px-4 border-b shrink-0"
+        style={{ borderColor: "var(--bg-border)", height: 36 }}
       >
-        <div>
-          <h1 className="text-base font-semibold" style={{ color: "var(--text-primary)" }}>
-            Traces
-          </h1>
-          {traces && (
-            <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>
-              {traces.length} trace{traces.length !== 1 ? "s" : ""}
-              {since ? ` since ${since}` : ""}
-            </p>
+        <div className="flex items-center gap-3">
+          <span
+            className="text-xs font-semibold"
+            style={{ color: "var(--text-primary)" }}
+          >
+            Sessions
+          </span>
+          {sessions && (
+            <span
+              className="font-mono text-xs tabular-nums"
+              style={{ color: "var(--text-muted)" }}
+            >
+              {sessions.length}{limit > 0 && sessions.length === limit ? "+" : ""} rows
+            </span>
           )}
         </div>
-
-        {/* Filter controls — client component */}
         <Suspense>
-          <TracesFilterBar defaultLimit={limit} defaultSince={since ?? ""} />
+          <SessionsFilterBar defaultLimit={limit} defaultSince={since ?? ""} defaultQ={q ?? ""} />
         </Suspense>
       </div>
 
-      {/* Content area */}
+      {/* Table */}
       <div className="flex-1 overflow-y-auto">
         {error ? (
           <ErrorState message={error} />
-        ) : traces ? (
-          <TraceList traces={traces} />
+        ) : sessions ? (
+          <SessionTable sessions={sessions} />
         ) : null}
       </div>
     </div>
@@ -76,31 +78,24 @@ export default async function TracesPage({ searchParams }: PageProps) {
 function ErrorState({ message }: { message: string }) {
   return (
     <div
-      className="flex flex-col items-center justify-center py-24 gap-3"
+      className="flex flex-col items-center justify-center py-20 gap-2"
       role="alert"
     >
       <div
-        className="rounded px-3 py-2 text-sm font-mono max-w-lg text-center"
+        className="rounded px-3 py-2 text-xs font-mono max-w-lg text-center"
         style={{
           background: "var(--accent-red-dim)",
           color: "var(--accent-red)",
-          border: "1px solid var(--accent-red)",
+          border: "1px solid rgba(220,38,38,0.3)",
         }}
       >
         <p className="font-semibold mb-1">API error</p>
-        <p className="text-xs">{message}</p>
-        <p className="text-xs mt-2" style={{ color: "var(--text-muted)" }}>
+        <p>{message}</p>
+        <p className="mt-1" style={{ color: "var(--text-muted)" }}>
           Is the Kairos API running?{" "}
           <code>uvicorn kairos.api.app:create_app --factory --port 8000</code>
         </p>
       </div>
-      <Link
-        href="/"
-        className="text-xs"
-        style={{ color: "var(--text-link)" }}
-      >
-        Retry
-      </Link>
     </div>
   );
 }

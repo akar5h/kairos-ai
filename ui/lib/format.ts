@@ -67,6 +67,22 @@ export function truncate(s: string, maxLen: number): string {
 }
 
 /**
+ * Compute duration in ms between two ISO timestamps. Returns null if either is null.
+ */
+export function durationMs(start: string | null, end: string | null): number | null {
+  if (!start || !end) return null;
+  const diff = new Date(end).getTime() - new Date(start).getTime();
+  return isNaN(diff) ? null : diff;
+}
+
+/**
+ * Truncate a span/session ID for display — show first 8 chars.
+ */
+export function shortId(id: string): string {
+  return id.slice(0, 8);
+}
+
+/**
  * JSON-serialize tool args for display, truncated.
  */
 export function formatArgs(

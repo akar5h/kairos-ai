@@ -7,7 +7,11 @@
 import type {
   FindingRow,
   LabelRow,
+  RawSpan,
+  SearchHits,
+  SessionSummary,
   TraceEnvelope,
+  TraceInSession,
   TraceSummary,
 } from "@/types/api";
 
@@ -25,6 +29,27 @@ async function apiFetch<T>(path: string): Promise<T> {
   }
   return res.json() as Promise<T>;
 }
+
+// ── Sessions ──────────────────────────────────────────────────────────────────
+
+export async function getSessions(opts?: {
+  q?: string;
+  since?: string;
+  limit?: number;
+}): Promise<SessionSummary[]> {
+  const params = new URLSearchParams();
+  if (opts?.q) params.set("q", opts.q);
+  if (opts?.since) params.set("since", opts.since);
+  if (opts?.limit != null) params.set("limit", String(opts.limit));
+  const qs = params.size ? `?${params.toString()}` : "";
+  return apiFetch<SessionSummary[]>(`/v1/sessions${qs}`);
+}
+
+export async function getSessionTraces(sessionId: string): Promise<TraceInSession[]> {
+  return apiFetch<TraceInSession[]>(`/v1/sessions/${encodeURIComponent(sessionId)}`);
+}
+
+// ── Traces ────────────────────────────────────────────────────────────────────
 
 export async function getTraces(opts?: {
   since?: string;
@@ -44,6 +69,29 @@ export async function getTrace(
   const qs = enrichHooks ? "?enrich_hooks=true" : "";
   return apiFetch<TraceEnvelope>(`/v1/traces/${traceId}${qs}`);
 }
+
+export async function getTraceSpans(
+  traceId: string,
+  full = false,
+): Promise<RawSpan[]> {
+  const qs = full ? "?full=true" : "";
+  return apiFetch<RawSpan[]>(`/v1/traces/${traceId}/spans${qs}`);
+}
+
+// ── Search ────────────────────────────────────────────────────────────────────
+
+export async function search(opts: {
+  q: string;
+  types?: string;
+  limit?: number;
+}): Promise<SearchHits> {
+  const params = new URLSearchParams({ q: opts.q });
+  if (opts.types) params.set("types", opts.types);
+  if (opts.limit != null) params.set("limit", String(opts.limit));
+  return apiFetch<SearchHits>(`/v1/search?${params.toString()}`);
+}
+
+// ── Findings / Labels ─────────────────────────────────────────────────────────
 
 export async function getFindings(traceId: string): Promise<FindingRow[]> {
   return apiFetch<FindingRow[]>(`/v1/findings?trace_id=${traceId}`);

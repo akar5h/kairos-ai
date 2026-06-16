@@ -1,10 +1,11 @@
 /**
- * TypeScript types derived from the Kairos read API (F2.1).
+ * TypeScript types derived from the Kairos read API.
  *
  * Sources:
  *   - src/kairos/models/trace.py  — Step, TraceEnvelope
  *   - src/kairos/models/enums.py  — StepType, StepStatus, TerminalStatus, OutputType
- *   - src/kairos/api/read.py      — TraceSummary, FindingRow, LabelRow
+ *   - src/kairos/api/read.py      — TraceSummary, SessionSummary, TraceInSession,
+ *                                   RawSpan, SearchHits, FindingRow, LabelRow
  */
 
 // ── Enums ──────────────────────────────────────────────────────────────────────
@@ -147,6 +148,76 @@ export interface TraceSummary {
   started_at: string | null;
   span_count: number;
   error_count: number;
+}
+
+// ── SessionSummary (GET /v1/sessions) ────────────────────────────────────────
+
+export interface SessionSummary {
+  session_id: string;
+  trace_count: number;
+  span_count: number;
+  error_count: number;
+  started_at: string | null;
+  ended_at: string | null;
+  tools: string[];
+}
+
+// ── TraceInSession (GET /v1/sessions/{session_id}) ────────────────────────────
+
+export interface TraceInSession {
+  trace_id: string;
+  span_count: number;
+  error_count: number;
+  started_at: string | null;
+  ended_at: string | null;
+  tools: string[];
+}
+
+// ── RawSpan (GET /v1/traces/{trace_id}/spans) ────────────────────────────────
+
+export interface RawSpan {
+  span_id: string;
+  parent_span_id: string | null;
+  name: string;
+  tool_name: string | null;
+  status_code: string | null;
+  start_time: string | null;
+  end_time: string | null;
+  attributes: Record<string, unknown>;
+}
+
+// ── SearchHits (GET /v1/search) ───────────────────────────────────────────────
+
+export interface SearchSessionHit {
+  session_id: string;
+  trace_count: number;
+  span_count: number;
+  started_at: string | null;
+}
+
+export interface SearchTraceHit {
+  trace_id: string;
+  session_id: string | null;
+  span_count: number | null;
+  error_count: number | null;
+  started_at: string | null;
+  snippet?: string;
+}
+
+export interface SearchSpanHit {
+  span_id: string;
+  trace_id: string;
+  session_id: string | null;
+  name: string;
+  tool_name: string | null;
+  status_code: string | null;
+  started_at: string | null;
+}
+
+export interface SearchHits {
+  sessions: SearchSessionHit[];
+  traces: SearchTraceHit[];
+  spans: SearchSpanHit[];
 }
 
 // ── FindingRow (GET /v1/findings) ─────────────────────────────────────────────

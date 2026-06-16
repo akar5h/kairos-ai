@@ -1,5 +1,6 @@
 /**
- * StatusBadge — compact colored badge for error counts and step statuses.
+ * StatusBadge — compact colored badges for error counts and step statuses.
+ * Light theme — uses CSS custom properties from globals.css.
  */
 interface StatusBadgeProps {
   count: number;
@@ -15,7 +16,7 @@ export function ErrorBadge({ count, label }: StatusBadgeProps) {
       style={{
         background: hasErrors ? "var(--accent-red-dim)" : "transparent",
         color: hasErrors ? "var(--accent-red)" : "var(--text-muted)",
-        border: `1px solid ${hasErrors ? "var(--accent-red)" : "var(--bg-border)"}`,
+        border: `1px solid ${hasErrors ? "rgba(220,38,38,0.3)" : "var(--bg-border)"}`,
       }}
       aria-label={`${count} ${label ?? "error"}${count !== 1 ? "s" : ""}`}
     >
@@ -39,11 +40,17 @@ export function TerminalBadge({ status }: { status: string }) {
       : status === "error" || status === "timeout"
         ? "var(--accent-red-dim)"
         : "var(--bg-elevated)";
+  const border =
+    status === "completed"
+      ? "rgba(22,163,74,0.3)"
+      : status === "error" || status === "timeout"
+        ? "rgba(220,38,38,0.3)"
+        : "var(--bg-border)";
 
   return (
     <span
       className="inline-block rounded px-1.5 py-0.5 text-xs font-mono uppercase tracking-wider"
-      style={{ background: bg, color }}
+      style={{ background: bg, color, border: `1px solid ${border}` }}
     >
       {status}
     </span>

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Link from "next/link";
+import { SearchBar } from "@/components/SearchBar";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -15,7 +16,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Kairos",
-  description: "Agent trace debugger",
+  description: "Agent observability console",
 };
 
 export default function RootLayout({
@@ -29,40 +30,50 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full`}
     >
       <body className="h-full flex flex-col">
-        {/* Top navigation bar */}
+        {/* Top navigation bar — sticky, hairline border */}
         <header
-          className="border-b flex items-center gap-6 px-6 py-3 shrink-0"
+          className="border-b shrink-0 flex items-center gap-4 px-4 h-10"
           style={{
             background: "var(--bg-surface)",
             borderColor: "var(--bg-border)",
+            position: "sticky",
+            top: 0,
+            zIndex: 40,
           }}
         >
+          {/* Wordmark */}
           <Link
             href="/"
-            className="flex items-center gap-2 font-semibold tracking-tight text-sm"
+            className="flex items-center gap-1.5 font-semibold text-xs tracking-tight shrink-0"
             style={{ color: "var(--text-primary)" }}
           >
-            {/* Minimal wordmark — no logo image needed */}
             <span
-              className="font-mono text-xs px-1.5 py-0.5 rounded"
+              className="font-mono px-1 py-0.5 rounded text-[10px] font-bold tracking-widest"
               style={{
                 background: "var(--accent-blue-dim)",
                 color: "var(--accent-blue)",
-                letterSpacing: "0.05em",
+                border: "1px solid rgba(37,99,235,0.2)",
               }}
             >
               K
             </span>
             <span>Kairos</span>
           </Link>
-          <nav className="flex items-center gap-4 text-sm" style={{ color: "var(--text-secondary)" }}>
+
+          {/* Nav links */}
+          <nav className="flex items-center gap-3 text-xs" style={{ color: "var(--text-muted)" }}>
             <Link
               href="/"
               className="hover:text-[var(--text-primary)] transition-colors"
             >
-              Traces
+              sessions
             </Link>
           </nav>
+
+          {/* Global search — takes remaining space */}
+          <div className="flex-1 max-w-lg">
+            <SearchBar />
+          </div>
         </header>
 
         {/* Page content */}

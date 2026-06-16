@@ -94,8 +94,11 @@ export function StepTimeline({ envelope }: StepTimelineProps) {
     <div className="flex flex-col gap-4">
       {/* Tool histogram summary */}
       <div
-        className="rounded px-3 py-2.5 flex flex-wrap gap-x-4 gap-y-1 text-xs font-mono"
-        style={{ background: "var(--bg-elevated)" }}
+        className="rounded px-3 py-2 flex flex-wrap gap-x-4 gap-y-1 text-xs font-mono"
+        style={{
+          background: "var(--bg-elevated)",
+          border: "1px solid var(--bg-border)",
+        }}
       >
         <span style={{ color: "var(--text-muted)" }}>
           {tool_sequence.length} tool calls
@@ -248,6 +251,7 @@ function TimelineStepRow({
                 background: "var(--bg-elevated)",
                 color: isError ? "var(--accent-red)" : "var(--text-secondary)",
                 fontFamily: "var(--font-mono)",
+                border: "1px solid var(--bg-border)",
               }}
             >
               {outputStr}
@@ -297,16 +301,30 @@ function CollapsedRunRow({ run }: { run: CollapsedRun }) {
           consecutive, collapsed
         </span>
         {hasErrors && (
-          <span style={{ color: "var(--accent-red)" }}>— {run.steps.filter((s) => s.status === "error").length} err</span>
+          <span style={{ color: "var(--accent-red)" }}>
+            — {run.steps.filter((s) => s.status === "error").length} err
+          </span>
         )}
       </summary>
       <div
         className="mt-2 ml-8 text-xs space-y-1"
         style={{ color: "var(--text-muted)" }}
       >
-        {firstArgs && <div>first: <span className="font-mono" style={{ color: "var(--text-secondary)" }}>{firstArgs}</span></div>}
+        {firstArgs && (
+          <div>
+            first:{" "}
+            <span className="font-mono" style={{ color: "var(--text-secondary)" }}>
+              {firstArgs}
+            </span>
+          </div>
+        )}
         {lastArgs && lastArgs !== firstArgs && (
-          <div>last: <span className="font-mono" style={{ color: "var(--text-secondary)" }}>{lastArgs}</span></div>
+          <div>
+            last:{" "}
+            <span className="font-mono" style={{ color: "var(--text-secondary)" }}>
+              {lastArgs}
+            </span>
+          </div>
         )}
       </div>
     </details>

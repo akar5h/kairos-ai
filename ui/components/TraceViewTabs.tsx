@@ -2,10 +2,18 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 
+type TabView = "conversation" | "timeline" | "spans";
+
 interface TraceViewTabsProps {
-  currentView: "conversation" | "timeline";
+  currentView: TabView;
   enrichHooks: boolean;
 }
+
+const TABS: { id: TabView; label: string }[] = [
+  { id: "spans", label: "Raw Spans" },
+  { id: "conversation", label: "Conversation" },
+  { id: "timeline", label: "Step Timeline" },
+];
 
 export function TraceViewTabs({ currentView, enrichHooks }: TraceViewTabsProps) {
   const router = useRouter();
@@ -23,44 +31,51 @@ export function TraceViewTabs({ currentView, enrichHooks }: TraceViewTabsProps) 
     router.push(`?${params.toString()}`);
   };
 
-  const tabStyle = (active: boolean): React.CSSProperties => ({
-    color: active ? "var(--text-primary)" : "var(--text-muted)",
-    borderBottom: active ? "2px solid var(--accent-blue)" : "2px solid transparent",
-    paddingBottom: "6px",
-    background: "transparent",
-    cursor: "pointer",
-    fontSize: "12px",
-    fontWeight: active ? 600 : 400,
-    transition: "color 0.1s",
-  });
-
   return (
-    <div className="flex items-center gap-6 pt-1">
+    <div className="flex items-center gap-1 pt-1">
       {/* View tabs */}
-      <div className="flex items-center gap-4">
-        <button
-          style={tabStyle(currentView === "conversation")}
-          onClick={() => navigate({ view: "conversation" })}
-          aria-pressed={currentView === "conversation"}
-        >
-          Conversation
-        </button>
-        <button
-          style={tabStyle(currentView === "timeline")}
-          onClick={() => navigate({ view: "timeline" })}
-          aria-pressed={currentView === "timeline"}
-        >
-          Step Timeline
-        </button>
+      <div
+        className="flex items-center rounded"
+        style={{
+          background: "var(--bg-elevated)",
+          border: "1px solid var(--bg-border)",
+          padding: "2px",
+          gap: 2,
+        }}
+      >
+        {TABS.map(({ id, label }) => {
+          const active = currentView === id;
+          return (
+            <button
+              key={id}
+              onClick={() => navigate({ view: id })}
+              aria-pressed={active}
+              style={{
+                fontSize: 11,
+                fontWeight: active ? 600 : 400,
+                color: active ? "var(--text-primary)" : "var(--text-muted)",
+                background: active ? "var(--bg-base)" : "transparent",
+                border: active ? "1px solid var(--bg-border)" : "1px solid transparent",
+                borderRadius: 3,
+                padding: "2px 8px",
+                cursor: "pointer",
+                lineHeight: "20px",
+                transition: "color 0.1s, background 0.1s",
+              }}
+            >
+              {label}
+            </button>
+          );
+        })}
       </div>
 
       {/* Divider */}
-      <span style={{ color: "var(--bg-border)" }} aria-hidden="true">|</span>
+      <span style={{ color: "var(--bg-border)", margin: "0 6px" }} aria-hidden="true">|</span>
 
       {/* enrich_hooks toggle */}
       <label
-        className="flex items-center gap-1.5 cursor-pointer select-none text-xs"
-        style={{ color: "var(--text-muted)" }}
+        className="flex items-center gap-1.5 cursor-pointer select-none"
+        style={{ color: "var(--text-muted)", fontSize: 11 }}
         title="When on: hook-enriched step data (corrected tool outcomes). When off: raw OTel spans."
       >
         <input
@@ -74,10 +89,13 @@ export function TraceViewTabs({ currentView, enrichHooks }: TraceViewTabsProps) 
         />
         enrich hooks
         <span
-          className="text-xs rounded px-1 py-0.5"
+          className="rounded px-1"
           style={{
             background: enrichHooks ? "var(--accent-blue-dim)" : "var(--bg-elevated)",
             color: enrichHooks ? "var(--accent-blue)" : "var(--text-muted)",
+            border: `1px solid ${enrichHooks ? "rgba(37,99,235,0.2)" : "var(--bg-border)"}`,
+            fontSize: 10,
+            padding: "0px 4px",
           }}
         >
           {enrichHooks ? "on" : "off"}

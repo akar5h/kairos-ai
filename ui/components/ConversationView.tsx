@@ -182,7 +182,7 @@ function ToolCallBlock({ step, traceStart }: { step: Step; traceStart: string | 
               style={{
                 background: "var(--accent-red-dim)",
                 color: "var(--accent-red)",
-                border: "1px solid var(--accent-red)",
+                border: "1px solid rgba(220,38,38,0.3)",
               }}
             >
               ERR via {step.status_source}
@@ -198,6 +198,7 @@ function ToolCallBlock({ step, traceStart }: { step: Step; traceStart: string | 
               background: "var(--bg-elevated)",
               color: "var(--text-secondary)",
               fontFamily: "var(--font-mono)",
+              border: "1px solid var(--bg-border)",
             }}
           >
             {argsStr}
@@ -321,6 +322,7 @@ function ExpandableOutput({
           background: "var(--bg-elevated)",
           color: isError ? "var(--accent-red)" : "var(--text-secondary)",
           fontFamily: "var(--font-mono)",
+          border: "1px solid var(--bg-border)",
         }}
       >
         {content}

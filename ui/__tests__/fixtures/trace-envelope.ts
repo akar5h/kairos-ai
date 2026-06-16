@@ -1,10 +1,11 @@
 /**
- * Synthetic TraceEnvelope fixture for tests.
+ * Synthetic fixtures for tests.
  * All data is fabricated — no real traces, no secrets.
  */
-import type { TraceEnvelope, TraceSummary } from "@/types/api";
+import type { TraceEnvelope, TraceSummary, SessionSummary, TraceInSession, RawSpan } from "@/types/api";
 
 export const FIXTURE_TRACE_ID = "abcdef1234567890abcdef1234567890";
+export const FIXTURE_SESSION_ID = "sess-alpha-001";
 
 export const FIXTURE_ENVELOPE: TraceEnvelope = {
   trace_id: FIXTURE_TRACE_ID,
@@ -149,7 +150,7 @@ export const FIXTURE_ENVELOPE: TraceEnvelope = {
   has_retrieval: false,
   retrieval_step_count: 0,
 
-  session_id: null,
+  session_id: FIXTURE_SESSION_ID,
   user_id: null,
   tags: [],
   metadata: null,
@@ -182,5 +183,87 @@ export const FIXTURE_TRACES: TraceSummary[] = [
     started_at: null,
     span_count: 2,
     error_count: 0,
+  },
+];
+
+export const FIXTURE_SESSIONS: SessionSummary[] = [
+  {
+    session_id: FIXTURE_SESSION_ID,
+    trace_count: 3,
+    span_count: 13,
+    error_count: 0,
+    started_at: "2024-03-15T10:00:00Z",
+    ended_at: "2024-03-15T10:05:00Z",
+    tools: ["Read", "Bash", "Edit"],
+  },
+  {
+    session_id: "sess-beta-002",
+    trace_count: 1,
+    span_count: 5,
+    error_count: 1,
+    started_at: "2024-03-15T09:00:00Z",
+    ended_at: "2024-03-15T09:10:00Z",
+    tools: ["Bash"],
+  },
+  {
+    session_id: "sess-gamma-003",
+    trace_count: 1,
+    span_count: 13,
+    error_count: 0,
+    started_at: null,
+    ended_at: null,
+    tools: [],
+  },
+];
+
+export const FIXTURE_TRACES_IN_SESSION: TraceInSession[] = [
+  {
+    trace_id: FIXTURE_TRACE_ID,
+    span_count: 13,
+    error_count: 0,
+    started_at: "2024-03-15T10:00:00Z",
+    ended_at: "2024-03-15T10:02:00Z",
+    tools: ["Read", "Bash"],
+  },
+  {
+    trace_id: "dddddd4434567890dddddd4434567890",
+    span_count: 5,
+    error_count: 1,
+    started_at: "2024-03-15T10:03:00Z",
+    ended_at: "2024-03-15T10:04:00Z",
+    tools: ["Edit"],
+  },
+];
+
+export const FIXTURE_RAW_SPANS: RawSpan[] = [
+  {
+    span_id: "span0001aaaa",
+    parent_span_id: null,
+    name: "agent.run",
+    tool_name: null,
+    status_code: "OK",
+    start_time: "2024-03-15T10:00:00Z",
+    end_time: "2024-03-15T10:00:04.1Z",
+    attributes: { "session.id": FIXTURE_SESSION_ID },
+  },
+  {
+    span_id: "span0002bbbb",
+    parent_span_id: "span0001aaaa",
+    name: "tool.call",
+    tool_name: "Read",
+    status_code: "OK",
+    start_time: "2024-03-15T10:00:01Z",
+    end_time: "2024-03-15T10:00:01.055Z",
+    attributes: { tool_name: "Read", "kairos.span.kind": "tool_call" },
+  },
+  {
+    span_id: "span0003cccc",
+    parent_span_id: "span0001aaaa",
+    name: "tool.call",
+    tool_name: "Bash",
+    status_code: "ERROR",
+    start_time: "2024-03-15T10:00:02Z",
+    end_time: "2024-03-15T10:00:02.012Z",
+    attributes: { tool_name: "Bash", "kairos.span.kind": "tool_call" },
   },
 ];

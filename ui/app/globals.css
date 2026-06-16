@@ -1,29 +1,27 @@
 @import "tailwindcss";
 
 :root {
-  /* Dark-first engineering palette */
-  --bg-base: #0d0d0f;
-  --bg-surface: #141417;
-  --bg-elevated: #1c1c21;
-  --bg-border: #2a2a32;
+  /* Light dense console palette */
+  --bg-base: #ffffff;
+  --bg-surface: #fafafa;
+  --bg-elevated: #f4f4f5;
+  --bg-border: #e4e4e7;
+  --bg-hover: #f0f0f2;
 
-  --text-primary: #e8e8ed;
-  --text-secondary: #8e8ea0;
-  --text-muted: #55555f;
-  --text-link: #7c91f5;
+  --text-primary: #09090b;
+  --text-secondary: #52525b;
+  --text-muted: #a1a1aa;
+  --text-link: #2563eb;
 
-  --accent-blue: #4a6cf7;
-  --accent-blue-dim: rgba(74, 108, 247, 0.12);
-  --accent-red: #e5534b;
-  --accent-red-dim: rgba(229, 83, 75, 0.12);
+  --accent-blue: #2563eb;
+  --accent-blue-dim: rgba(37, 99, 235, 0.08);
+  --accent-red: #dc2626;
+  --accent-red-dim: rgba(220, 38, 38, 0.08);
   --accent-amber: #d97706;
-  --accent-amber-dim: rgba(217, 119, 6, 0.12);
-  --accent-green: #3fb950;
-  --accent-green-dim: rgba(63, 185, 80, 0.12);
-  --accent-purple: #a78bfa;
-
-  --font-mono: "Berkeley Mono", "JetBrains Mono", "Fira Code",
-    ui-monospace, "Cascadia Code", monospace;
+  --accent-amber-dim: rgba(217, 119, 6, 0.08);
+  --accent-green: #16a34a;
+  --accent-green-dim: rgba(22, 163, 74, 0.08);
+  --accent-purple: #7c3aed;
 }
 
 @theme inline {
@@ -34,10 +32,10 @@
 }
 
 html {
-  color-scheme: dark;
+  color-scheme: light;
   background: var(--bg-base);
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: 13px;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -48,7 +46,7 @@ body {
   min-height: 100vh;
 }
 
-/* Scrollbar — subtle dark */
+/* Scrollbar — subtle light */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -65,7 +63,7 @@ body {
 code,
 pre,
 kbd {
-  font-family: var(--font-mono);
+  font-family: var(--font-mono), ui-monospace, "Cascadia Code", monospace;
   font-size: 0.875em;
 }
 
@@ -73,4 +71,13 @@ kbd {
 :focus-visible {
   outline: 2px solid var(--accent-blue);
   outline-offset: 2px;
+}
+
+/* Dense table rows */
+.console-row {
+  height: 34px;
+  border-bottom: 1px solid var(--bg-border);
+}
+.console-row:hover {
+  background: var(--bg-hover);
 }
