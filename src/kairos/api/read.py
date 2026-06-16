@@ -100,6 +100,61 @@ class LabelRow(BaseModel):
     ts: datetime
 
 
+class SessionSummary(BaseModel):
+    """Aggregate row returned by GET /v1/sessions.
+
+    Groups spans by session_id; NULL session_id rows are excluded.
+    """
+
+    session_id: str
+    trace_count: int
+    span_count: int
+    error_count: int
+    started_at: datetime | None
+    ended_at: datetime | None
+    tools: list[str]
+
+
+class TraceInSession(BaseModel):
+    """One trace inside a session returned by GET /v1/sessions/{session_id}."""
+
+    trace_id: str
+    span_count: int
+    error_count: int
+    started_at: datetime | None
+    ended_at: datetime | None
+    tools: list[str]
+
+
+class RawSpan(BaseModel):
+    """One raw span returned by GET /v1/traces/{trace_id}/spans.
+
+    ``attributes`` contains a compact subset by default; pass ``?full=true``
+    to include all attributes.
+    """
+
+    span_id: str
+    parent_span_id: str | None
+    name: str
+    tool_name: str | None
+    status_code: str | None
+    start_time: datetime | None
+    end_time: datetime | None
+    attributes: dict[str, Any]
+
+
+class SearchHits(BaseModel):
+    """Grouped search results returned by GET /v1/search."""
+
+    sessions: list[dict[str, Any]]
+    traces: list[dict[str, Any]]
+    spans: list[dict[str, Any]]
+
+
+# Compact attribute keys included by default in RawSpan.
+_COMPACT_ATTR_KEYS: frozenset[str] = frozenset({"tool_name", "session.id", "span.type", "kairos.span.kind"})
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -388,3 +443,450 @@ def get_labels(
         )
         for row in rows
     ]
+
+
+# ─── Session hierarchy routes ─────────────────────────────────────────────────
+
+
+@router.get("/sessions", response_model=list[SessionSummary])
+def get_sessions(
+    q: str | None = fastapi.Query(
+        None,
+        description="Filter sessions by session_id prefix or ILIKE match.",
+    ),
+    since: str | None = fastapi.Query(
+        None,
+        description="ISO-8601 timestamp; only sessions started at or after this time.",
+    ),
+    limit: int = fastapi.Query(
+        100,
+        ge=1,
+        le=1000,
+        description="Maximum number of sessions to return (1–1000, default 100).",
+    ),
+) -> list[SessionSummary]:
+    """List sessions grouped from the spans table.
+
+    Groups spans BY session_id (NULL rows excluded — they have no session
+    context).  Per session: trace_count, span_count, error_count, started_at,
+    ended_at, tools (distinct tool names, limited to 20).
+
+    ``q`` filters on session_id using ILIKE (parameterized: ``%q%``).
+    ``since`` filters on started_at (min start_time in the group).
+    Orders by started_at DESC.
+    """
+    clauses: list[str] = ["session_id IS NOT NULL"]
+    params: list[object] = []
+
+    if q is not None:
+        clauses.append("session_id ILIKE %s")
+        params.append(f"%{q}%")
+
+    where_clause = "WHERE " + " AND ".join(clauses)
+
+    having_clauses: list[str] = []
+    if since is not None:
+        having_clauses.append("min(start_time) >= %s")
+        params.append(since)
+
+    having_clause = ("HAVING " + " AND ".join(having_clauses)) if having_clauses else ""
+    params.append(limit)
+
+    sql = f"""
+        SELECT
+            session_id,
+            count(DISTINCT trace_id)                                        AS trace_count,
+            count(*)                                                        AS span_count,
+            count(*) FILTER (WHERE status_code = 'ERROR')                  AS error_count,
+            min(start_time)                                                 AS started_at,
+            max(end_time)                                                   AS ended_at,
+            (
+                SELECT array_agg(DISTINCT t)
+                FROM unnest(
+                    array_agg(attributes->>'tool_name')
+                    FILTER (WHERE attributes->>'tool_name' IS NOT NULL)
+                ) AS t
+            )                                                               AS tools
+        FROM spans
+        {where_clause}
+        GROUP BY session_id
+        {having_clause}
+        ORDER BY min(start_time) DESC
+        LIMIT %s
+    """  # noqa: S608 — no user data interpolated; only structural SQL
+
+    try:
+        with _connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+    except Exception:
+        logger.exception("read.get_sessions failed q=%s since=%s", q, since)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    return [
+        SessionSummary(
+            session_id=row["session_id"],
+            trace_count=int(row["trace_count"]),
+            span_count=int(row["span_count"]),
+            error_count=int(row["error_count"]),
+            started_at=row["started_at"],
+            ended_at=row["ended_at"],
+            tools=list(row["tools"] or [])[:20],
+        )
+        for row in rows
+    ]
+
+
+@router.get("/sessions/{session_id}", response_model=list[TraceInSession])
+def get_session_traces(
+    session_id: str = fastapi.Path(..., description="Session ID to fetch traces for."),
+) -> list[TraceInSession]:
+    """Return all traces within a session (the middle hierarchy level).
+
+    Each trace_id within the session is returned with aggregated span_count,
+    error_count, time range, and distinct tool names.
+
+    404 when no spans exist for the session_id.
+    """
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    trace_id,
+                    count(*)                                                    AS span_count,
+                    count(*) FILTER (WHERE status_code = 'ERROR')               AS error_count,
+                    min(start_time)                                             AS started_at,
+                    max(end_time)                                               AS ended_at,
+                    (
+                        SELECT array_agg(DISTINCT t)
+                        FROM unnest(
+                            array_agg(attributes->>'tool_name')
+                            FILTER (WHERE attributes->>'tool_name' IS NOT NULL)
+                        ) AS t
+                    )                                                           AS tools
+                FROM spans
+                WHERE session_id = %s
+                GROUP BY trace_id
+                ORDER BY min(start_time) ASC
+                """,
+                (session_id,),
+            ).fetchall()
+    except Exception:
+        logger.exception("read.get_session_traces failed session_id=%s", session_id)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    if not rows:
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail=f"Session {session_id!r} not found",
+        )
+
+    return [
+        TraceInSession(
+            trace_id=row["trace_id"],
+            span_count=int(row["span_count"]),
+            error_count=int(row["error_count"]),
+            started_at=row["started_at"],
+            ended_at=row["ended_at"],
+            tools=list(row["tools"] or [])[:20],
+        )
+        for row in rows
+    ]
+
+
+@router.get("/traces/{trace_id}/spans", response_model=list[RawSpan])
+def get_trace_spans(
+    trace_id: str = fastapi.Path(..., description="Hex trace ID."),
+    full: bool = fastapi.Query(
+        False,
+        description="When true, include all attributes instead of the compact subset.",
+    ),
+) -> list[RawSpan]:
+    """Return raw spans for a trace (the leaf level of the hierarchy).
+
+    Ordered by start_time ASC so the UI can render the span tree in order.
+    By default a compact attribute subset is returned (tool_name, session.id,
+    span.type, kairos.span.kind); pass ``?full=true`` for all attributes.
+
+    404 when no spans exist for the trace_id.
+    """
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    span_id,
+                    parent_span_id,
+                    name,
+                    attributes->>'tool_name'    AS tool_name,
+                    status_code,
+                    start_time,
+                    end_time,
+                    attributes
+                FROM spans
+                WHERE trace_id = %s
+                ORDER BY start_time ASC NULLS LAST
+                """,
+                (trace_id,),
+            ).fetchall()
+    except Exception:
+        logger.exception("read.get_trace_spans failed trace_id=%s", trace_id)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    if not rows:
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail=f"Trace {trace_id!r} not found",
+        )
+
+    def _attrs(row: dict[str, Any]) -> dict[str, Any]:
+        raw: dict[str, Any] = row["attributes"] or {}
+        if full:
+            return raw
+        return {k: v for k, v in raw.items() if k in _COMPACT_ATTR_KEYS}
+
+    return [
+        RawSpan(
+            span_id=row["span_id"],
+            parent_span_id=row["parent_span_id"],
+            name=row["name"],
+            tool_name=row["tool_name"],
+            status_code=row["status_code"],
+            start_time=row["start_time"],
+            end_time=row["end_time"],
+            attributes=_attrs(row),
+        )
+        for row in rows
+    ]
+
+
+@router.get("/search", response_model=SearchHits)
+def search(
+    q: str = fastapi.Query(..., min_length=1, description="Search query string."),
+    types: str = fastapi.Query(
+        "sessions,traces,spans",
+        description="Comma-separated result types to include: sessions, traces, spans.",
+    ),
+    limit: int = fastapi.Query(
+        20,
+        ge=1,
+        le=200,
+        description="Max results per group (1–200, default 20).",
+    ),
+) -> SearchHits:
+    """Unified search across sessions, traces, and spans.
+
+    Searches four dimensions (all parameterized — no injection surface):
+
+    1. **IDs**: session_id / trace_id / span_id prefix match.
+    2. **Tool names**: attributes->>'tool_name' ILIKE query.
+    3. **Content**: spans.attributes::text ILIKE query OR hook_events
+       (tool_input_redacted::text / tool_output) ILIKE query → resolved back
+       to session/trace.  v1 uses a sequential scan; a trigram GIN index on
+       attributes::text (migration 0013) accelerates this when pg_trgm is
+       installed.
+    4. **Status**: if query matches 'error'/'ok'/'unset', filter by status_code.
+
+    Returns grouped hits capped by ``limit`` per group.  Each hit includes
+    enough context to navigate (ids + snippet + counts).
+
+    Content-search note: at v1 scale this is a full scan on spans and
+    hook_events.  Install pg_trgm + re-run migration 0013 to enable the
+    GIN trigram index for ILIKE acceleration.
+    """
+    requested: set[str] = {t.strip().lower() for t in types.split(",")}
+    like_q = f"%{q}%"
+
+    # Determine if q looks like a status code filter.
+    status_match: str | None = None
+    q_lower = q.strip().lower()
+    if q_lower in {"error", "ok", "unset"}:
+        status_match = q_lower.upper()
+
+    sessions_hits: list[dict[str, Any]] = []
+    traces_hits: list[dict[str, Any]] = []
+    spans_hits: list[dict[str, Any]] = []
+
+    try:
+        with _connect() as conn:
+            # ── Sessions (group by session_id) ────────────────────────────────
+            if "sessions" in requested:
+                # Dimension 1: session_id ILIKE
+                # Dimension 2: tool_name ILIKE
+                # Dimension 4: status
+                filter_parts: list[str] = [
+                    "session_id ILIKE %s",
+                ]
+                filter_params: list[object] = [like_q]
+
+                filter_parts.append("attributes->>'tool_name' ILIKE %s")
+                filter_params.append(like_q)
+
+                if status_match:
+                    filter_parts.append("status_code = %s")
+                    filter_params.append(status_match)
+
+                # Dimension 3: content — attributes::text ILIKE
+                filter_parts.append("attributes::text ILIKE %s")
+                filter_params.append(like_q)
+
+                session_where = (
+                    "WHERE session_id IS NOT NULL AND ("
+                    + " OR ".join(filter_parts)
+                    + ")"
+                )
+                session_params: list[object] = list(filter_params) + [limit]
+
+                session_sql = f"""
+                    SELECT
+                        session_id,
+                        count(DISTINCT trace_id)                                AS trace_count,
+                        count(*)                                                AS span_count,
+                        min(start_time)                                         AS started_at
+                    FROM spans
+                    {session_where}
+                    GROUP BY session_id
+                    ORDER BY min(start_time) DESC
+                    LIMIT %s
+                """  # noqa: S608
+                session_rows = conn.execute(session_sql, session_params).fetchall()
+                sessions_hits = [
+                    {
+                        "session_id": r["session_id"],
+                        "trace_count": int(r["trace_count"]),
+                        "span_count": int(r["span_count"]),
+                        "started_at": r["started_at"].isoformat() if r["started_at"] else None,
+                    }
+                    for r in session_rows
+                ]
+
+            # ── Traces ────────────────────────────────────────────────────────
+            if "traces" in requested:
+                trace_filter_parts: list[str] = [
+                    "trace_id ILIKE %s",
+                    "attributes->>'tool_name' ILIKE %s",
+                    "attributes::text ILIKE %s",
+                ]
+                trace_filter_params: list[object] = [like_q, like_q, like_q]
+
+                if status_match:
+                    trace_filter_parts.append("status_code = %s")
+                    trace_filter_params.append(status_match)
+
+                trace_where = "WHERE (" + " OR ".join(trace_filter_parts) + ")"
+                trace_params = list(trace_filter_params) + [limit]
+
+                trace_sql = f"""
+                    SELECT
+                        trace_id,
+                        session_id,
+                        count(*)                                                AS span_count,
+                        count(*) FILTER (WHERE status_code = 'ERROR')           AS error_count,
+                        min(start_time)                                         AS started_at
+                    FROM spans
+                    {trace_where}
+                    GROUP BY trace_id, session_id
+                    ORDER BY min(start_time) DESC
+                    LIMIT %s
+                """  # noqa: S608
+                trace_rows = conn.execute(trace_sql, trace_params).fetchall()
+                traces_hits = [
+                    {
+                        "trace_id": r["trace_id"],
+                        "session_id": r["session_id"],
+                        "span_count": int(r["span_count"]),
+                        "error_count": int(r["error_count"]),
+                        "started_at": r["started_at"].isoformat() if r["started_at"] else None,
+                    }
+                    for r in trace_rows
+                ]
+
+                # Dimension 3 content from hook_events → resolve to trace.
+                # hook_events has session_id but not trace_id directly; join via
+                # spans.session_id to surface the trace hit.
+                hook_filter_parts: list[str] = [
+                    "he.tool_input_redacted::text ILIKE %s",
+                    "he.tool_output ILIKE %s",
+                ]
+                hook_filter_params: list[object] = [like_q, like_q]
+
+                hook_sql = f"""
+                    SELECT DISTINCT s.trace_id, s.session_id
+                    FROM hook_events he
+                    JOIN spans s ON s.session_id = he.session_id
+                    WHERE ({" OR ".join(hook_filter_parts)})
+                    LIMIT %s
+                """  # noqa: S608
+                hook_params = hook_filter_params + [limit]
+                hook_rows = conn.execute(hook_sql, hook_params).fetchall()
+
+                existing_trace_ids = {h["trace_id"] for h in traces_hits}
+                for hr in hook_rows:
+                    if hr["trace_id"] not in existing_trace_ids:
+                        traces_hits.append(
+                            {
+                                "trace_id": hr["trace_id"],
+                                "session_id": hr["session_id"],
+                                "span_count": None,
+                                "error_count": None,
+                                "started_at": None,
+                                "snippet": f"content match in hook_events for session {hr['session_id']}",
+                            }
+                        )
+                        existing_trace_ids.add(hr["trace_id"])
+
+                traces_hits = traces_hits[:limit]
+
+            # ── Spans ─────────────────────────────────────────────────────────
+            if "spans" in requested:
+                span_filter_parts: list[str] = [
+                    "span_id ILIKE %s",
+                    "attributes->>'tool_name' ILIKE %s",
+                    "attributes::text ILIKE %s",
+                ]
+                span_filter_params: list[object] = [like_q, like_q, like_q]
+
+                if status_match:
+                    span_filter_parts.append("status_code = %s")
+                    span_filter_params.append(status_match)
+
+                span_where = "WHERE (" + " OR ".join(span_filter_parts) + ")"
+                span_params = list(span_filter_params) + [limit]
+
+                span_sql = f"""
+                    SELECT
+                        span_id,
+                        trace_id,
+                        session_id,
+                        name,
+                        attributes->>'tool_name'    AS tool_name,
+                        status_code,
+                        start_time
+                    FROM spans
+                    {span_where}
+                    ORDER BY start_time DESC
+                    LIMIT %s
+                """  # noqa: S608
+                span_rows = conn.execute(span_sql, span_params).fetchall()
+                spans_hits = [
+                    {
+                        "span_id": r["span_id"],
+                        "trace_id": r["trace_id"],
+                        "session_id": r["session_id"],
+                        "name": r["name"],
+                        "tool_name": r["tool_name"],
+                        "status_code": r["status_code"],
+                        "started_at": r["start_time"].isoformat() if r["start_time"] else None,
+                    }
+                    for r in span_rows
+                ]
+
+    except Exception:
+        logger.exception("read.search failed q=%r types=%s", q, types)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    return SearchHits(
+        sessions=sessions_hits,
+        traces=traces_hits,
+        spans=spans_hits,
+    )

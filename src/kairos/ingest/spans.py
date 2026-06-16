@@ -84,6 +84,10 @@ def _span_to_row(span: Any) -> dict[str, Any]:
     start_dt = _ns_to_dt(start_ns) if start_ns else None
     end_dt = _ns_to_dt(end_ns) if end_ns else None
 
+    # Extract session_id from the session.id attribute (set by CC exporter).
+    # None when the span carries no session context.
+    session_id: str | None = attributes.get("session.id") or None
+
     return {
         "trace_id": trace_id,
         "span_id": span_id,
@@ -95,6 +99,7 @@ def _span_to_row(span: Any) -> dict[str, Any]:
         "attributes": Jsonb(attributes),
         "events": Jsonb(events),
         "resource": Jsonb(resource),
+        "session_id": session_id,
     }
 
 
@@ -102,11 +107,11 @@ _UPSERT_SQL = """
 INSERT INTO spans
     (trace_id, span_id, parent_span_id, name,
      start_time, end_time, status_code,
-     attributes, events, resource, source)
+     attributes, events, resource, source, session_id)
 VALUES
     (%(trace_id)s, %(span_id)s, %(parent_span_id)s, %(name)s,
      %(start_time)s, %(end_time)s, %(status_code)s,
-     %(attributes)s, %(events)s, %(resource)s, %(source)s)
+     %(attributes)s, %(events)s, %(resource)s, %(source)s, %(session_id)s)
 ON CONFLICT (trace_id, span_id) DO UPDATE SET
     parent_span_id = EXCLUDED.parent_span_id,
     name           = EXCLUDED.name,
@@ -117,6 +122,7 @@ ON CONFLICT (trace_id, span_id) DO UPDATE SET
     events         = EXCLUDED.events,
     resource       = EXCLUDED.resource,
     source         = EXCLUDED.source,
+    session_id     = EXCLUDED.session_id,
     ingested_at    = now()
 """
 
