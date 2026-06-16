@@ -472,19 +472,20 @@ def _persist_candidates_pg(
         return 0
 
     rows = [
-        (c.id, night_id, c.kind, c.trace_id, Jsonb(c.features))
+        (c.id, night_id, c.kind, c.trace_id, c.cluster_key, Jsonb(c.features))
         for c in candidates
     ]
 
     with conn.cursor() as cur:
         cur.executemany(
             """
-            INSERT INTO discovery_queue (id, night_id, kind, trace_id, features)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO discovery_queue (id, night_id, kind, trace_id, cluster_key, features)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT (id) DO UPDATE
-                SET night_id = EXCLUDED.night_id,
-                    kind     = EXCLUDED.kind,
-                    features = EXCLUDED.features
+                SET night_id    = EXCLUDED.night_id,
+                    kind        = EXCLUDED.kind,
+                    cluster_key = EXCLUDED.cluster_key,
+                    features    = EXCLUDED.features
             """,
             rows,
         )

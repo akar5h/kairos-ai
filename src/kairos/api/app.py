@@ -20,13 +20,14 @@ from __future__ import annotations
 import fastapi
 
 from kairos.api.otlp import router as otlp_router
+from kairos.api.read import router as read_router
 
 
 def create_app() -> fastapi.FastAPI:
     """Create and return the Kairos FastAPI application instance."""
     app = fastapi.FastAPI(
         title="Kairos",
-        description="Kairos AI — OTLP ingest + P2 API",
+        description="Kairos AI — OTLP ingest + P2 read API",
         version="0.1.0",
     )
 
@@ -36,5 +37,6 @@ def create_app() -> fastapi.FastAPI:
         return {"status": "ok"}
 
     app.include_router(otlp_router)
+    app.include_router(read_router)
 
     return app
