@@ -67,9 +67,11 @@ export async function getTraces(opts?: {
 
 export async function getTrace(
   traceId: string,
-  enrichHooks = false,
+  enrichHooks = true,
 ): Promise<TraceEnvelope> {
-  const qs = enrichHooks ? "?enrich_hooks=true" : "";
+  // Hook-truth is the default; pass enrich_hooks explicitly so the raw toggle
+  // (false) overrides the API's enriched default.
+  const qs = enrichHooks ? "?enrich_hooks=true" : "?enrich_hooks=false";
   return apiFetch<TraceEnvelope>(`/v1/traces/${traceId}${qs}`);
 }
 

@@ -48,7 +48,7 @@ export default async function TraceDetailPage({ params, searchParams }: PageProp
   const { id } = await params;
   const sp = await searchParams;
   const view = parseView(sp.view);
-  const enrichHooks = sp.enrich_hooks === "true";
+  const enrichHooks = sp.enrich_hooks !== "false";
 
   let envelope = null;
   let rawSpans = null;

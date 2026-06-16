@@ -83,7 +83,7 @@ export function TraceViewTabs({ currentView, enrichHooks }: TraceViewTabsProps) 
           type="checkbox"
           checked={enrichHooks}
           onChange={(e) =>
-            navigate({ enrich_hooks: e.target.checked ? "true" : null })
+            navigate({ enrich_hooks: e.target.checked ? "true" : "false" })
           }
           className="w-3 h-3"
           aria-label="Enrich with hooks"
