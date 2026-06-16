@@ -293,7 +293,9 @@ class TestSpansRoundTrip:
         persist_spans(phoenix_dicts, _DSN)
 
         try:
-            envelope = fetch_envelope_from_db(tid, _DSN)
+            # Tests the raw span→envelope build path explicitly; hook
+            # enrichment (now the default) is out of scope here.
+            envelope = fetch_envelope_from_db(tid, _DSN, enrich_hooks=False)
             assert envelope.is_valid
             assert envelope.trace_id != ""
             assert len(envelope.steps) >= 1
@@ -306,7 +308,8 @@ class TestSpansRoundTrip:
         db.apply_migrations()
 
         nonexistent = uuid.uuid4().hex
-        envelope = fetch_envelope_from_db(nonexistent, _DSN)
+        # Raw path: an empty trace yields an invalid envelope regardless of hooks.
+        envelope = fetch_envelope_from_db(nonexistent, _DSN, enrich_hooks=False)
         assert not envelope.is_valid
 
 

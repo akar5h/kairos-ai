@@ -448,10 +448,14 @@ class TestTraceWindowing:
 
 
 class TestFetchEnvelopeFromDbEnrichHooks:
-    """Verify enrich_hooks=False leaves existing behavior unchanged."""
+    """Verify the enrich_hooks routing in fetch_envelope_from_db.
+
+    Default is now True (hook-truth by default). Callers can still pass
+    enrich_hooks=False to read the RAW (un-enriched) OTel envelope.
+    """
 
     def test_enrich_hooks_false_does_not_call_hook_join(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Default enrich_hooks=False must never call hook_join functions."""
+        """Explicit enrich_hooks=False (raw path) must never call hook_join."""
         from kairos.readers.db import fetch_envelope_from_db
 
         with (
@@ -465,6 +469,35 @@ class TestFetchEnvelopeFromDbEnrichHooks:
             mock_s2e.return_value = TraceEnvelope(trace_id="", is_valid=False)
             fetch_envelope_from_db("abc" * 10, "fake://", enrich_hooks=False)
             # No AssertionError → hook_join was not invoked.
+
+    def test_default_calls_hook_join_and_returns_enriched(self) -> None:
+        """The NEW default (no kwarg) routes through enrich_envelope_with_hooks.
+
+        The hook says is_error=True, so the enriched envelope's step shows ERROR
+        — proving hook-truth is the default, not the raw OTel value.
+        """
+        from kairos.readers.db import fetch_envelope_from_db
+
+        # Raw (pre-enrich) envelope: one Bash step reported OK by raw OTel.
+        raw_env = _envelope([_step(0, "Bash", status=StepStatus.OK)])
+        # Enriched envelope: same step corrected to ERROR by the hook.
+        enriched_env = _envelope([_step(0, "Bash", status=StepStatus.ERROR)])
+        enriched_env.error_count = 1
+
+        with (
+            patch("kairos.readers.db.fetch_spans_from_db", return_value=[]),
+            patch("kairos.readers.phoenix.spans_to_envelope", return_value=raw_env),
+            patch(
+                "kairos.readers.hook_join.enrich_envelope_with_hooks",
+                return_value=enriched_env,
+            ) as mock_enrich,
+        ):
+            # No enrich_hooks kwarg → uses the new default (True).
+            result = fetch_envelope_from_db("abc" * 10, "fake://")
+
+        mock_enrich.assert_called_once()
+        assert result.steps[0].status is StepStatus.ERROR
+        assert result.error_count == 1
 
 
 # ── Integration tests (require KAIROS_PG_DSN) ────────────────────────────────

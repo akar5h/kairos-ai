@@ -134,7 +134,7 @@ def run_backfill(
                 tid,
                 dsn,
                 correlation_key_attr=context.correlation_key,
-                enrich_hooks=False,
+                enrich_hooks=True,
             )
         except Exception as exc:  # noqa: BLE001 — transient DB errors
             print(f"[backfill]   SKIP {tid[:16]}: {exc}", flush=True)

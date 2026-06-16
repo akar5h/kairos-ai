@@ -265,8 +265,12 @@ def get_traces(
 def get_trace(
     trace_id: str = fastapi.Path(..., description="Hex trace ID."),
     enrich_hooks: bool = fastapi.Query(
-        False,
-        description="When true, overwrite step fields from hook_events table.",
+        True,
+        description=(
+            "Default true — overwrite step fields (is_error/args/output) from "
+            "the hook_events table (hook-truth). Pass false to get the RAW OTel "
+            "envelope (the UI's raw toggle)."
+        ),
     ),
 ) -> dict[str, Any]:
     """Return the full TraceEnvelope for a single trace.

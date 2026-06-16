@@ -101,7 +101,7 @@ def _load_from_phoenix(
     if not dsn:
         msg = "--phoenix flag requires KAIROS_PG_DSN env var (kairos reads from DB, not Phoenix)"
         raise RuntimeError(msg)
-    return [fetch_envelope_from_db(tid, dsn) for tid in trace_ids]
+    return [fetch_envelope_from_db(tid, dsn, enrich_hooks=True) for tid in trace_ids]
 
 
 def _load_from_transcript(path: Path, agent_kind: str) -> list[TraceEnvelope]:

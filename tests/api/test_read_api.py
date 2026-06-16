@@ -241,6 +241,46 @@ class TestGetTrace:
         assert resp.status_code == 200
         assert captured[0]["kwargs"]["enrich_hooks"] is True
 
+    def test_enrich_hooks_default_is_true(self, client: TestClient) -> None:
+        """No query param → hook-truth by default (enrich_hooks=True forwarded)."""
+        trace_id = "dddd" * 8
+        envelope = _fake_envelope(trace_id)
+        captured: list[dict[str, Any]] = []
+
+        def fake_fetch(tid: str, dsn: str, **kwargs: Any) -> TraceEnvelope:
+            captured.append({"trace_id": tid, "kwargs": kwargs})
+            return envelope
+
+        with (
+            patch("kairos.api.read._dsn", return_value="postgresql://test/test"),
+            patch("psycopg.connect", return_value=self._mock_count_conn(2)),
+            patch("kairos.api.read.fetch_envelope_from_db", side_effect=fake_fetch),
+        ):
+            resp = client.get(f"/v1/traces/{trace_id}")
+
+        assert resp.status_code == 200
+        assert captured[0]["kwargs"]["enrich_hooks"] is True
+
+    def test_enrich_hooks_false_forwarded_for_raw(self, client: TestClient) -> None:
+        """UI raw toggle: ?enrich_hooks=false forwards False (raw OTel)."""
+        trace_id = "eeee" * 8
+        envelope = _fake_envelope(trace_id)
+        captured: list[dict[str, Any]] = []
+
+        def fake_fetch(tid: str, dsn: str, **kwargs: Any) -> TraceEnvelope:
+            captured.append({"trace_id": tid, "kwargs": kwargs})
+            return envelope
+
+        with (
+            patch("kairos.api.read._dsn", return_value="postgresql://test/test"),
+            patch("psycopg.connect", return_value=self._mock_count_conn(2)),
+            patch("kairos.api.read.fetch_envelope_from_db", side_effect=fake_fetch),
+        ):
+            resp = client.get(f"/v1/traces/{trace_id}?enrich_hooks=false")
+
+        assert resp.status_code == 200
+        assert captured[0]["kwargs"]["enrich_hooks"] is False
+
 
 # ─── GET /v1/clusters ─────────────────────────────────────────────────────────
 

@@ -411,7 +411,7 @@ def run_nightly_loop(
                     tid,
                     active_dsn,
                     correlation_key_attr=context.correlation_key,
-                    enrich_hooks=False,
+                    enrich_hooks=True,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("fetch.envelope_skip", trace_id=tid[:16], error=str(exc))

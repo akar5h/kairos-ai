@@ -154,7 +154,7 @@ def fetch_envelope_from_db(
     dsn: str,
     *,
     correlation_key_attr: str | None = None,
-    enrich_hooks: bool = False,
+    enrich_hooks: bool = True,
 ) -> TraceEnvelope:
     """Fetch spans from DB and return a ``TraceEnvelope``.
 
@@ -174,7 +174,10 @@ def fetch_envelope_from_db(
         When True, call ``enrich_envelope_with_hooks`` after building the
         envelope to overwrite step status / args / output from the
         ``hook_events`` table (requires ``session.id`` on spans).
-        Default False — existing callers and tests are unaffected.
+        Default True — hook-truth is the default so detectors/outcomes and the
+        API see the corrected is_error/args/output instead of the raw OTel
+        values. Pass ``enrich_hooks=False`` to read the RAW (un-enriched) OTel
+        envelope (e.g. the UI's raw toggle).
     """
     from kairos.readers.phoenix import spans_to_envelope  # noqa: PLC0415
 
