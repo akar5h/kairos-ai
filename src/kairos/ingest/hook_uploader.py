@@ -159,7 +159,7 @@ def _drain_file(
             except json.JSONDecodeError:
                 logger.warning(
                     "hook_uploader.corrupt_line",
-                    extra={"path": str(path), "lineno": lineno},
+                    extra={"path": str(path), "line_no": lineno},
                 )
                 skipped += 1
                 continue

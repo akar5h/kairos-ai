@@ -38,7 +38,6 @@ from psycopg.types.json import Jsonb
 
 from kairos.api.app import create_app
 
-
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
 
 

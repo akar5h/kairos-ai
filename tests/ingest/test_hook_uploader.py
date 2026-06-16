@@ -397,13 +397,14 @@ class TestDrainSpoolDB:
                 "payload_redacted": {},
                 "occurred_at": datetime.now(tz=UTC).isoformat(),
             },
+            _make_session_end_record(session_id),
         ]
         with spool_file.open("w") as fh:
             for rec in records:
                 fh.write(json.dumps(rec) + "\n")
 
         n = drain_spool(tmp_path, dsn=_DSN)
-        assert n == 2
+        assert n == 3
 
         # Spool file should be renamed to .done.
         assert not spool_file.exists()
@@ -417,11 +418,12 @@ class TestDrainSpoolDB:
                 (session_id,),
             ).fetchall()
 
-        assert len(rows) == 2
-        # The uploader assigns seq in order of iteration; SessionStart was second.
+        assert len(rows) == 3
+        # The uploader assigns seq in order of iteration.
         event_names = [r[2] for r in rows]
         assert "PostToolUse" in event_names
         assert "SessionStart" in event_names
+        assert "SessionEnd" in event_names
 
         # Verify tool_use_id stored correctly.
         tool_row = next(r for r in rows if r[2] == "PostToolUse")
@@ -441,10 +443,11 @@ class TestDrainSpoolDB:
         session_id = f"test-done-{uuid.uuid4().hex[:8]}"
         spool_file = tmp_path / f"{session_id}.jsonl"
         rec = _make_post_tool_use_record(session_id)
-        spool_file.write_text(json.dumps(rec) + "\n")
+        end_rec = _make_session_end_record(session_id)
+        spool_file.write_text(json.dumps(rec) + "\n" + json.dumps(end_rec) + "\n")
 
         n1 = drain_spool(tmp_path, dsn=_DSN)
-        assert n1 == 1
+        assert n1 == 2
 
         # Second call — .done file exists, no .jsonl files remain.
         n2 = drain_spool(tmp_path, dsn=_DSN)
@@ -465,20 +468,22 @@ class TestDrainSpoolDB:
         spool_file = tmp_path / f"{session_id}.jsonl"
 
         good = _make_post_tool_use_record(session_id)
+        end_rec = _make_session_end_record(session_id)
         with spool_file.open("w") as fh:
             fh.write("NOT JSON\n")
             fh.write(json.dumps(good) + "\n")
             fh.write("{broken\n")
+            fh.write(json.dumps(end_rec) + "\n")
 
         n = drain_spool(tmp_path, dsn=_DSN)
-        assert n == 1  # only the good line
+        assert n == 2  # good PostToolUse + SessionEnd; corrupt lines skipped
 
         with db.get_connection() as conn:
             rows = conn.execute(
                 "SELECT session_id FROM hook_events WHERE session_id = %s",
                 (session_id,),
             ).fetchall()
-        assert len(rows) == 1
+        assert len(rows) == 2
 
         # Cleanup.
         with db.get_connection() as conn:

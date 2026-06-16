@@ -16,10 +16,13 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from collections.abc import Mapping
 import sys
 import uuid
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 _HOOK_SCRIPT = Path(__file__).parent.parent / "hooks" / "kairos_hook.py"
 
