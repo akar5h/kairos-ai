@@ -21,13 +21,14 @@ Design rules enforced here
 from __future__ import annotations
 
 import logging
-from datetime import datetime  # noqa: TC003 — pydantic needs the runtime type
+import uuid
+from datetime import UTC, datetime  # noqa: TC003 — pydantic needs the runtime type
 from typing import Any
 
 import fastapi
 import psycopg
 from psycopg.rows import dict_row
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from kairos.loop.db import _dsn
 from kairos.readers.db import fetch_envelope_from_db
@@ -89,15 +90,42 @@ class FindingRow(BaseModel):
 
 
 class LabelRow(BaseModel):
-    """One row from the ``labels`` table."""
+    """One row from the ``labels`` table.
+
+    ``question``, ``verdict`` and ``label_class`` are nullable (migration 0014
+    relaxed the original NOT NULL); only ``trace_id`` and ``answer`` are required.
+    """
 
     id: str
     trace_id: str
-    question: str
+    question: str | None
     answer: str
-    verdict: str
-    label_class: str
+    verdict: str | None
+    label_class: str | None
     ts: datetime
+
+
+class LabelCreate(BaseModel):
+    """Request body for POST /v1/labels (append-only label write).
+
+    Locked contract: ``trace_id`` and ``answer`` are required; ``question``,
+    ``verdict`` and ``label_class`` are optional. ``verdict`` — when supplied —
+    must be one of ``tp`` / ``fp`` / ``fn`` (invalid → 422).
+    """
+
+    trace_id: str
+    answer: str
+    question: str | None = None
+    verdict: str | None = None
+    label_class: str | None = None
+
+    @field_validator("verdict")
+    @classmethod
+    def _verdict_in_enum(cls, v: str | None) -> str | None:
+        if v is not None and v not in {"tp", "fp", "fn"}:
+            msg = "verdict must be one of 'tp', 'fp', 'fn', or null"
+            raise ValueError(msg)
+        return v
 
 
 class SessionSummary(BaseModel):
@@ -443,6 +471,56 @@ def get_labels(
         )
         for row in rows
     ]
+
+
+@router.post("/labels", response_model=LabelRow, status_code=201)
+def create_label(body: LabelCreate) -> LabelRow:
+    """Append a new label row (write path for the review UI).
+
+    APPEND-ONLY: every call inserts a fresh row — labels are never updated or
+    deleted. ``id`` is a generated uuid hex; ``ts`` is set to now(). The trace
+    is NOT required to exist (labels can be recorded for any trace_id).
+
+    Returns the created row (201). Invalid ``verdict`` is rejected at the
+    boundary by ``LabelCreate`` (422 before this body runs).
+    """
+    label_id = uuid.uuid4().hex
+    ts = datetime.now(UTC)
+    try:
+        with _connect() as conn:
+            row = conn.execute(
+                "INSERT INTO labels "
+                "  (id, trace_id, question, answer, verdict, label_class, ts) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "RETURNING id, trace_id, question, answer, verdict, label_class, ts",
+                (
+                    label_id,
+                    body.trace_id,
+                    body.question,
+                    body.answer,
+                    body.verdict,
+                    body.label_class,
+                    ts,
+                ),
+            ).fetchone()
+            conn.commit()
+    except Exception:
+        logger.exception("read.create_label failed trace_id=%s", body.trace_id)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    if row is None:  # defensive — RETURNING always yields a row on success
+        logger.error("read.create_label no row returned trace_id=%s", body.trace_id)
+        raise fastapi.HTTPException(status_code=500, detail="Database error")
+
+    return LabelRow(
+        id=row["id"],
+        trace_id=row["trace_id"],
+        question=row["question"],
+        answer=row["answer"],
+        verdict=row["verdict"],
+        label_class=row["label_class"],
+        ts=row["ts"],
+    )
 
 
 # ─── Session hierarchy routes ─────────────────────────────────────────────────

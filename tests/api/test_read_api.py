@@ -552,6 +552,148 @@ class TestGetLabels:
         assert "labels table missing" not in resp.text
 
 
+# ─── POST /v1/labels ──────────────────────────────────────────────────────────
+
+
+class TestPostLabels:
+    def _returning_conn(self, returned: dict[str, Any]) -> MagicMock:
+        """Mock connection whose INSERT ... RETURNING yields ``returned``."""
+        conn = MagicMock()
+        conn.__enter__ = lambda s: s
+        conn.__exit__ = MagicMock(return_value=False)
+        conn.execute.return_value.fetchone.return_value = returned
+        return conn
+
+    def test_happy_path_returns_201_and_row(self, client: TestClient) -> None:
+        returned = {
+            "id": "deadbeef",
+            "trace_id": "aaaa" * 8,
+            "question": "Was it helpful?",
+            "answer": "Yes",
+            "verdict": "tp",
+            "label_class": "coordination_waste",
+            "ts": _utcnow(),
+        }
+        conn = self._returning_conn(returned)
+
+        with patch("kairos.api.read._connect", return_value=conn):
+            resp = client.post(
+                "/v1/labels",
+                json={
+                    "trace_id": "aaaa" * 8,
+                    "answer": "Yes",
+                    "question": "Was it helpful?",
+                    "verdict": "tp",
+                    "label_class": "coordination_waste",
+                },
+            )
+
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["id"] == "deadbeef"
+        assert data["verdict"] == "tp"
+        assert data["trace_id"] == "aaaa" * 8
+
+    def test_minimal_body_only_required_fields(self, client: TestClient) -> None:
+        """Only trace_id + answer required; optional fields default to null."""
+        returned = {
+            "id": "feed",
+            "trace_id": "bbbb" * 8,
+            "question": None,
+            "answer": "looks fine",
+            "verdict": None,
+            "label_class": None,
+            "ts": _utcnow(),
+        }
+        conn = self._returning_conn(returned)
+
+        with patch("kairos.api.read._connect", return_value=conn):
+            resp = client.post(
+                "/v1/labels",
+                json={"trace_id": "bbbb" * 8, "answer": "looks fine"},
+            )
+
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["question"] is None
+        assert data["verdict"] is None
+        assert data["label_class"] is None
+
+    def test_missing_trace_id_rejected_422(self, client: TestClient) -> None:
+        resp = client.post("/v1/labels", json={"answer": "x"})
+        assert resp.status_code == 422
+
+    def test_missing_answer_rejected_422(self, client: TestClient) -> None:
+        resp = client.post("/v1/labels", json={"trace_id": "aaaa" * 8})
+        assert resp.status_code == 422
+
+    def test_bad_verdict_rejected_422(self, client: TestClient) -> None:
+        resp = client.post(
+            "/v1/labels",
+            json={"trace_id": "aaaa" * 8, "answer": "y", "verdict": "maybe"},
+        )
+        assert resp.status_code == 422
+
+    def test_null_verdict_allowed(self, client: TestClient) -> None:
+        returned = {
+            "id": "n1",
+            "trace_id": "cccc" * 8,
+            "question": None,
+            "answer": "y",
+            "verdict": None,
+            "label_class": None,
+            "ts": _utcnow(),
+        }
+        conn = self._returning_conn(returned)
+        with patch("kairos.api.read._connect", return_value=conn):
+            resp = client.post(
+                "/v1/labels",
+                json={"trace_id": "cccc" * 8, "answer": "y", "verdict": None},
+            )
+        assert resp.status_code == 201
+
+    def test_insert_is_parameterized(self, client: TestClient) -> None:
+        """SQL injection attempt on trace_id — must be bound, not interpolated."""
+        injected = "'; DROP TABLE labels; --"
+        returned = {
+            "id": "p1",
+            "trace_id": injected,
+            "question": None,
+            "answer": "y",
+            "verdict": None,
+            "label_class": None,
+            "ts": _utcnow(),
+        }
+        conn = self._returning_conn(returned)
+
+        with patch("kairos.api.read._connect", return_value=conn):
+            resp = client.post(
+                "/v1/labels",
+                json={"trace_id": injected, "answer": "y"},
+            )
+
+        assert resp.status_code == 201
+        sql, params = conn.execute.call_args[0]
+        assert "INSERT INTO labels" in sql
+        assert "DROP TABLE" not in sql
+        assert injected in params
+
+    def test_db_error_returns_500(self, client: TestClient) -> None:
+        conn = MagicMock()
+        conn.__enter__ = lambda s: s
+        conn.__exit__ = MagicMock(return_value=False)
+        conn.execute.side_effect = Exception("insert failed")
+
+        with patch("kairos.api.read._connect", return_value=conn):
+            resp = client.post(
+                "/v1/labels",
+                json={"trace_id": "aaaa" * 8, "answer": "y"},
+            )
+
+        assert resp.status_code == 500
+        assert "insert failed" not in resp.text
+
+
 # ─── DB-gated integration tests ───────────────────────────────────────────────
 
 
@@ -662,6 +804,59 @@ class TestReadApiIntegration:
         # Cleanup.
         with psycopg.connect(dsn) as conn:
             conn.execute("DELETE FROM labels WHERE id = %s", (label_id,))
+            conn.commit()
+
+    def test_post_label_then_get_round_trip(
+        self, api_client: TestClient, dsn: str
+    ) -> None:
+        """POST /v1/labels appends a row that GET /v1/labels reads back."""
+        trace_id = self._unique_trace_id()
+
+        resp = api_client.post(
+            "/v1/labels",
+            json={
+                "trace_id": trace_id,
+                "answer": "appended via POST",
+                "question": "is it good?",
+                "verdict": "fp",
+                "label_class": "loop_waste",
+            },
+        )
+        assert resp.status_code == 201
+        created = resp.json()
+        new_id = created["id"]
+        assert created["verdict"] == "fp"
+        assert created["trace_id"] == trace_id
+
+        try:
+            got = api_client.get(f"/v1/labels?trace_id={trace_id}")
+            assert got.status_code == 200
+            rows = got.json()
+            assert any(r["id"] == new_id and r["verdict"] == "fp" for r in rows)
+        finally:
+            with psycopg.connect(dsn) as conn:
+                conn.execute("DELETE FROM labels WHERE id = %s", (new_id,))
+                conn.commit()
+
+    def test_post_label_minimal_nullable_fields(
+        self, api_client: TestClient, dsn: str
+    ) -> None:
+        """Migration 0014: optional columns accept NULL on insert."""
+        trace_id = self._unique_trace_id()
+
+        resp = api_client.post(
+            "/v1/labels",
+            json={"trace_id": trace_id, "answer": "minimal"},
+        )
+        assert resp.status_code == 201
+        created = resp.json()
+        new_id = created["id"]
+        assert created["question"] is None
+        assert created["verdict"] is None
+        assert created["label_class"] is None
+
+        with psycopg.connect(dsn) as conn:
+            conn.execute("DELETE FROM labels WHERE id = %s", (new_id,))
             conn.commit()
 
     def test_clusters_seeded_and_retrieved(
