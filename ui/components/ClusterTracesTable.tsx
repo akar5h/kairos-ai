@@ -76,9 +76,9 @@ export function ClusterTracesTable({ traces }: ClusterTracesTableProps) {
           </tr>
         </thead>
         <tbody>
-          {traces.map((t) => (
+          {traces.map((t, i) => (
             <tr
-              key={t.trace_id}
+              key={`${t.trace_id}-${i}`}
               className="console-row"
               onMouseEnter={(e) => {
                 (e.currentTarget as HTMLElement).style.background =

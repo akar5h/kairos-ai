@@ -386,8 +386,9 @@ def _is_outlier(f: TraceFeatures, z_t: float = ROBUST_Z_T) -> bool:
 
 def _cluster_key(f: TraceFeatures) -> str:
     """Cheap cluster label: tool_signature + dominant_feature."""
-    sig_prefix = f.tool_signature[:60] if f.tool_signature else "unknown"
-    return f"{sig_prefix}::{f.dominant_feature}"
+    sig_prefix = f.tool_signature[:60] if f.tool_signature else "llm_only"
+    feat = f.dominant_feature if f.dominant_feature else "no_signal"
+    return f"{sig_prefix}::{feat}"
 
 
 def _build_anomaly_candidates(
