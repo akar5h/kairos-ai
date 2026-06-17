@@ -8,6 +8,7 @@
 import type { Metadata } from "next";
 import { getClusters } from "@/lib/api";
 import { ClusterTable } from "@/components/ClusterTable";
+import { ClusterRefreshButton } from "@/components/ClusterRefreshButton";
 
 export const metadata: Metadata = {
   title: "Clusters — Kairos",
@@ -48,6 +49,7 @@ export default async function ClustersPage() {
             </span>
           )}
         </div>
+        <ClusterRefreshButton />
       </div>
 
       {/* Table */}

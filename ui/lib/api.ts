@@ -5,6 +5,7 @@
  * All functions throw on non-2xx so callers can handle errors uniformly.
  */
 import type {
+  ClusterRefreshResponse,
   ClusterSummary,
   ClusterTraceMember,
   CreateLabelBody,
@@ -13,6 +14,7 @@ import type {
   RawSpan,
   SearchHits,
   SessionSummary,
+  StatsResponse,
   TraceEnvelope,
   TraceInSession,
   TraceSummary,
@@ -118,6 +120,26 @@ export async function getFindings(traceId: string): Promise<FindingRow[]> {
 
 export async function getLabels(traceId: string): Promise<LabelRow[]> {
   return apiFetch<LabelRow[]>(`/v1/labels?trace_id=${traceId}`);
+}
+
+// ── Stats ─────────────────────────────────────────────────────────────────────
+
+export async function getStats(): Promise<StatsResponse> {
+  return apiFetch<StatsResponse>("/v1/stats");
+}
+
+// ── Cluster refresh ───────────────────────────────────────────────────────────
+
+export async function refreshClusters(): Promise<ClusterRefreshResponse> {
+  const res = await fetch(`${BASE}/v1/clusters/refresh`, {
+    method: "POST",
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => res.statusText);
+    throw new Error(`${res.status} ${detail}`);
+  }
+  return res.json() as Promise<ClusterRefreshResponse>;
 }
 
 /**

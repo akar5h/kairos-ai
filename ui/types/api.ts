@@ -278,3 +278,26 @@ export interface ClusterTraceMember {
   trace_id: string;
   labeled: boolean;
 }
+
+// ── StatsResponse (GET /v1/stats) ─────────────────────────────────────────────
+
+export interface StatsResponse {
+  total_sessions: number;
+  total_spans: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cache_read_tokens: number;
+  total_cache_creation_tokens: number;
+  total_errors: number;
+  estimated_cost_usd: number;
+  sessions_today: number;
+  spans_today: number;
+}
+
+// ── ClusterRefreshResponse (POST /v1/clusters/refresh) ────────────────────────
+
+export interface ClusterRefreshResponse {
+  status: string;
+  clusters_found: number;
+  traces_processed: number;
+}

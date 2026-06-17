@@ -69,6 +69,12 @@ export default function RootLayout({
               sessions
             </Link>
             <Link
+              href="/dashboard"
+              className="hover:text-[var(--text-primary)] transition-colors"
+            >
+              dashboard
+            </Link>
+            <Link
               href="/clusters"
               className="hover:text-[var(--text-primary)] transition-colors"
             >

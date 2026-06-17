@@ -5,10 +5,16 @@
  *
  * Renders GET /v1/traces/{id}/spans response as a tree, ordered by start_time.
  * Each row: indent | STATUS | name/tool_name | duration | attributes (expandable).
+ * Click a row to expand a structured detail panel inline below it.
  */
 import { useState } from "react";
 import type { RawSpan } from "@/types/api";
 import { durationMs, formatLatency, shortId } from "@/lib/format";
+
+const INPUT_COST = 3 / 1_000_000;
+const OUTPUT_COST = 15 / 1_000_000;
+const CACHE_READ_COST = 0.30 / 1_000_000;
+const CACHE_CREATE_COST = 3.75 / 1_000_000;
 
 interface RawSpansTreeProps {
   spans: RawSpan[];
@@ -60,6 +66,7 @@ function flatten(nodes: SpanNode[]): SpanNode[] {
 
 export function RawSpansTree({ spans }: RawSpansTreeProps) {
   const [showFull, setShowFull] = useState(false);
+  const [expandedSpanId, setExpandedSpanId] = useState<string | null>(null);
 
   if (spans.length === 0) {
     return (
@@ -71,6 +78,10 @@ export function RawSpansTree({ spans }: RawSpansTreeProps) {
 
   const roots = buildTree(spans);
   const flat = flatten(roots);
+
+  function toggleExpand(spanId: string) {
+    setExpandedSpanId((prev) => (prev === spanId ? null : spanId));
+  }
 
   return (
     <div>
@@ -127,19 +138,34 @@ export function RawSpansTree({ spans }: RawSpansTreeProps) {
       {/* Span rows */}
       <div role="tree" aria-label="Span tree">
         {flat.map((span) => (
-          <SpanRow key={span.span_id} span={span} showFull={showFull} />
+          <SpanRow
+            key={span.span_id}
+            span={span}
+            showFull={showFull}
+            detailExpanded={expandedSpanId === span.span_id}
+            onToggleDetail={() => toggleExpand(span.span_id)}
+          />
         ))}
       </div>
     </div>
   );
 }
 
-function SpanRow({ span, showFull }: { span: SpanNode; showFull: boolean }) {
-  const [expanded, setExpanded] = useState(false);
+function SpanRow({
+  span,
+  showFull,
+  detailExpanded,
+  onToggleDetail,
+}: {
+  span: SpanNode;
+  showFull: boolean;
+  detailExpanded: boolean;
+  onToggleDetail: () => void;
+}) {
+  const [showAllAttrs, setShowAllAttrs] = useState(false);
   const isError = span.status_code === "ERROR";
   const isOk = span.status_code === "OK";
   const dur = durationMs(span.start_time, span.end_time);
-  const hasAttrs = Object.keys(span.attributes).length > 0;
 
   const displayName = span.tool_name ?? span.name;
   const subName = span.tool_name ? span.name : null;
@@ -154,7 +180,7 @@ function SpanRow({ span, showFull }: { span: SpanNode; showFull: boolean }) {
   const attrEntries = Object.entries(filteredAttrs);
 
   return (
-    <div role="treeitem" aria-selected={false} aria-expanded={hasAttrs ? expanded : undefined}>
+    <div role="treeitem" aria-selected={false} aria-expanded={detailExpanded}>
       <div
         className="flex items-center gap-2 px-4 cursor-pointer"
         style={{
@@ -163,7 +189,7 @@ function SpanRow({ span, showFull }: { span: SpanNode; showFull: boolean }) {
           background: isError ? "rgba(220,38,38,0.04)" : undefined,
           paddingLeft: `${16 + span.depth * 20}px`,
         }}
-        onClick={() => hasAttrs && setExpanded((v) => !v)}
+        onClick={onToggleDetail}
         onMouseEnter={(e) => {
           (e.currentTarget as HTMLElement).style.background = isError
             ? "rgba(220,38,38,0.07)"
@@ -182,8 +208,7 @@ function SpanRow({ span, showFull }: { span: SpanNode; showFull: boolean }) {
             fontSize: 10,
             color: "var(--text-muted)",
             flexShrink: 0,
-            visibility: hasAttrs ? "visible" : "hidden",
-            transform: expanded ? "rotate(90deg)" : "none",
+            transform: detailExpanded ? "rotate(90deg)" : "none",
             display: "inline-block",
             transition: "transform 0.1s",
           }}
@@ -259,38 +284,188 @@ function SpanRow({ span, showFull }: { span: SpanNode; showFull: boolean }) {
         </span>
       </div>
 
-      {/* Attributes panel */}
-      {expanded && attrEntries.length > 0 && (
-        <div
-          className="px-4 py-2"
-          style={{
-            paddingLeft: `${16 + span.depth * 20 + 20}px`,
-            background: "var(--bg-surface)",
-            borderBottom: "1px solid var(--bg-border)",
-          }}
-        >
-          <table className="w-full border-collapse" style={{ fontSize: 11 }}>
-            <tbody>
-              {attrEntries.map(([k, v]) => (
-                <tr key={k}>
-                  <td
-                    className="font-mono pr-4 py-0.5 align-top"
-                    style={{ color: "var(--text-muted)", whiteSpace: "nowrap" }}
-                  >
-                    {k}
-                  </td>
-                  <td
-                    className="font-mono py-0.5 break-all"
-                    style={{ color: "var(--text-secondary)" }}
-                  >
-                    {typeof v === "object" ? JSON.stringify(v) : String(v)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {/* Detail panel */}
+      {detailExpanded && (
+        <SpanDetailPanel
+          span={span}
+          dur={dur}
+          attrEntries={attrEntries}
+          showAllAttrs={showAllAttrs}
+          onToggleAllAttrs={() => setShowAllAttrs((v) => !v)}
+        />
+      )}
+    </div>
+  );
+}
+
+function SpanDetailPanel({
+  span,
+  dur,
+  attrEntries,
+  showAllAttrs,
+  onToggleAllAttrs,
+}: {
+  span: SpanNode;
+  dur: number | null;
+  attrEntries: [string, unknown][];
+  showAllAttrs: boolean;
+  onToggleAllAttrs: () => void;
+}) {
+  const attrs = span.attributes;
+  const isLlmRequest = span.name === "claude_code.llm_request";
+  const isToolSpan = span.name === "claude_code.tool";
+
+  const inputTokens = Number(attrs["llm.usage.prompt_tokens"] ?? attrs["gen_ai.usage.input_tokens"] ?? 0);
+  const outputTokens = Number(attrs["llm.usage.completion_tokens"] ?? attrs["gen_ai.usage.output_tokens"] ?? 0);
+  const cacheReadTokens = Number(attrs["gen_ai.usage.cache_read_input_tokens"] ?? 0);
+  const cacheCreateTokens = Number(attrs["gen_ai.usage.cache_creation_input_tokens"] ?? 0);
+  const ttftMs = attrs["gen_ai.usage.ttft_ms"] != null ? Number(attrs["gen_ai.usage.ttft_ms"]) : null;
+  const requestId = attrs["gen_ai.request.id"] ?? attrs["llm.request_id"] ?? null;
+  const stopReason = attrs["gen_ai.usage.stop_reason"] ?? attrs["llm.stop_reason"] ?? null;
+  const model =
+    attrs["gen_ai.request.model"] ??
+    attrs["llm.model"] ??
+    "claude-opus-4-8";
+
+  const estimatedCost =
+    inputTokens * INPUT_COST +
+    outputTokens * OUTPUT_COST +
+    cacheReadTokens * CACHE_READ_COST +
+    cacheCreateTokens * CACHE_CREATE_COST;
+
+  const panelPl = `${16 + span.depth * 20 + 20}px`;
+
+  return (
+    <div
+      style={{
+        paddingLeft: panelPl,
+        paddingRight: 16,
+        paddingTop: 12,
+        paddingBottom: 12,
+        background: "var(--bg-elevated)",
+        borderTop: "1px solid var(--bg-border)",
+        borderBottom: "1px solid var(--bg-border)",
+        fontFamily: "var(--font-geist-mono), monospace",
+        fontSize: 11,
+      }}
+    >
+      {isLlmRequest && (
+        <div className="flex flex-col gap-1 mb-3">
+          <DetailRow label="MODEL" value={String(model)} />
+          <div className="flex gap-8">
+            <div className="flex flex-col gap-1">
+              <DetailRow label="INPUT TOKENS" value={inputTokens.toLocaleString()} />
+              <DetailRow label="OUTPUT TOKENS" value={outputTokens.toLocaleString()} />
+              {ttftMs != null && (
+                <DetailRow label="TTFT" value={`${ttftMs.toLocaleString()}ms`} />
+              )}
+              {stopReason && (
+                <DetailRow label="STOP REASON" value={String(stopReason)} />
+              )}
+            </div>
+            <div className="flex flex-col gap-1">
+              <DetailRow label="CACHE READ" value={cacheReadTokens.toLocaleString()} />
+              <DetailRow label="CACHE CREATE" value={cacheCreateTokens.toLocaleString()} />
+              {dur != null && (
+                <DetailRow label="DURATION" value={`${dur.toLocaleString()}ms`} />
+              )}
+              <DetailRow
+                label="EST. COST"
+                value={`$${estimatedCost.toFixed(4)}`}
+              />
+            </div>
+          </div>
+          {requestId && (
+            <DetailRow label="REQUEST ID" value={String(requestId)} />
+          )}
         </div>
       )}
+
+      {isToolSpan && (
+        <div className="flex flex-col gap-1 mb-3">
+          <DetailRow label="TOOL" value={span.tool_name ?? span.name} />
+          <DetailRow label="STATUS" value={span.status_code ?? "UNSET"} />
+          {dur != null && (
+            <DetailRow label="DURATION" value={formatLatency(dur)} />
+          )}
+          <p
+            className="mt-1"
+            style={{ color: "var(--text-muted)", fontSize: 10 }}
+          >
+            Input/output captured via hooks only
+          </p>
+        </div>
+      )}
+
+      {!isLlmRequest && !isToolSpan && dur != null && (
+        <div className="flex flex-col gap-1 mb-3">
+          <DetailRow label="DURATION" value={formatLatency(dur)} />
+          <DetailRow label="STATUS" value={span.status_code ?? "UNSET"} />
+        </div>
+      )}
+
+      {/* Raw attrs toggle */}
+      {attrEntries.length > 0 && (
+        <div>
+          <button
+            onClick={onToggleAllAttrs}
+            className="text-xs mb-1"
+            style={{
+              color: "var(--text-link)",
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              padding: 0,
+              fontFamily: "inherit",
+              fontSize: 10,
+            }}
+          >
+            {showAllAttrs ? "▾ hide attrs" : "▸ full attrs"}
+          </button>
+          {showAllAttrs && (
+            <table className="w-full border-collapse" style={{ fontSize: 11 }}>
+              <tbody>
+                {attrEntries.map(([k, v]) => (
+                  <tr key={k}>
+                    <td
+                      className="font-mono pr-4 py-0.5 align-top"
+                      style={{ color: "var(--text-muted)", whiteSpace: "nowrap" }}
+                    >
+                      {k}
+                    </td>
+                    <td
+                      className="font-mono py-0.5 break-all"
+                      style={{ color: "var(--text-secondary)" }}
+                    >
+                      {typeof v === "object" ? JSON.stringify(v) : String(v)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline gap-3">
+      <span
+        style={{
+          color: "var(--text-muted)",
+          fontSize: 10,
+          fontWeight: 600,
+          letterSpacing: "0.06em",
+          minWidth: 100,
+          flexShrink: 0,
+        }}
+      >
+        {label}
+      </span>
+      <span style={{ color: "var(--text-primary)" }}>{value}</span>
     </div>
   );
 }
