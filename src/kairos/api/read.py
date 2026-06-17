@@ -1224,3 +1224,39 @@ def get_hook_events(
         )
         for row in rows
     ]
+
+
+@router.get("/eval-sets")
+def get_eval_sets() -> list[dict[str, Any]]:
+    """Return all eval sets with their MCC scores."""
+    try:
+        with psycopg.connect(_dsn(), row_factory=dict_row) as conn:
+            rows = conn.execute(
+                """
+                SELECT eval_set_id, cluster_key, discriminator_type, discriminator_config,
+                       mcc, mcc_label_count, mcc_computed_at, frozen_at,
+                       jsonb_array_length(held_in) AS held_in_count,
+                       jsonb_array_length(held_out) AS held_out_count
+                  FROM eval_sets
+                 ORDER BY frozen_at DESC
+                """
+            ).fetchall()
+    except Exception:
+        logger.exception("read.get_eval_sets failed")
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    return [
+        {
+            "eval_set_id": r["eval_set_id"],
+            "cluster_key": r["cluster_key"],
+            "discriminator_type": r["discriminator_type"],
+            "discriminator_config": r["discriminator_config"],
+            "held_in_count": r["held_in_count"],
+            "held_out_count": r["held_out_count"],
+            "mcc": r["mcc"],
+            "mcc_label_count": r["mcc_label_count"],
+            "mcc_computed_at": r["mcc_computed_at"].isoformat() if r["mcc_computed_at"] else None,
+            "frozen_at": r["frozen_at"].isoformat() if r["frozen_at"] else None,
+        }
+        for r in rows
+    ]

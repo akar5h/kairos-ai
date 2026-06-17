@@ -10,7 +10,9 @@ from kairos.eval.harness import (
     MetricDiff,
     _classify_delta,
     _compute_cluster_gate,
+    _compute_trajectory_diff,
     _extract_metric_values,
+    _levenshtein,
     _metric_tier,
     _panels_identical,
 )
@@ -29,6 +31,7 @@ def _make_panel(
     owner_precision: float | None = 0.8,
     classes_covered: int = 3,
     trace_detector_fires: dict[str, list[str]] | None = None,
+    trace_tool_sequences: dict[str, list[str]] | None = None,
 ) -> MetricPanel:
     return MetricPanel(
         corpus_hash=corpus_hash,
@@ -97,6 +100,7 @@ def _make_panel(
         severity_info_count=15,
         total_findings=25,
         trace_detector_fires=trace_detector_fires if trace_detector_fires is not None else {},
+        trace_tool_sequences=trace_tool_sequences if trace_tool_sequences is not None else {},
     )
 
 
@@ -449,3 +453,113 @@ def test_compare_result_has_cluster_gate_none_by_default():
         verdict="PASS",
     )
     assert result.cluster_gate is None
+
+
+def test_compare_result_has_trajectory_diff_none_by_default():
+    """CompareResult.trajectory_diff defaults to None."""
+    result = CompareResult(
+        before_ref="a",
+        after_ref="b",
+        before_ref_full="a" * 40,
+        after_ref_full="b" * 40,
+        k=1,
+        corpus_hash="abc",
+        diffs=[],
+        verdict="PASS",
+    )
+    assert result.trajectory_diff is None
+
+
+# ── _levenshtein ──────────────────────────────────────────────────────────────
+
+
+def test_levenshtein_identical():
+    assert _levenshtein(["a", "b"], ["a", "b"]) == 0
+
+
+def test_levenshtein_insert():
+    assert _levenshtein(["a"], ["a", "b"]) == 1
+
+
+def test_levenshtein_replace():
+    assert _levenshtein(["a", "c"], ["a", "b"]) == 1
+
+
+def test_levenshtein_empty():
+    assert _levenshtein([], []) == 0
+    assert _levenshtein([], ["a", "b"]) == 2
+    assert _levenshtein(["a", "b"], []) == 2
+
+
+# ── _compute_trajectory_diff ──────────────────────────────────────────────────
+
+
+def test_trajectory_diff_no_change():
+    """Both panels have same sequences → changed_count=0, changed_fraction=0.0."""
+    seqs = {"t1": ["bash", "read"], "t2": ["bash", "write"]}
+    before = _make_panel(trace_tool_sequences=seqs)
+    after = _make_panel(trace_tool_sequences=seqs)
+
+    diff = _compute_trajectory_diff(before, after)
+
+    assert diff.traces_compared == 2
+    assert diff.changed_count == 0
+    assert diff.changed_fraction == 0.0
+    assert diff.mean_edit_distance == 0.0
+
+
+def test_trajectory_diff_with_changes():
+    """One of two traces differs → changed_count=1, changed_fraction=0.5."""
+    before = _make_panel(trace_tool_sequences={"t1": ["bash", "read"], "t2": ["bash", "write"]})
+    after = _make_panel(trace_tool_sequences={"t1": ["bash", "edit"], "t2": ["bash", "write"]})
+
+    diff = _compute_trajectory_diff(before, after)
+
+    assert diff.traces_compared == 2
+    assert diff.changed_count == 1
+    assert diff.changed_fraction == 0.5
+    assert diff.mean_edit_distance == 0.5  # (1 + 0) / 2
+
+
+def test_trajectory_diff_no_common():
+    """No overlapping trace_ids → changed_fraction=None."""
+    before = _make_panel(trace_tool_sequences={"t1": ["bash"]})
+    after = _make_panel(trace_tool_sequences={"t2": ["read"]})
+
+    diff = _compute_trajectory_diff(before, after)
+
+    assert diff.traces_compared == 0
+    assert diff.changed_count == 0
+    assert diff.changed_fraction is None
+    assert diff.mean_edit_distance is None
+
+
+def test_trajectory_diff_labeled_pass_tracking():
+    """Traces with no findings in before_panel are 'labeled_pass'; track their changes."""
+    # t1 has no findings → labeled_pass; t2 has findings → not labeled_pass
+    before = _make_panel(
+        trace_tool_sequences={"t1": ["bash"], "t2": ["read"]},
+        trace_detector_fires={"t2": ["struggle_ratio"]},
+    )
+    # t1's sequence changes; t2's stays the same
+    after = _make_panel(
+        trace_tool_sequences={"t1": ["edit"], "t2": ["read"]},
+        trace_detector_fires={},
+    )
+
+    diff = _compute_trajectory_diff(before, after)
+
+    assert diff.labeled_pass_changed_count == 1
+    assert diff.labeled_pass_changed_fraction == 1.0
+
+
+def test_trajectory_diff_all_empty_sequences():
+    """Empty tool sequences → edit distance 0, no changes."""
+    seqs = {"t1": [], "t2": []}
+    before = _make_panel(trace_tool_sequences=seqs)
+    after = _make_panel(trace_tool_sequences=seqs)
+
+    diff = _compute_trajectory_diff(before, after)
+
+    assert diff.changed_count == 0
+    assert diff.changed_fraction == 0.0

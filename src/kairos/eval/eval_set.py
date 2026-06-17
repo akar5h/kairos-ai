@@ -22,6 +22,8 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kairos.eval.corpus import CorpusEntry
 
 
@@ -312,3 +314,149 @@ def generate_all_eval_sets(
         eval_set_ids.append(eid)
 
     return eval_set_ids
+
+
+# ── Meta-eval MCC ─────────────────────────────────────────────────────────────
+
+
+def _mcc(tp: int, fp: int, fn: int, tn: int) -> float | None:
+    """Matthews Correlation Coefficient. Returns None if denominator is zero."""
+    denom: float = float((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn)) ** 0.5
+    if denom == 0.0:
+        return None
+    return float(tp * tn - fp * fn) / denom
+
+
+def compute_eval_set_mcc(
+    eval_set: EvalSetRecord,
+    corpus: list[CorpusEntry],
+    trace_tool_sequences: dict[str, list[str]],
+    trace_detector_fires: dict[str, list[str]],
+) -> tuple[float | None, int]:
+    """Compute MCC for an eval set against labeled corpus entries.
+
+    Returns (mcc_score, label_count) where label_count is the number of
+    labeled entries used. Returns (None, 0) when MCC is not computable.
+
+    Discriminator types handled:
+      rare_ngram_present  → check ngrams in tool_sequence
+      struggle_gt         → proxy: 'struggle_ratio' detector fires
+      restart_count_gt    → proxy: 'unrecovered_error' detector fires
+      (others)            → (None, 0)
+    """
+    dtype = eval_set.discriminator_type
+
+    # Determine which trace_ids have known outcome labels from corpus.
+    # A labeled entry has outcome_truth in {"pass", "fail"}.
+    labeled: dict[str, str] = {}  # trace_id → "pass" | "fail"
+    for entry in corpus:
+        if hasattr(entry, "outcome_truth") and entry.outcome_truth in {"pass", "fail"}:
+            labeled[entry.trace_id] = entry.outcome_truth
+
+    if not labeled:
+        return None, 0
+
+    def _compute_binary(fires_fn: Callable[[str], bool]) -> tuple[float | None, int]:
+        tp = fp = fn = tn = 0
+        for tid, truth in labeled.items():
+            fired = fires_fn(tid)
+            is_fail = truth == "fail"
+            if fired and is_fail:
+                tp += 1
+            elif fired and not is_fail:
+                fp += 1
+            elif not fired and is_fail:
+                fn += 1
+            else:
+                tn += 1
+        n = tp + fp + fn + tn
+        return _mcc(tp, fp, fn, tn), n
+
+    if dtype == "rare_ngram_present":
+        ngrams: list[str] = eval_set.discriminator_config.get("ngrams", [])
+
+        def _rare_fires(tid: str) -> bool:
+            seq = trace_tool_sequences.get(tid, [])
+            return any(ng in seq for ng in ngrams)
+
+        return _compute_binary(_rare_fires)
+
+    elif dtype == "struggle_gt":
+
+        def _struggle_fires(tid: str) -> bool:
+            return "struggle_ratio" in trace_detector_fires.get(tid, [])
+
+        return _compute_binary(_struggle_fires)
+
+    elif dtype == "restart_count_gt":
+
+        def _restart_fires(tid: str) -> bool:
+            return "unrecovered_error" in trace_detector_fires.get(tid, [])
+
+        return _compute_binary(_restart_fires)
+
+    return None, 0
+
+
+def update_eval_set_mcc(
+    eval_set_id: str,
+    mcc: float | None,
+    mcc_label_count: int,
+    dsn: str,
+) -> None:
+    """Persist MCC score for an eval set."""
+    import psycopg
+
+    with psycopg.connect(dsn) as conn:
+        conn.execute(
+            """
+            UPDATE eval_sets
+               SET mcc = %s, mcc_label_count = %s, mcc_computed_at = now()
+             WHERE eval_set_id = %s
+            """,
+            (mcc, mcc_label_count, eval_set_id),
+        )
+        conn.commit()
+
+
+def batch_compute_mcc(
+    corpus: list[CorpusEntry],
+    trace_tool_sequences: dict[str, list[str]],
+    trace_detector_fires: dict[str, list[str]],
+    dsn: str,
+) -> dict[str, float | None]:
+    """Compute and persist MCC for all eval sets in the DB.
+
+    Returns mapping of eval_set_id → mcc_score.
+    """
+    import datetime
+
+    import psycopg
+    from psycopg.rows import dict_row
+
+    with psycopg.connect(dsn, row_factory=dict_row) as conn:
+        rows = conn.execute(
+            "SELECT eval_set_id, cluster_key, detector_version, frozen_at, "
+            "held_in, held_out, discriminator_type, discriminator_config FROM eval_sets"
+        ).fetchall()
+
+    results: dict[str, float | None] = {}
+    for row in rows:
+        frozen_at_val = row["frozen_at"]
+        if not isinstance(frozen_at_val, datetime.datetime):
+            frozen_at_val = datetime.datetime.fromisoformat(str(frozen_at_val))
+        es = EvalSetRecord(
+            eval_set_id=row["eval_set_id"],
+            cluster_key=row["cluster_key"],
+            detector_version=row["detector_version"],
+            frozen_at=frozen_at_val,
+            held_in=row["held_in"] or [],
+            held_out=row["held_out"] or [],
+            discriminator_type=row["discriminator_type"],
+            discriminator_config=row["discriminator_config"] or {},
+        )
+        mcc, count = compute_eval_set_mcc(es, corpus, trace_tool_sequences, trace_detector_fires)
+        update_eval_set_mcc(es.eval_set_id, mcc, count, dsn)
+        results[es.eval_set_id] = mcc
+
+    return results

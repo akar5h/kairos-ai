@@ -141,6 +141,7 @@ class MetricPanel:
     severity_info_count: int
     total_findings: int
     trace_detector_fires: dict[str, list[str]] = field(default_factory=dict)  # trace_id → [pattern_name, ...]
+    trace_tool_sequences: dict[str, list[str]] = field(default_factory=dict)  # trace_id → [tool_name, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -683,4 +684,5 @@ def compute_panel(
         severity_info_count=severity_info,
         total_findings=len(all_findings),
         trace_detector_fires=trace_detector_fires,
+        trace_tool_sequences=tool_sequences,
     )

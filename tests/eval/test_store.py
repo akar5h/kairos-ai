@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from kairos.eval.panel import DetectorMetrics, MetricPanel, OutcomeMetrics
+from kairos.eval.panel import DetectorMetrics, FloorMetrics, MetricPanel, OutcomeMetrics
 from kairos.eval.store import (
     _make_run_id,
     is_db_available,
@@ -96,6 +96,12 @@ def _make_test_panel() -> MetricPanel:
                 fire_rate=0.1,
             )
         },
+        floor=FloorMetrics(
+            known_good_pass_rate=None,
+            known_bad_catch_rate=None,
+            tau_required_tool_hit_rate=None,
+            golden_trajectory_match_rate=None,
+        ),
         classes_covered=1,
         severity_error_count=0,
         severity_warning_count=5,

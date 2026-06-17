@@ -343,3 +343,53 @@ def test_floor_known_good_excludes_noncomputable():
     fm = _compute_floor_metrics(entries, outcome_results, {}, {}, [], {})
     assert fm.known_good_total == 1
     assert fm.known_good_pass_rate == pytest.approx(1.0)
+
+
+# ── MetricPanel.trace_tool_sequences field ────────────────────────────────────
+
+
+def test_metric_panel_has_trace_tool_sequences_field():
+    """MetricPanel must have trace_tool_sequences field (P3.5a)."""
+    panel = MetricPanel(
+        corpus_hash="abc123",
+        corpus_size=5,
+        outcome=OutcomeMetrics(owner_precision=None, owner_recall=None),
+        detectors={},
+        floor=FloorMetrics(
+            known_good_pass_rate=None,
+            known_bad_catch_rate=None,
+            tau_required_tool_hit_rate=None,
+            golden_trajectory_match_rate=None,
+        ),
+        classes_covered=0,
+        severity_error_count=0,
+        severity_warning_count=0,
+        severity_info_count=0,
+        total_findings=0,
+        trace_tool_sequences={"t1": ["bash", "read"], "t2": ["write"]},
+    )
+    assert panel.trace_tool_sequences is not None
+    assert isinstance(panel.trace_tool_sequences, dict)
+    assert panel.trace_tool_sequences["t1"] == ["bash", "read"]
+
+
+def test_metric_panel_trace_tool_sequences_defaults_empty():
+    """trace_tool_sequences defaults to empty dict when not provided."""
+    panel = MetricPanel(
+        corpus_hash="abc",
+        corpus_size=0,
+        outcome=OutcomeMetrics(owner_precision=None, owner_recall=None),
+        detectors={},
+        floor=FloorMetrics(
+            known_good_pass_rate=None,
+            known_bad_catch_rate=None,
+            tau_required_tool_hit_rate=None,
+            golden_trajectory_match_rate=None,
+        ),
+        classes_covered=0,
+        severity_error_count=0,
+        severity_warning_count=0,
+        severity_info_count=0,
+        total_findings=0,
+    )
+    assert panel.trace_tool_sequences == {}

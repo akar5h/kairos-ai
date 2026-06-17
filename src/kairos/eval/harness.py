@@ -104,6 +104,20 @@ class CompareResult:
     """INFO-tier (volume) metric changes — diagnostic only, never a regression."""
     cluster_gate: ClusterGateResult | None = None
     """Cluster regression-on-history gate result. None if no eval_sets provided."""
+    trajectory_diff: TrajectoryDiff | None = None
+    """Trajectory diff gate result — tool-sequence edit distances between refs."""
+
+
+@dataclass
+class TrajectoryDiff:
+    """Deterministic trajectory comparison between two refs."""
+
+    traces_compared: int
+    changed_count: int
+    changed_fraction: float | None
+    mean_edit_distance: float | None
+    labeled_pass_changed_count: int
+    labeled_pass_changed_fraction: float | None
 
 
 @dataclass
@@ -374,6 +388,7 @@ def _panel_from_dict(d: dict[str, Any]) -> MetricPanel:
     )
 
     trace_detector_fires = {str(k): [str(p) for p in v] for k, v in d.get("trace_detector_fires", {}).items()}
+    trace_tool_sequences = {str(k): [str(t) for t in v] for k, v in d.get("trace_tool_sequences", {}).items()}
 
     return MetricPanel(
         corpus_hash=d["corpus_hash"],
@@ -387,6 +402,7 @@ def _panel_from_dict(d: dict[str, Any]) -> MetricPanel:
         severity_info_count=d.get("severity_info_count", 0),
         total_findings=d.get("total_findings", 0),
         trace_detector_fires=trace_detector_fires,
+        trace_tool_sequences=trace_tool_sequences,
     )
 
 
@@ -593,6 +609,64 @@ def _classify_delta(name: str, delta: float | None) -> str:
     return "unchanged"
 
 
+def _levenshtein(a: list[str], b: list[str]) -> int:
+    """Edit distance between two tool-name sequences."""
+    m, n = len(a), len(b)
+    dp = list(range(n + 1))
+    for i in range(1, m + 1):
+        prev = dp[0]
+        dp[0] = i
+        for j in range(1, n + 1):
+            temp = dp[j]
+            dp[j] = prev if a[i - 1] == b[j - 1] else 1 + min(dp[j], dp[j - 1], prev)
+            prev = temp
+    return dp[n]
+
+
+def _compute_trajectory_diff(
+    before_panel: MetricPanel,
+    after_panel: MetricPanel,
+) -> TrajectoryDiff:
+    before_seqs = before_panel.trace_tool_sequences
+    after_seqs = after_panel.trace_tool_sequences
+    common_ids = set(before_seqs) & set(after_seqs)
+    if not common_ids:
+        return TrajectoryDiff(
+            traces_compared=0,
+            changed_count=0,
+            changed_fraction=None,
+            mean_edit_distance=None,
+            labeled_pass_changed_count=0,
+            labeled_pass_changed_fraction=None,
+        )
+    # labeled-pass = traces that appear in both panels AND had pass outcome in the
+    # before panel's "known_good" set. We proxy this by checking if the trace is
+    # NOT in trace_detector_fires (no findings → likely pass).
+    before_no_findings = set(before_seqs) - set(before_panel.trace_detector_fires)
+    labeled_pass_ids = common_ids & before_no_findings
+
+    dists = []
+    changed = []
+    lp_changed = 0
+    lp_total = len(labeled_pass_ids)
+    for tid in common_ids:
+        dist = _levenshtein(before_seqs[tid], after_seqs[tid])
+        dists.append(dist)
+        changed.append(dist > 0)
+        if tid in labeled_pass_ids and dist > 0:
+            lp_changed += 1
+    changed_count = sum(changed)
+    n = len(common_ids)
+    return TrajectoryDiff(
+        traces_compared=n,
+        changed_count=changed_count,
+        changed_fraction=changed_count / n if n else None,
+        mean_edit_distance=sum(dists) / n if n else None,
+        labeled_pass_changed_count=lp_changed,
+        labeled_pass_changed_fraction=lp_changed / lp_total if lp_total else None,
+    )
+
+
 def _compute_cluster_gate(
     before_panel: MetricPanel,
     after_panel: MetricPanel,
@@ -750,6 +824,15 @@ def compare(
         if cluster_gate.gate_verdict == "REGRESSED":
             verdict = "REGRESSED"
 
+    trajectory_diff = _compute_trajectory_diff(before_panel, after_panel)
+    if trajectory_diff.changed_fraction is not None and trajectory_diff.changed_fraction > 0:
+        info_metrics.append(
+            f"trajectory.changed_fraction={trajectory_diff.changed_fraction:.3f} "
+            f"({trajectory_diff.changed_count}/{trajectory_diff.traces_compared})"
+        )
+    if trajectory_diff.mean_edit_distance is not None and trajectory_diff.mean_edit_distance > 0:
+        info_metrics.append(f"trajectory.mean_edit_distance={trajectory_diff.mean_edit_distance:.3f}")
+
     result = CompareResult(
         before_ref=before_ref,
         after_ref=after_ref,
@@ -765,6 +848,7 @@ def compare(
         review_metrics=review_metrics,
         info_metrics=info_metrics,
         cluster_gate=cluster_gate,
+        trajectory_diff=trajectory_diff,
     )
 
     if report_dir is not None:
