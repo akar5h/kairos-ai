@@ -10,7 +10,7 @@ from kairos.eval.harness import (
     _metric_tier,
     _panels_identical,
 )
-from kairos.eval.panel import DetectorMetrics, MetricPanel, OutcomeMetrics
+from kairos.eval.panel import DetectorMetrics, FloorMetrics, MetricPanel, OutcomeMetrics
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -80,6 +80,12 @@ def _make_panel(
                 fire_rate=0.01,
             ),
         },
+        floor=FloorMetrics(
+            known_good_pass_rate=None,
+            known_bad_catch_rate=None,
+            tau_required_tool_hit_rate=None,
+            golden_trajectory_match_rate=None,
+        ),
         classes_covered=classes_covered,
         severity_error_count=0,
         severity_warning_count=10,

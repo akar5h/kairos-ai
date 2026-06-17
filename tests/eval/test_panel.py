@@ -10,11 +10,13 @@ from kairos.eval.corpus import CorpusEntry, EvalCorpus, _compute_corpus_hash
 from kairos.eval.panel import (
     DETECTOR_NAMES,
     DetectorMetrics,
+    FloorMetrics,
     MetricPanel,
     OutcomeMetrics,
     _call_spans_to_envelope,
     _cohen_kappa,
     _compute_detector_metrics,
+    _compute_floor_metrics,
     _compute_outcome_metrics,
     _safe_div,
 )
@@ -199,6 +201,15 @@ def test_detector_names_coverage():
 # ── panel serialization round-trip ───────────────────────────────────────────
 
 
+def _make_floor() -> FloorMetrics:
+    return FloorMetrics(
+        known_good_pass_rate=None,
+        known_bad_catch_rate=None,
+        tau_required_tool_hit_rate=None,
+        golden_trajectory_match_rate=None,
+    )
+
+
 def test_panel_to_dict_round_trip():
     """to_dict() produces a dict that contains corpus_hash and all detector names."""
     panel = MetricPanel(
@@ -217,6 +228,7 @@ def test_panel_to_dict_round_trip():
                 fire_rate=0.3,
             )
         },
+        floor=_make_floor(),
         classes_covered=1,
         severity_error_count=0,
         severity_warning_count=2,
@@ -274,3 +286,60 @@ def test_call_spans_to_envelope_no_signature():
 
     out = _call_spans_to_envelope(Reader(), [1, 2, 3])
     assert out == ("ENV3", 3)
+
+
+# ── floor metrics ─────────────────────────────────────────────────────────────
+
+
+def test_floor_known_good_pass_rate():
+    """2 labeled-pass entries, 1 computable pass, 1 computable fail → 0.5."""
+    entries = [
+        _make_entry("t1", outcome_truth="pass"),
+        _make_entry("t2", outcome_truth="pass"),
+    ]
+    outcome_results = {
+        "t1": {"outcome_pass": True, "computable": True},
+        "t2": {"outcome_pass": False, "computable": True},
+    }
+    fm = _compute_floor_metrics(entries, outcome_results, {}, {}, [], {})
+    assert fm.known_good_pass_rate == pytest.approx(0.5)
+    assert fm.known_good_total == 2
+
+
+def test_floor_known_bad_catch_rate():
+    """2 labeled-fail entries, both predicted fail → 1.0."""
+    entries = [
+        _make_entry("t1", outcome_truth="fail"),
+        _make_entry("t2", outcome_truth="fail"),
+    ]
+    outcome_results = {
+        "t1": {"outcome_pass": False, "computable": True},
+        "t2": {"outcome_pass": False, "computable": True},
+    }
+    fm = _compute_floor_metrics(entries, outcome_results, {}, {}, [], {})
+    assert fm.known_bad_catch_rate == pytest.approx(1.0)
+    assert fm.known_bad_total == 2
+
+
+def test_floor_metrics_none_when_no_labels():
+    """No labeled entries → both rates None."""
+    entries = [_make_entry("t1", outcome_truth="unknown")]
+    outcome_results = {"t1": {"outcome_pass": True, "computable": True}}
+    fm = _compute_floor_metrics(entries, outcome_results, {}, {}, [], {})
+    assert fm.known_good_pass_rate is None
+    assert fm.known_bad_catch_rate is None
+
+
+def test_floor_known_good_excludes_noncomputable():
+    """Non-computable entries excluded from denominator."""
+    entries = [
+        _make_entry("t1", outcome_truth="pass"),
+        _make_entry("t2", outcome_truth="pass"),
+    ]
+    outcome_results = {
+        "t1": {"outcome_pass": True, "computable": True},
+        "t2": {"outcome_pass": False, "computable": False},
+    }
+    fm = _compute_floor_metrics(entries, outcome_results, {}, {}, [], {})
+    assert fm.known_good_total == 1
+    assert fm.known_good_pass_rate == pytest.approx(1.0)

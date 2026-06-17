@@ -296,7 +296,7 @@ def _run_panel_in_worktree(
 
 def _panel_from_dict(d: dict[str, Any]) -> MetricPanel:
     """Reconstruct a MetricPanel from its dict representation."""
-    from kairos.eval.panel import DetectorMetrics, MetricPanel, OutcomeMetrics
+    from kairos.eval.panel import DetectorMetrics, FloorMetrics, MetricPanel, OutcomeMetrics
 
     outcome_d = d["outcome"]
     outcome = OutcomeMetrics(
@@ -334,11 +334,24 @@ def _panel_from_dict(d: dict[str, Any]) -> MetricPanel:
             labeled_count=det_d.get("labeled_count", 0),
         )
 
+    floor_d = d.get("floor", {})
+    floor = FloorMetrics(
+        known_good_pass_rate=floor_d.get("known_good_pass_rate"),
+        known_bad_catch_rate=floor_d.get("known_bad_catch_rate"),
+        tau_required_tool_hit_rate=floor_d.get("tau_required_tool_hit_rate"),
+        golden_trajectory_match_rate=floor_d.get("golden_trajectory_match_rate"),
+        known_good_total=floor_d.get("known_good_total", 0),
+        known_bad_total=floor_d.get("known_bad_total", 0),
+        tau_required_total=floor_d.get("tau_required_total", 0),
+        golden_total=floor_d.get("golden_total", 0),
+    )
+
     return MetricPanel(
         corpus_hash=d["corpus_hash"],
         corpus_size=d["corpus_size"],
         outcome=outcome,
         detectors=detectors,
+        floor=floor,
         classes_covered=d.get("classes_covered", 0),
         severity_error_count=d.get("severity_error_count", 0),
         severity_warning_count=d.get("severity_warning_count", 0),
@@ -452,6 +465,14 @@ def _extract_metric_values(panel: MetricPanel) -> dict[str, float | None]:
         "outcome.tau_fail_precision": panel.outcome.tau_fail_precision,
         "outcome.tau_fail_recall": panel.outcome.tau_fail_recall,
         "outcome.tau_abstention_rate": panel.outcome.tau_abstention_rate,
+        "floor.known_good_pass_rate": panel.floor.known_good_pass_rate,
+        "floor.known_bad_catch_rate": panel.floor.known_bad_catch_rate,
+        "floor.tau_required_tool_hit_rate": panel.floor.tau_required_tool_hit_rate,
+        "floor.golden_trajectory_match_rate": panel.floor.golden_trajectory_match_rate,
+        "floor.known_good_total": float(panel.floor.known_good_total),
+        "floor.known_bad_total": float(panel.floor.known_bad_total),
+        "floor.tau_required_total": float(panel.floor.tau_required_total),
+        "floor.golden_total": float(panel.floor.golden_total),
         "aggregate.classes_covered": float(panel.classes_covered),
         "aggregate.total_findings": float(panel.total_findings),
         "aggregate.severity_error": float(panel.severity_error_count),
@@ -498,6 +519,10 @@ _GATE_METRICS: frozenset[str] = frozenset(
         "outcome.tau_kappa",
         "outcome.tau_fail_precision",
         "outcome.tau_fail_recall",
+        "floor.known_good_pass_rate",
+        "floor.known_bad_catch_rate",
+        "floor.tau_required_tool_hit_rate",
+        "floor.golden_trajectory_match_rate",
     }
 )
 
