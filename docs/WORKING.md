@@ -3,7 +3,7 @@
 > Living anchor for the open-source agent-trace platform line. Purpose: orient a fresh / small-context
 > session from ONE file. Decisions, principles, runbook, and what's next live here; deep detail lives in
 > the linked docs. Keep this current; link out, don't duplicate.
-> Last updated: 2026-06-16.
+> Last updated: 2026-06-18.
 
 ---
 
@@ -24,7 +24,7 @@ Repo: `github.com/akar5h/kairos-ai` (branch `main`, CI green). Local: `/Users/ak
 | **P1 — own ingestor** (OTLP sink + hooks + spans table + hook-enrichment, Phoenix retired) | ✅ merged to main, **live-validated on real data** |
 | **P2 — API-first platform** (read+hierarchy+search API, light console UI, cluster browser, relabel, enrich-default) | ✅ merged to main, **pushed, CI green** |
 | **P3.1–P3.4 — eval layer** (floor metrics GATE, cluster eval-sets, regression gate, issue lifecycle) | ✅ **SHIPPED, live-validated** — see `docs/honest-snapshot-3.md` |
-| **P3.5** (trajectory diff gate + meta-eval MCC) | 🔜 next |
+| **P3.5** (trajectory diff gate + meta-eval MCC) | ✅ **SHIPPED** — `7ff4465`; 1439 tests green |
 | Later | OSS carve (strip Paperclip), polish/hardening, P4 Self-Harness proposer |
 
 `main` is pushed to origin and CI-green. Real session data flows. P3 eval layer is live on 609-entry corpus
@@ -121,8 +121,8 @@ Repo: `github.com/akar5h/kairos-ai` (branch `main`, CI green). Local: `/Users/ak
 - `src/kairos/eval/` — three-tier gate (GATE/REVIEW/INFO), k=2 determinism, worktree `compare`, `eval_runs`.
 
 **DB (migrations/)** — `spans`(0010), `hook_events`(0011), `discovery_queue.cluster_key`(0012),
-`spans.session_id`(0013), `labels` nullable(0014). Plus sprint-1 tables (findings, nightly_rollup, labels,
-expectations, discovery_queue, eval_runs, schema_migrations). DB = `kairos-pg` docker on 127.0.0.1:5434.
+`spans.session_id`(0013), `labels` nullable(0014), `eval_sets`(0015), `cluster_status`(0016),
+`eval_sets.mcc`(0017). Plus sprint-1 tables. DB = `kairos-pg` docker on 127.0.0.1:5434.
 
 ---
 
@@ -163,7 +163,7 @@ Ports: kairos-pg 5434 · collector 4318 (NOT Kairos) · Kairos API 8000 · UI 30
    - P3.2 cluster → held-in/held-out eval-set generation.
    - P3.3 regression-on-history gate (before/after over cluster corpus; blast-radius as GATE signal).
    - P3.4 issue lifecycle (cluster: open→eval→resolved→regressed) on the cluster browser.
-   - P3.5 trajectory-diff gate + meta-eval (MCC).
+   - P3.5 trajectory-diff gate + meta-eval (MCC). ✅ DONE
    - P4 (later) Self-Harness-style bounded-edit proposer, gated by the above.
 2. **OSS carve** — strip/abstract Paperclip coupling (audit enumerated file:lines), README, one-command demo.
 3. **Polish / hardening** — render-smoke CI guard for the `"use client"` class; OTLP drop-on-DB-down spool
