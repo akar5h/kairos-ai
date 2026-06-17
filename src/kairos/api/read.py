@@ -30,6 +30,7 @@ import psycopg
 from psycopg.rows import dict_row
 from pydantic import BaseModel, field_validator
 
+from kairos.loop.cluster_lifecycle import regress_cluster, resolve_cluster
 from kairos.loop.db import _dsn
 from kairos.loop.discover import run_discovery
 from kairos.readers.db import fetch_envelope_from_db, list_trace_ids
@@ -59,10 +60,19 @@ class ClusterSummary(BaseModel):
     """Aggregate row returned by GET /clusters."""
 
     cluster_key: str
+    status: str
     trace_count: int
     min_night_id: str | None
     kinds: list[str]
     sample_features: dict[str, Any]
+
+
+class ClusterStatusUpdate(BaseModel):
+    """Response returned by POST /v1/clusters/{cluster_key}/resolve|regress."""
+
+    cluster_key: str
+    status: str
+    updated: bool
 
 
 class ClusterTraceMember(BaseModel):
@@ -360,18 +370,20 @@ def get_clusters() -> list[ClusterSummary]:
 
     One row per cluster_key, ordered by trace count descending.
     Includes a sample features blob from one member of the cluster.
+    Status is consistent per cluster_key (set via UPDATE WHERE cluster_key = ?).
 
     Query: single pass over discovery_queue — no N+1.
     """
     sql = """
         SELECT
             cluster_key,
-            count(DISTINCT trace_id)            AS trace_count,
-            min(night_id)::text                 AS min_night_id,
-            array_agg(DISTINCT kind)            AS kinds,
+            status,
+            count(DISTINCT trace_id)             AS trace_count,
+            min(night_id)::text                  AS min_night_id,
+            array_agg(DISTINCT kind)             AS kinds,
             (array_agg(features ORDER BY id))[1] AS sample_features
         FROM discovery_queue
-        GROUP BY cluster_key
+        GROUP BY cluster_key, status
         ORDER BY count(DISTINCT trace_id) DESC
     """  # noqa: S608 — no user data interpolated
 
@@ -385,6 +397,7 @@ def get_clusters() -> list[ClusterSummary]:
     return [
         ClusterSummary(
             cluster_key=row["cluster_key"],
+            status=row["status"],
             trace_count=int(row["trace_count"]),
             min_night_id=row["min_night_id"],
             kinds=list(row["kinds"] or []),
@@ -392,6 +405,76 @@ def get_clusters() -> list[ClusterSummary]:
         )
         for row in rows
     ]
+
+
+@router.post("/clusters/{cluster_key}/resolve", response_model=ClusterStatusUpdate)
+def resolve_cluster_endpoint(
+    cluster_key: str = fastapi.Path(..., description="Cluster key to resolve."),
+) -> ClusterStatusUpdate:
+    """Transition a cluster from open/regressed → resolved.
+
+    Idempotent: if the cluster is already resolved, this is a no-op (still 200).
+    Returns the cluster's new status.
+    """
+    try:
+        dsn = _dsn()
+    except RuntimeError:
+        logger.exception("read.resolve_cluster dsn_error cluster_key=%s", cluster_key)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    try:
+        resolve_cluster(cluster_key, dsn)
+    except Exception:
+        logger.exception("read.resolve_cluster failed cluster_key=%s", cluster_key)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    try:
+        with psycopg.connect(dsn, row_factory=dict_row) as conn:
+            row = conn.execute(
+                "SELECT status FROM discovery_queue WHERE cluster_key = %s LIMIT 1",
+                (cluster_key,),
+            ).fetchone()
+    except Exception:
+        logger.exception("read.resolve_cluster status_fetch failed cluster_key=%s", cluster_key)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    current_status = row["status"] if row is not None else "resolved"
+    return ClusterStatusUpdate(cluster_key=cluster_key, status=current_status, updated=True)
+
+
+@router.post("/clusters/{cluster_key}/regress", response_model=ClusterStatusUpdate)
+def regress_cluster_endpoint(
+    cluster_key: str = fastapi.Path(..., description="Cluster key to regress."),
+) -> ClusterStatusUpdate:
+    """Transition a cluster from resolved → regressed.
+
+    Idempotent: if the cluster is already regressed/open, this is a no-op (still 200).
+    Returns the cluster's new status.
+    """
+    try:
+        dsn = _dsn()
+    except RuntimeError:
+        logger.exception("read.regress_cluster dsn_error cluster_key=%s", cluster_key)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    try:
+        regress_cluster(cluster_key, dsn)
+    except Exception:
+        logger.exception("read.regress_cluster failed cluster_key=%s", cluster_key)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    try:
+        with psycopg.connect(dsn, row_factory=dict_row) as conn:
+            row = conn.execute(
+                "SELECT status FROM discovery_queue WHERE cluster_key = %s LIMIT 1",
+                (cluster_key,),
+            ).fetchone()
+    except Exception:
+        logger.exception("read.regress_cluster status_fetch failed cluster_key=%s", cluster_key)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    current_status = row["status"] if row is not None else "regressed"
+    return ClusterStatusUpdate(cluster_key=cluster_key, status=current_status, updated=True)
 
 
 @router.get("/clusters/{cluster_key}/traces", response_model=list[ClusterTraceMember])

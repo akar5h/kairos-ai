@@ -6,6 +6,7 @@
  */
 import type {
   ClusterRefreshResponse,
+  ClusterStatusUpdate,
   ClusterSummary,
   ClusterTraceMember,
   CreateLabelBody,
@@ -126,6 +127,35 @@ export async function getLabels(traceId: string): Promise<LabelRow[]> {
 
 export async function getStats(): Promise<StatsResponse> {
   return apiFetch<StatsResponse>("/v1/stats");
+}
+
+// ── Cluster lifecycle ─────────────────────────────────────────────────────────
+
+async function _clusterAction(
+  clusterKey: string,
+  action: "resolve" | "regress",
+): Promise<ClusterStatusUpdate> {
+  const res = await fetch(
+    `${BASE}/v1/clusters/${encodeURIComponent(clusterKey)}/${action}`,
+    { method: "POST", cache: "no-store" },
+  );
+  if (!res.ok) {
+    const detail = await res.text().catch(() => res.statusText);
+    throw new Error(`${res.status} ${detail}`);
+  }
+  return res.json() as Promise<ClusterStatusUpdate>;
+}
+
+export async function resolveCluster(
+  clusterKey: string,
+): Promise<ClusterStatusUpdate> {
+  return _clusterAction(clusterKey, "resolve");
+}
+
+export async function regressCluster(
+  clusterKey: string,
+): Promise<ClusterStatusUpdate> {
+  return _clusterAction(clusterKey, "regress");
 }
 
 // ── Cluster refresh ───────────────────────────────────────────────────────────
