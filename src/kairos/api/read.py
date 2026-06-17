@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, datetime  # noqa: TC003 — pydantic needs the runtime type
+from datetime import UTC, date, datetime  # noqa: TC003 — pydantic needs the runtime type
 from typing import Any
 
 import fastapi
@@ -31,7 +31,8 @@ from psycopg.rows import dict_row
 from pydantic import BaseModel, field_validator
 
 from kairos.loop.db import _dsn
-from kairos.readers.db import fetch_envelope_from_db
+from kairos.loop.discover import run_discovery
+from kairos.readers.db import fetch_envelope_from_db, list_trace_ids
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +178,41 @@ class SearchHits(BaseModel):
     sessions: list[dict[str, Any]]
     traces: list[dict[str, Any]]
     spans: list[dict[str, Any]]
+
+
+class StatsResponse(BaseModel):
+    """Aggregate stats returned by GET /v1/stats."""
+
+    total_sessions: int
+    total_spans: int
+    total_input_tokens: int
+    total_output_tokens: int
+    total_cache_read_tokens: int
+    total_cache_creation_tokens: int
+    total_errors: int
+    estimated_cost_usd: float
+    sessions_today: int
+    spans_today: int
+
+
+class ClusterRefreshResponse(BaseModel):
+    """Response returned by POST /v1/clusters/refresh."""
+
+    status: str
+    clusters_found: int
+    traces_processed: int
+
+
+class HookEventRow(BaseModel):
+    """One hook event row returned by GET /v1/hook_events/{session_id}."""
+
+    seq: int
+    event_name: str
+    tool_name: str | None
+    tool_input_redacted: dict[str, Any] | None
+    tool_output: str | None
+    is_error: bool | None
+    occurred_at: datetime
 
 
 # Compact attribute keys included by default in RawSpan.
@@ -960,3 +996,148 @@ def search(
         traces=traces_hits,
         spans=spans_hits,
     )
+
+
+# ─── Stats + cluster refresh + hook events ────────────────────────────────────
+
+
+@router.get("/stats", response_model=StatsResponse)
+def get_stats() -> StatsResponse:
+    """Return aggregate statistics over all spans."""
+    sql = """
+        SELECT
+            COUNT(DISTINCT attributes->>'session.id')
+                FILTER (WHERE attributes->>'session.id' IS NOT NULL)   AS total_sessions,
+            COUNT(*)                                                    AS total_spans,
+            COALESCE(SUM((attributes->>'input_tokens')::int)
+                FILTER (WHERE name = 'claude_code.llm_request'), 0)   AS total_input_tokens,
+            COALESCE(SUM((attributes->>'output_tokens')::int)
+                FILTER (WHERE name = 'claude_code.llm_request'), 0)   AS total_output_tokens,
+            COALESCE(SUM((attributes->>'cache_read_tokens')::int)
+                FILTER (WHERE name = 'claude_code.llm_request'), 0)   AS total_cache_read_tokens,
+            COALESCE(SUM((attributes->>'cache_creation_tokens')::int)
+                FILTER (WHERE name = 'claude_code.llm_request'), 0)   AS total_cache_creation_tokens,
+            COUNT(*) FILTER (WHERE status_code = 'ERROR')              AS total_errors,
+            COUNT(DISTINCT attributes->>'session.id')
+                FILTER (WHERE attributes->>'session.id' IS NOT NULL
+                    AND start_time > NOW() - INTERVAL '1 day')        AS sessions_today,
+            COUNT(*) FILTER (WHERE start_time > NOW() - INTERVAL '1 day') AS spans_today
+        FROM spans
+    """  # noqa: S608 — no user data interpolated
+
+    try:
+        with _connect() as conn:
+            row = conn.execute(sql).fetchone()
+    except Exception:
+        logger.exception("read.get_stats failed")
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    if row is None:
+        return StatsResponse(
+            total_sessions=0,
+            total_spans=0,
+            total_input_tokens=0,
+            total_output_tokens=0,
+            total_cache_read_tokens=0,
+            total_cache_creation_tokens=0,
+            total_errors=0,
+            estimated_cost_usd=0.0,
+            sessions_today=0,
+            spans_today=0,
+        )
+
+    inp = int(row["total_input_tokens"])
+    out = int(row["total_output_tokens"])
+    cr = int(row["total_cache_read_tokens"])
+    cc = int(row["total_cache_creation_tokens"])
+    cost = (inp * 3 / 1_000_000) + (out * 15 / 1_000_000) + (cr * 0.30 / 1_000_000) + (cc * 3.75 / 1_000_000)
+
+    return StatsResponse(
+        total_sessions=int(row["total_sessions"]),
+        total_spans=int(row["total_spans"]),
+        total_input_tokens=inp,
+        total_output_tokens=out,
+        total_cache_read_tokens=cr,
+        total_cache_creation_tokens=cc,
+        total_errors=int(row["total_errors"]),
+        estimated_cost_usd=round(cost, 6),
+        sessions_today=int(row["sessions_today"]),
+        spans_today=int(row["spans_today"]),
+    )
+
+
+@router.post("/clusters/refresh", response_model=ClusterRefreshResponse)
+def refresh_clusters() -> ClusterRefreshResponse:
+    """Re-run discovery to refresh clusters from all traces in the DB."""
+    try:
+        dsn = _dsn()
+    except RuntimeError:
+        logger.exception("read.refresh_clusters dsn_error")
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    try:
+        trace_ids = list_trace_ids(dsn)
+    except Exception:
+        logger.exception("read.refresh_clusters list_trace_ids failed")
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    try:
+        traces = [fetch_envelope_from_db(tid, dsn, enrich_hooks=False) for tid in trace_ids]
+    except Exception:
+        logger.exception("read.refresh_clusters fetch_envelopes failed")
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    try:
+        with psycopg.connect(dsn) as conn:
+            result = run_discovery(
+                traces=traces,
+                miss_candidates=[],
+                night_id=date.today(),
+                conn=conn,
+            )
+    except Exception:
+        logger.exception("read.refresh_clusters run_discovery failed")
+        raise fastapi.HTTPException(status_code=500, detail="Cluster refresh failed") from None
+
+    return ClusterRefreshResponse(
+        status="ok",
+        clusters_found=len(result.cluster_summary),
+        traces_processed=len(traces),
+    )
+
+
+@router.get("/hook_events/{session_id}", response_model=list[HookEventRow])
+def get_hook_events(
+    session_id: str = fastapi.Path(..., description="Session ID to fetch hook events for."),
+) -> list[HookEventRow]:
+    """Return PostToolUse and PostToolUseFailure hook events for a session."""
+    try:
+        with _connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT seq, event_name, tool_name, tool_input_redacted,
+                       tool_output, is_error, occurred_at
+                FROM hook_events
+                WHERE session_id = %s
+                  AND event_name IN ('PostToolUse', 'PostToolUseFailure')
+                ORDER BY seq ASC
+                LIMIT 500
+                """,
+                (session_id,),
+            ).fetchall()
+    except Exception:
+        logger.exception("read.get_hook_events failed session_id=%s", session_id)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    return [
+        HookEventRow(
+            seq=int(row["seq"]),
+            event_name=row["event_name"],
+            tool_name=row["tool_name"],
+            tool_input_redacted=row["tool_input_redacted"],
+            tool_output=row["tool_output"],
+            is_error=row["is_error"],
+            occurred_at=row["occurred_at"],
+        )
+        for row in rows
+    ]
