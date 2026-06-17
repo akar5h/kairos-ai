@@ -74,19 +74,26 @@ def list_clusters_by_status(
         trace_count: int
         status_updated_at: str | None  (ISO timestamp)
     """
-    sql = """
-        SELECT
-            cluster_key,
-            status,
-            COUNT(*) AS trace_count,
-            MAX(status_updated_at) AS status_updated_at
-        FROM discovery_queue
-        WHERE ($1::text IS NULL OR status = $1)
-        GROUP BY cluster_key, status
-        ORDER BY trace_count DESC
-    """
     with psycopg.connect(dsn, row_factory=dict_row) as conn:
-        rows = conn.execute(sql, (status,)).fetchall()
+        if status is None:
+            sql = """
+                SELECT cluster_key, status, COUNT(*) AS trace_count,
+                       MAX(status_updated_at) AS status_updated_at
+                FROM discovery_queue
+                GROUP BY cluster_key, status
+                ORDER BY trace_count DESC
+            """
+            rows = conn.execute(sql).fetchall()
+        else:
+            sql = """
+                SELECT cluster_key, status, COUNT(*) AS trace_count,
+                       MAX(status_updated_at) AS status_updated_at
+                FROM discovery_queue
+                WHERE status = %s
+                GROUP BY cluster_key, status
+                ORDER BY trace_count DESC
+            """
+            rows = conn.execute(sql, (status,)).fetchall()
 
     return [
         {
