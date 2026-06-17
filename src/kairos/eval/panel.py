@@ -157,6 +157,7 @@ def _run_engine_on_corpus(
     entries: list[CorpusEntry],
     taubench_dir: Path,
     snapshot_dir: Path | None = None,
+    dsn: str | None = None,
 ) -> dict[str, Any]:
     """Run the Kairos engine against all corpus entries.
 
@@ -212,23 +213,33 @@ def _run_engine_on_corpus(
 
     tau_operations = list(tau_context.operations) if tau_context else []
 
-    def _live_envelope(raw_spans_file: str) -> TraceEnvelope | None:
-        """Build an envelope from a stored raw-span snapshot via the ref's reader.
+    def _live_envelope(entry: CorpusEntry) -> TraceEnvelope | None:
+        """Build an envelope from a disk snapshot or Postgres fetch.
 
-        Returns None on any failure (missing file, reader absent, parse error) —
-        the entry then degrades to not-computable, never crashing the panel.
+        Returns None on any failure — the entry degrades to not-computable.
         """
-        if snapshot_dir is None or _spans_to_envelope is None:
-            return None
-        spans_path = snapshot_dir / raw_spans_file
-        if not spans_path.exists():
-            return None
-        try:
-            spans = json.loads(spans_path.read_text())
-            env = _call_spans_to_envelope(_spans_to_envelope, spans)
-        except Exception:  # noqa: BLE001 — resilience: skip this trace, keep going
-            return None
-        return env if isinstance(env, TraceEnvelope) else None
+        # Path 1: disk snapshot (existing behavior)
+        if entry.raw_spans_file is not None:
+            if snapshot_dir is None or _spans_to_envelope is None:
+                return None
+            spans_path = snapshot_dir / entry.raw_spans_file
+            if not spans_path.exists():
+                return None
+            try:
+                spans = json.loads(spans_path.read_text())
+                env = _call_spans_to_envelope(_spans_to_envelope, spans)
+            except Exception:  # noqa: BLE001 — resilience: skip this trace, keep going
+                return None
+            return env if isinstance(env, TraceEnvelope) else None
+        # Path 2: Postgres fetch (new)
+        if entry.db_trace_id is not None and dsn is not None:
+            try:
+                from kairos.readers.db import fetch_envelope_from_db
+
+                return fetch_envelope_from_db(entry.db_trace_id, dsn, enrich_hooks=False)
+            except Exception:  # noqa: BLE001
+                return None
+        return None
 
     def _best_op(env: TraceEnvelope) -> Any:
         """Pick the tau-bench operation that best covers this trace's tools."""
@@ -257,15 +268,15 @@ def _run_engine_on_corpus(
         is_tau = tid in tau_envelopes
         if is_tau:
             trace_env = tau_envelopes[tid]
-        elif entry.raw_spans_file is not None:
-            live_env = _live_envelope(entry.raw_spans_file)
+        elif entry.raw_spans_file is not None or entry.db_trace_id is not None:
+            live_env = _live_envelope(entry)
             if live_env is None:
                 outcome_results[tid] = {"outcome_pass": False, "computable": False}
                 findings_by_trace[tid] = []
                 continue
             trace_env = live_env
         else:
-            # No envelope available (no snapshot) — not-computable.
+            # No envelope available (no snapshot, no db_trace_id) — not-computable.
             outcome_results[tid] = {"outcome_pass": False, "computable": False}
             findings_by_trace[tid] = []
             continue
@@ -476,6 +487,7 @@ def compute_panel(
     corpus: EvalCorpus,
     taubench_dir: Path | None = None,
     snapshot_dir: Path | None = None,
+    dsn: str | None = None,
 ) -> MetricPanel:
     """Compute the full metric panel for the current engine against the corpus.
 
@@ -498,7 +510,7 @@ def compute_panel(
     if snapshot_dir is None:
         snapshot_dir = repo_root / "eval" / "corpus" / "live"
 
-    engine_results = _run_engine_on_corpus(corpus.entries, taubench_dir, snapshot_dir)
+    engine_results = _run_engine_on_corpus(corpus.entries, taubench_dir, snapshot_dir, dsn)
     outcome_results = engine_results["outcome_results"]
     findings_by_trace = engine_results["findings"]
 

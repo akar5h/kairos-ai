@@ -369,6 +369,8 @@ class CorpusEntry:
     """Filename (relative to eval/corpus/live/) of the stored raw Phoenix span snapshot.
     None for tau-bench (envelopes loaded from taubench_dir) and for entries with no snapshot.
     When set, the panel rebuilds the envelope via the REF's spans_to_envelope on these spans."""
+    db_trace_id: str | None = None
+    """Postgres trace_id to fetch when raw_spans_file is None. Set for live traces not on disk."""
 
 
 @dataclass
@@ -621,24 +623,69 @@ def _build_live_entries(
     return entries
 
 
+def _build_live_entries_from_db(
+    trace_ids: list[str],
+    existing_ids: set[str],
+    snapshot_dir: Path,
+    dsn: str,
+) -> list[CorpusEntry]:
+    """Build CorpusEntries for live trace_ids fetched from Postgres.
+
+    For each trace_id not already in the corpus:
+    - If a snapshot file exists on disk, use it (raw_spans_file set).
+    - Otherwise, set db_trace_id so the panel fetches the envelope from Postgres.
+    """
+    entries: list[CorpusEntry] = []
+    for trace_id in trace_ids:
+        if trace_id in existing_ids:
+            continue
+        snapshot_path = snapshot_dir / f"{trace_id}.json"
+        if snapshot_path.exists():
+            entries.append(
+                CorpusEntry(
+                    trace_id=trace_id,
+                    source="live",
+                    outcome_truth="unknown",
+                    detector_truth={},
+                    raw_spans_file=f"{trace_id}.json",
+                )
+            )
+        else:
+            entries.append(
+                CorpusEntry(
+                    trace_id=trace_id,
+                    source="live",
+                    outcome_truth="unknown",
+                    detector_truth={},
+                    db_trace_id=trace_id,
+                )
+            )
+    return entries
+
+
 # ── Corpus hash ───────────────────────────────────────────────────────────────
 
 
 def _compute_corpus_hash(
     trace_ids: list[str],
     snapshotted: list[str] | None = None,
+    db_trace_ids: list[str] | None = None,
 ) -> str:
-    """SHA-256 of sorted trace_ids (+ snapshotted IDs), hex-encoded.
+    """SHA-256 of sorted trace_ids (+ snapshotted IDs + db-only IDs), hex-encoded.
 
     Deterministic: same set of IDs and same snapshot membership → same hash,
     regardless of insertion order. Folding in ``snapshotted`` means adding or
     removing a raw-span snapshot is an explicit, visible corpus version bump.
+    Folding in ``db_trace_ids`` means new traces added via Postgres bump the hash.
     """
     sorted_ids = sorted(trace_ids)
     lines = list(sorted_ids)
     if snapshotted:
         lines.append("__snapshotted__")
         lines.extend(sorted(snapshotted))
+    if db_trace_ids:
+        lines.append("__db_only__")
+        lines.extend(sorted(db_trace_ids))
     payload = "\n".join(lines).encode()
     return hashlib.sha256(payload).hexdigest()
 
@@ -651,6 +698,7 @@ def build_corpus(
     answers_path: Path = _ANSWERS_JSONL,
     live_ids_file: Path = _LIVE_IDS_FILE,
     snapshot_dir: Path = _LIVE_SNAPSHOT_DIR,
+    dsn: str | None = None,
 ) -> EvalCorpus:
     """Assemble the versioned eval corpus from all sources.
 
@@ -700,10 +748,19 @@ def build_corpus(
             seen_ids.add(e.trace_id)
             answers_count += 1
 
-    # Pool 3: live snapshot. Source of truth is the snapshot manifest, union
-    # the legacy live_ids_file.
-    live_trace_ids = sorted(snapshotted | set(_load_live_trace_ids(live_ids_file)))
-    live_entries = _build_live_entries(live_trace_ids, seen_ids, snapshotted)
+    # Pool 3: live traces. When dsn is provided, query Postgres for live trace IDs.
+    # Otherwise fall back to legacy live_ids_file + snapshot manifest.
+    if dsn is not None:
+        import psycopg
+
+        with psycopg.connect(dsn) as conn, conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT trace_id FROM spans WHERE source != 'taubench'")
+            db_live_ids = [row[0] for row in cur.fetchall()]
+        live_entries = _build_live_entries_from_db(db_live_ids, seen_ids, snapshot_dir, dsn)
+    else:
+        live_trace_ids = sorted(snapshotted | set(_load_live_trace_ids(live_ids_file)))
+        live_entries = _build_live_entries(live_trace_ids, seen_ids, snapshotted)
+
     live_count = 0
     for e in live_entries:
         if e.trace_id not in seen_ids:
@@ -712,10 +769,10 @@ def build_corpus(
             live_count += 1
 
     all_trace_ids = sorted(seen_ids)
-    # Fold snapshot membership into the hash: a versioned corpus is defined by
-    # both its trace_ids AND which of them carry a fixed raw-span snapshot.
+    # Fold snapshot membership and db-only IDs into the hash.
     snapshotted_ids = sorted(e.trace_id for e in entries if e.raw_spans_file is not None)
-    corpus_hash = _compute_corpus_hash(all_trace_ids, snapshotted_ids)
+    db_only_ids = sorted(e.trace_id for e in entries if e.db_trace_id is not None)
+    corpus_hash = _compute_corpus_hash(all_trace_ids, snapshotted_ids, db_only_ids)
 
     return EvalCorpus(
         entries=entries,

@@ -165,7 +165,10 @@ import sys
 import importlib
 import importlib.util
 import json
+import os as _os
 from pathlib import Path
+
+_dsn = _os.environ.get("KAIROS_PG_DSN")
 
 worktree_root = Path(sys.argv[1])
 host_src = Path(sys.argv[2])
@@ -220,9 +223,9 @@ if len(sys.argv) > 4 and sys.argv[4]:
     live_ids = Path(sys.argv[4])
 
 corpus = build_corpus(
-    taubench_dir=taubench_dir, live_ids_file=live_ids, snapshot_dir=snapshot_dir
+    taubench_dir=taubench_dir, live_ids_file=live_ids, snapshot_dir=snapshot_dir, dsn=_dsn
 )
-panel = compute_panel(corpus, taubench_dir=taubench_dir, snapshot_dir=snapshot_dir)
+panel = compute_panel(corpus, taubench_dir=taubench_dir, snapshot_dir=snapshot_dir, dsn=_dsn)
 print(panel.to_json())
 """
 
@@ -390,7 +393,7 @@ def run_eval(
         If the panel runner subprocess fails.
     """
     if corpus is None:
-        corpus = build_corpus()
+        corpus = build_corpus(dsn=os.environ.get("KAIROS_PG_DSN"))
 
     ref_sha = _resolve_ref(ref, repo)
     wt_path = _worktree_path(ref_sha)
@@ -574,7 +577,7 @@ def compare(
     CompareResult with verdict "PASS" or "REGRESSED".
     """
     if corpus is None:
-        corpus = build_corpus()
+        corpus = build_corpus(dsn=os.environ.get("KAIROS_PG_DSN"))
 
     before_result = run_eval(before_ref, k=k, corpus=corpus, repo=repo)
     after_result = run_eval(after_ref, k=k, corpus=corpus, repo=repo)
