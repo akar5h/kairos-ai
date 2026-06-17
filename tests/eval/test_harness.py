@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
+from kairos.eval.eval_set import EvalSetRecord
 from kairos.eval.harness import (
     CompareResult,
     MetricDiff,
     _classify_delta,
+    _compute_cluster_gate,
     _extract_metric_values,
     _metric_tier,
     _panels_identical,
@@ -24,6 +28,7 @@ def _make_panel(
     d2_fire_count: int = 10,
     owner_precision: float | None = 0.8,
     classes_covered: int = 3,
+    trace_detector_fires: dict[str, list[str]] | None = None,
 ) -> MetricPanel:
     return MetricPanel(
         corpus_hash=corpus_hash,
@@ -91,6 +96,7 @@ def _make_panel(
         severity_warning_count=10,
         severity_info_count=15,
         total_findings=25,
+        trace_detector_fires=trace_detector_fires if trace_detector_fires is not None else {},
     )
 
 
@@ -338,3 +344,108 @@ def test_gate_improvement_credited():
     assert result.verdict == "PASS"
     # detector precision is REVIEW tier → improvement surfaces in improved_metrics
     assert "detector.unrecovered_error.precision" in result.improved_metrics
+
+
+# ── _compute_cluster_gate ─────────────────────────────────────────────────────
+
+
+def _make_eval_set(
+    cluster_key: str,
+    held_in_ids: list[str],
+    held_out_ids: list[str],
+) -> EvalSetRecord:
+    """Build a minimal EvalSetRecord fixture without DB."""
+    return EvalSetRecord(
+        eval_set_id=f"evalset-{cluster_key}",
+        cluster_key=cluster_key,
+        detector_version="HEAD",
+        frozen_at=datetime(2026, 1, 1, tzinfo=UTC),
+        held_in=[{"trace_id": tid} for tid in held_in_ids],
+        held_out=[{"trace_id": tid} for tid in held_out_ids],
+        discriminator_type="outcome_only",
+        discriminator_config={},
+    )
+
+
+def test_cluster_gate_held_out_new_fires_regressed():
+    """Held-out trace fires at after_ref but not before_ref → REGRESSED."""
+    before_panel = _make_panel(trace_detector_fires={})
+    after_panel = _make_panel(trace_detector_fires={"trace-out-1": ["struggle_ratio"]})
+    eval_set = _make_eval_set("cluster-A", held_in_ids=["trace-in-1"], held_out_ids=["trace-out-1"])
+
+    result = _compute_cluster_gate(before_panel, after_panel, [eval_set])
+
+    assert result.gate_verdict == "REGRESSED"
+    assert "cluster-A" in result.regressed_clusters
+    assert result.cluster_metrics[0].verdict == "REGRESSED"
+    assert result.cluster_metrics[0].held_out_new_fires == 1.0
+
+
+def test_cluster_gate_held_in_improves():
+    """Held-in fire rate drops before→after by more than epsilon → IMPROVED."""
+    before_panel = _make_panel(
+        trace_detector_fires={
+            "trace-in-1": ["unrecovered_error"],
+            "trace-in-2": ["struggle_ratio"],
+            "trace-in-3": ["struggle_ratio"],
+            "trace-in-4": ["struggle_ratio"],
+        }
+    )
+    after_panel = _make_panel(trace_detector_fires={})
+    eval_set = _make_eval_set(
+        "cluster-B",
+        held_in_ids=["trace-in-1", "trace-in-2", "trace-in-3", "trace-in-4"],
+        held_out_ids=["trace-out-1"],
+    )
+
+    result = _compute_cluster_gate(before_panel, after_panel, [eval_set])
+
+    assert result.gate_verdict == "PASS"
+    assert "cluster-B" in result.improved_clusters
+    cm = result.cluster_metrics[0]
+    assert cm.verdict == "IMPROVED"
+    assert cm.held_in_fire_before == 1.0
+    assert cm.held_in_fire_after == 0.0
+
+
+def test_cluster_gate_no_change():
+    """No held-out new fires and no meaningful held-in change → UNCHANGED."""
+    fires = {"trace-in-1": ["struggle_ratio"]}
+    before_panel = _make_panel(trace_detector_fires=fires)
+    after_panel = _make_panel(trace_detector_fires=fires)
+    eval_set = _make_eval_set("cluster-C", held_in_ids=["trace-in-1"], held_out_ids=["trace-out-1"])
+
+    result = _compute_cluster_gate(before_panel, after_panel, [eval_set])
+
+    assert result.gate_verdict == "PASS"
+    assert result.regressed_clusters == []
+    assert result.improved_clusters == []
+    assert result.cluster_metrics[0].verdict == "UNCHANGED"
+
+
+def test_cluster_gate_empty_eval_sets():
+    """Empty eval_sets list → PASS with no cluster metrics."""
+    before_panel = _make_panel()
+    after_panel = _make_panel()
+
+    result = _compute_cluster_gate(before_panel, after_panel, [])
+
+    assert result.gate_verdict == "PASS"
+    assert result.cluster_metrics == []
+    assert result.regressed_clusters == []
+    assert result.improved_clusters == []
+
+
+def test_compare_result_has_cluster_gate_none_by_default():
+    """CompareResult.cluster_gate defaults to None."""
+    result = CompareResult(
+        before_ref="a",
+        after_ref="b",
+        before_ref_full="a" * 40,
+        after_ref_full="b" * 40,
+        k=1,
+        corpus_hash="abc",
+        diffs=[],
+        verdict="PASS",
+    )
+    assert result.cluster_gate is None

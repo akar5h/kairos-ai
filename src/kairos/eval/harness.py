@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kairos.eval.corpus import EvalCorpus, build_corpus
+from kairos.eval.eval_set import EvalSetRecord  # noqa: TC001
 
 if TYPE_CHECKING:
     from kairos.eval.panel import MetricPanel
@@ -101,6 +102,32 @@ class CompareResult:
     surfaced for human review; do NOT fail the gate."""
     info_metrics: list[str] = field(default_factory=list)
     """INFO-tier (volume) metric changes — diagnostic only, never a regression."""
+    cluster_gate: ClusterGateResult | None = None
+    """Cluster regression-on-history gate result. None if no eval_sets provided."""
+
+
+@dataclass
+class ClusterMetric:
+    """Per-cluster held-in / held-out metrics from the regression-on-history gate."""
+
+    cluster_key: str
+    eval_set_id: str
+    held_in_count: int
+    held_out_count: int
+    held_in_fire_before: float | None  # fraction of held-in that fired at before_ref
+    held_in_fire_after: float | None  # fraction of held-in that fired at after_ref
+    held_out_new_fires: float | None  # fraction that fire at after but not before
+    verdict: str  # "IMPROVED" | "REGRESSED" | "UNCHANGED" | "UNKNOWN"
+
+
+@dataclass
+class ClusterGateResult:
+    """Aggregate result of the regression-on-history cluster gate."""
+
+    cluster_metrics: list[ClusterMetric]
+    gate_verdict: str  # "PASS" | "REGRESSED"
+    regressed_clusters: list[str]  # cluster_keys that triggered the gate
+    improved_clusters: list[str]  # cluster_keys where held-in fire rate improved
 
 
 # ── Git helpers ───────────────────────────────────────────────────────────────
@@ -346,6 +373,8 @@ def _panel_from_dict(d: dict[str, Any]) -> MetricPanel:
         golden_total=floor_d.get("golden_total", 0),
     )
 
+    trace_detector_fires = {str(k): [str(p) for p in v] for k, v in d.get("trace_detector_fires", {}).items()}
+
     return MetricPanel(
         corpus_hash=d["corpus_hash"],
         corpus_size=d["corpus_size"],
@@ -357,6 +386,7 @@ def _panel_from_dict(d: dict[str, Any]) -> MetricPanel:
         severity_warning_count=d.get("severity_warning_count", 0),
         severity_info_count=d.get("severity_info_count", 0),
         total_findings=d.get("total_findings", 0),
+        trace_detector_fires=trace_detector_fires,
     )
 
 
@@ -563,6 +593,74 @@ def _classify_delta(name: str, delta: float | None) -> str:
     return "unchanged"
 
 
+def _compute_cluster_gate(
+    before_panel: MetricPanel,
+    after_panel: MetricPanel,
+    eval_sets: list[EvalSetRecord],
+) -> ClusterGateResult:
+    """Compute per-cluster held-in / held-out metrics for the regression-on-history gate."""
+    cluster_metrics: list[ClusterMetric] = []
+
+    for eval_set in eval_sets:
+        held_in_ids = [item["trace_id"] for item in eval_set.held_in]
+        held_out_ids = [item["trace_id"] for item in eval_set.held_out]
+
+        if held_in_ids:
+            n_before = sum(1 for tid in held_in_ids if tid in before_panel.trace_detector_fires)
+            n_after = sum(1 for tid in held_in_ids if tid in after_panel.trace_detector_fires)
+            held_in_fire_before: float | None = n_before / len(held_in_ids)
+            held_in_fire_after: float | None = n_after / len(held_in_ids)
+        else:
+            held_in_fire_before = None
+            held_in_fire_after = None
+
+        if held_out_ids:
+            new_fires = sum(
+                1
+                for tid in held_out_ids
+                if tid in after_panel.trace_detector_fires and tid not in before_panel.trace_detector_fires
+            )
+            held_out_new_fires: float | None = new_fires / len(held_out_ids)
+        else:
+            held_out_new_fires = None
+
+        if held_out_new_fires is not None and held_out_new_fires > _GATE_EPSILON:
+            verdict = "REGRESSED"
+        elif (
+            held_in_fire_before is not None
+            and held_in_fire_after is not None
+            and held_in_fire_before - held_in_fire_after > _GATE_EPSILON
+        ):
+            verdict = "IMPROVED"
+        elif held_in_fire_before is None and held_in_fire_after is None:
+            verdict = "UNKNOWN"
+        else:
+            verdict = "UNCHANGED"
+
+        cluster_metrics.append(
+            ClusterMetric(
+                cluster_key=eval_set.cluster_key,
+                eval_set_id=eval_set.eval_set_id,
+                held_in_count=len(held_in_ids),
+                held_out_count=len(held_out_ids),
+                held_in_fire_before=held_in_fire_before,
+                held_in_fire_after=held_in_fire_after,
+                held_out_new_fires=held_out_new_fires,
+                verdict=verdict,
+            )
+        )
+
+    regressed = [cm.cluster_key for cm in cluster_metrics if cm.verdict == "REGRESSED"]
+    improved = [cm.cluster_key for cm in cluster_metrics if cm.verdict == "IMPROVED"]
+
+    return ClusterGateResult(
+        cluster_metrics=cluster_metrics,
+        gate_verdict="REGRESSED" if regressed else "PASS",
+        regressed_clusters=regressed,
+        improved_clusters=improved,
+    )
+
+
 def compare(
     before_ref: str,
     after_ref: str,
@@ -571,6 +669,7 @@ def compare(
     targeted_metrics: list[str] | None = None,
     corpus: EvalCorpus | None = None,
     report_dir: Path | None = None,
+    eval_sets: list[EvalSetRecord] | None = None,
     repo: Path = _REPO_ROOT,
 ) -> CompareResult:
     """Run run_eval on both refs and diff the panel with three-tier gating.
@@ -645,6 +744,12 @@ def compare(
     # Verdict = REGRESSED iff a GATE metric dropped > epsilon; else PASS.
     verdict = "REGRESSED" if regression_metrics else "PASS"
 
+    cluster_gate: ClusterGateResult | None = None
+    if eval_sets:
+        cluster_gate = _compute_cluster_gate(before_panel, after_panel, eval_sets)
+        if cluster_gate.gate_verdict == "REGRESSED":
+            verdict = "REGRESSED"
+
     result = CompareResult(
         before_ref=before_ref,
         after_ref=after_ref,
@@ -659,6 +764,7 @@ def compare(
         improved_metrics=improved_metrics,
         review_metrics=review_metrics,
         info_metrics=info_metrics,
+        cluster_gate=cluster_gate,
     )
 
     if report_dir is not None:
@@ -761,6 +867,22 @@ def _write_compare_report(
             f"| `{diff.name}` | {diff.tier} | {_fmt(diff.before)} | {_fmt(diff.after)} | {delta_str} | {diff.verdict} |"
         )
     lines.append("")
+    if result.cluster_gate is not None:
+        cg = result.cluster_gate
+        lines += [
+            f"## Cluster Gate: {cg.gate_verdict}",
+            "",
+            "| Cluster | Eval Set | Held-in Before | Held-in After | Held-out New Fires | Verdict |",
+            "|---------|----------|----------------|---------------|-------------------|---------|",
+        ]
+        for cm in cg.cluster_metrics:
+            lines.append(
+                f"| {cm.cluster_key} | {cm.eval_set_id[:12]} | "
+                f"{_fmt(cm.held_in_fire_before)} | {_fmt(cm.held_in_fire_after)} | "
+                f"{_fmt(cm.held_out_new_fires)} | {cm.verdict} |"
+            )
+        lines.append("")
+
     lines += [
         "## Outcome Detail",
         "",

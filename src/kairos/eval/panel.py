@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -140,6 +140,7 @@ class MetricPanel:
     severity_warning_count: int
     severity_info_count: int
     total_findings: int
+    trace_detector_fires: dict[str, list[str]] = field(default_factory=dict)  # trace_id → [pattern_name, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -666,6 +667,10 @@ def compute_panel(
     severity_warning = sum(1 for f in all_findings if f.get("severity") == "warning")
     severity_info = sum(1 for f in all_findings if f.get("severity") == "info")
 
+    trace_detector_fires = {
+        tid: [f["pattern_name"] for f in findings] for tid, findings in findings_by_trace.items() if findings
+    }
+
     return MetricPanel(
         corpus_hash=corpus.corpus_hash,
         corpus_size=corpus_size,
@@ -677,4 +682,5 @@ def compute_panel(
         severity_warning_count=severity_warning,
         severity_info_count=severity_info,
         total_findings=len(all_findings),
+        trace_detector_fires=trace_detector_fires,
     )
