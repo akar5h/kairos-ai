@@ -33,6 +33,7 @@ from pydantic import BaseModel, field_validator
 from kairos.loop.cluster_lifecycle import regress_cluster, resolve_cluster
 from kairos.loop.db import _dsn
 from kairos.loop.discover import run_discovery
+from kairos.loop.outcomes import load_outcome_labels
 from kairos.readers.db import fetch_envelope_from_db, list_trace_ids
 
 logger = logging.getLogger(__name__)
@@ -1171,11 +1172,18 @@ def refresh_clusters() -> ClusterRefreshResponse:
         raise fastapi.HTTPException(status_code=500, detail="Database error") from None
 
     try:
+        labeled_outcomes = load_outcome_labels(dsn)
+    except Exception:
+        logger.exception("read.refresh_clusters load_outcome_labels failed")
+        labeled_outcomes = {}
+
+    try:
         with psycopg.connect(dsn) as conn:
             result = run_discovery(
                 traces=traces,
                 miss_candidates=[],
                 night_id=date.today(),
+                labeled_outcomes=labeled_outcomes or None,
                 conn=conn,
             )
     except Exception:
