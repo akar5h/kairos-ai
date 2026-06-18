@@ -24,12 +24,14 @@ import logging
 import uuid
 from datetime import UTC, date, datetime  # noqa: TC003 — pydantic needs the runtime type
 from typing import Any
+from urllib.parse import unquote
 
 import fastapi
 import psycopg
 from psycopg.rows import dict_row
 from pydantic import BaseModel, field_validator
 
+from kairos.eval.eval_set import generate_eval_set, store_eval_set
 from kairos.loop.cluster_lifecycle import regress_cluster, resolve_cluster
 from kairos.loop.db import _dsn
 from kairos.loop.discover import run_discovery
@@ -212,6 +214,32 @@ class ClusterRefreshResponse(BaseModel):
     status: str
     clusters_found: int
     traces_processed: int
+
+
+class ClusterInsightRow(BaseModel):
+    """One cluster_insights row returned by GET /v1/clusters/{key}/insights."""
+
+    id: str
+    cluster_key: str
+    pattern_name: str | None
+    description: str | None
+    discriminator_hint: str | None
+    root_cause: str | None
+    confidence: float | None
+    is_coherent: bool | None
+    auto_approve: bool
+    approved_at: datetime | None
+    approved_by: str | None
+    model_used: str | None
+    created_at: datetime
+
+
+class ApproveInsightResponse(BaseModel):
+    """Response from POST /v1/clusters/{key}/insights/{id}/approve."""
+
+    status: str  # "approved" | "already_approved"
+    eval_set_id: str | None
+    message: str
 
 
 class HookEventRow(BaseModel):
@@ -1268,3 +1296,91 @@ def get_eval_sets() -> list[dict[str, Any]]:
         }
         for r in rows
     ]
+
+
+@router.get("/clusters/{key}/insights", response_model=list[ClusterInsightRow])
+def get_cluster_insights(
+    key: str = fastapi.Path(..., description="URL-encoded cluster key"),
+) -> list[ClusterInsightRow]:
+    """Return all insights for a cluster, newest first."""
+    decoded_key = unquote(key)
+    try:
+        with psycopg.connect(_dsn(), row_factory=dict_row) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, cluster_key, pattern_name, description, discriminator_hint,
+                       root_cause, confidence, is_coherent, auto_approve, approved_at,
+                       approved_by, model_used, created_at
+                  FROM cluster_insights
+                 WHERE cluster_key = %s
+                 ORDER BY created_at DESC
+                """,
+                (decoded_key,),
+            ).fetchall()
+    except Exception:
+        logger.exception("read.get_cluster_insights failed key=%s", decoded_key)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    return [ClusterInsightRow(**{**row, "id": str(row["id"])}) for row in rows]
+
+
+@router.post("/clusters/{key}/insights/{insight_id}/approve", response_model=ApproveInsightResponse)
+def approve_cluster_insight(
+    key: str = fastapi.Path(..., description="URL-encoded cluster key"),
+    insight_id: str = fastapi.Path(..., description="UUID of the cluster_insights row"),
+) -> ApproveInsightResponse:
+    """Approve a cluster insight: mark it approved and generate an eval set."""
+    decoded_key = unquote(key)
+    dsn = _dsn()
+
+    try:
+        with psycopg.connect(dsn, row_factory=dict_row) as conn:
+            row = conn.execute(
+                "SELECT id, cluster_key, approved_at FROM cluster_insights WHERE id = %s",
+                (insight_id,),
+            ).fetchone()
+    except Exception:
+        logger.exception("read.approve_insight db_fetch failed insight_id=%s", insight_id)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    if row is None:
+        raise fastapi.HTTPException(status_code=404, detail="Insight not found")
+
+    if row["approved_at"] is not None:
+        return ApproveInsightResponse(
+            status="already_approved",
+            eval_set_id=None,
+            message="Insight was already approved.",
+        )
+
+    # Mark approved.
+    try:
+        with psycopg.connect(dsn, row_factory=dict_row) as conn:
+            conn.execute(
+                "UPDATE cluster_insights SET approved_at = NOW(), approved_by = 'owner' WHERE id = %s",
+                (insight_id,),
+            )
+            conn.commit()
+    except Exception:
+        logger.exception("read.approve_insight db_update failed insight_id=%s", insight_id)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    # Generate eval set — tolerate failure (approval is still recorded).
+    eval_set_id: str | None = None
+    message = "approved"
+    try:
+        record = generate_eval_set(decoded_key, dsn)
+        eval_set_id = store_eval_set(record, dsn)
+        message = f"approved; eval set {eval_set_id} generated"
+    except ValueError as ve:
+        message = f"approved but eval set not generated: {ve}"
+        logger.warning("read.approve_insight eval_set_skipped key=%s reason=%s", decoded_key, ve)
+    except Exception:
+        logger.exception("read.approve_insight eval_set_error key=%s", decoded_key)
+        message = "approved but eval set generation failed"
+
+    return ApproveInsightResponse(
+        status="approved",
+        eval_set_id=eval_set_id,
+        message=message,
+    )

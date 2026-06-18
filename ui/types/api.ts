@@ -312,3 +312,19 @@ export interface ClusterRefreshResponse {
   clusters_found: number;
   traces_processed: number;
 }
+
+export interface ClusterInsight {
+  id: string;
+  cluster_key: string;
+  pattern_name: string | null;
+  description: string | null;
+  discriminator_hint: string | null;
+  root_cause: string | null;
+  confidence: number | null;
+  is_coherent: boolean | null;
+  auto_approve: boolean;
+  approved_at: string | null;
+  approved_by: string | null;
+  model_used: string | null;
+  created_at: string;
+}

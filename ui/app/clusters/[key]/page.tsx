@@ -10,10 +10,11 @@
  */
 import type { Metadata } from "next";
 import Link from "next/link";
-import { getClusterTraces, getClusters } from "@/lib/api";
+import { getClusterInsights, getClusterTraces, getClusters } from "@/lib/api";
+import { ClusterInsightCard } from "@/components/ClusterInsightCard";
 import { ClusterTracesTable } from "@/components/ClusterTracesTable";
 import { CopyButton } from "@/components/CopyButton";
-import type { ClusterSummary, ClusterTraceMember } from "@/types/api";
+import type { ClusterInsight, ClusterSummary, ClusterTraceMember } from "@/types/api";
 
 export const dynamic = "force-dynamic";
 
@@ -32,15 +33,18 @@ export default async function ClusterDetailPage({ params }: PageProps) {
 
   let traces: ClusterTraceMember[] = [];
   let summary: ClusterSummary | null = null;
+  let insights: ClusterInsight[] = [];
   let error: string | null = null;
 
   try {
-    const [allClusters, clusterTraces] = await Promise.all([
+    const [allClusters, clusterTraces, clusterInsights] = await Promise.all([
       getClusters().catch(() => [] as ClusterSummary[]),
       getClusterTraces(clusterKey),
+      getClusterInsights(clusterKey).catch(() => [] as ClusterInsight[]),
     ]);
     traces = clusterTraces;
     summary = allClusters.find((c) => c.cluster_key === clusterKey) ?? null;
+    insights = clusterInsights;
   } catch (e) {
     error = e instanceof Error ? e.message : "Unknown error";
   }
@@ -133,6 +137,24 @@ export default async function ClusterDetailPage({ params }: PageProps) {
           </div>
         )}
       </div>
+
+      {/* Pattern insights */}
+      {insights.length > 0 && (
+        <div
+          className="px-4 py-3 border-b shrink-0"
+          style={{ borderColor: "var(--bg-border)" }}
+        >
+          <h3
+            className="text-xs font-semibold mb-2"
+            style={{ color: "var(--text-muted)", letterSpacing: "0.06em" }}
+          >
+            PATTERN INSIGHTS
+          </h3>
+          {insights.map((i) => (
+            <ClusterInsightCard key={i.id} insight={i} clusterKey={clusterKey} />
+          ))}
+        </div>
+      )}
 
       {/* Traces table */}
       <div className="flex-1 overflow-y-auto">
