@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -63,6 +63,22 @@ _CORPUS_KEY_TO_PATTERN: dict[str, str] = {
 
 
 # ── Data structures ───────────────────────────────────────────────────────────
+
+_REPO_ROOT = Path(__file__).parent.parent.parent.parent
+
+
+@dataclass
+class FloorMetrics:
+    """Floor metric vector — regression on any of these fails the gate."""
+
+    known_good_pass_rate: float | None
+    known_bad_catch_rate: float | None
+    tau_required_tool_hit_rate: float | None
+    golden_trajectory_match_rate: float | None
+    known_good_total: int = 0
+    known_bad_total: int = 0
+    tau_required_total: int = 0
+    golden_total: int = 0
 
 
 @dataclass
@@ -118,11 +134,14 @@ class MetricPanel:
     corpus_size: int
     outcome: OutcomeMetrics
     detectors: dict[str, DetectorMetrics]  # keyed by pattern_name
+    floor: FloorMetrics
     classes_covered: int  # detectors with >= 1 fire
     severity_error_count: int
     severity_warning_count: int
     severity_info_count: int
     total_findings: int
+    trace_detector_fires: dict[str, list[str]] = field(default_factory=dict)  # trace_id → [pattern_name, ...]
+    trace_tool_sequences: dict[str, list[str]] = field(default_factory=dict)  # trace_id → [tool_name, ...]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -260,6 +279,7 @@ def _run_engine_on_corpus(
 
     outcome_results: dict[str, dict[str, Any]] = {}
     findings_by_trace: dict[str, list[dict[str, Any]]] = {}
+    tool_sequences: dict[str, list[str]] = {}
 
     for entry in entries:
         tid = entry.trace_id
@@ -303,6 +323,8 @@ def _run_engine_on_corpus(
         else:
             outcome_results[tid] = {"outcome_pass": False, "computable": False}
 
+        tool_sequences[tid] = list(trace_env.tool_sequence)
+
         # Detectors — run on the envelope (session_quality + redundant).
         # Guard: detectors may not exist at old refs (graceful degradation).
         # This runs for BOTH tau and live envelopes — the live path is what makes
@@ -326,6 +348,9 @@ def _run_engine_on_corpus(
     return {
         "outcome_results": outcome_results,
         "findings": findings_by_trace,
+        "tool_sequences": tool_sequences,
+        "tau_envelopes": tau_envelopes,
+        "tau_operations": tau_operations,
     }
 
 
@@ -483,6 +508,85 @@ def _compute_detector_metrics(
     )
 
 
+def _compute_floor_metrics(
+    entries: list[CorpusEntry],
+    outcome_results: dict[str, dict[str, Any]],
+    tool_sequences: dict[str, list[str]],
+    tau_envelopes: dict[str, Any],
+    tau_operations: list[Any],
+    golden_trajectories: dict[str, dict[str, Any]],
+) -> FloorMetrics:
+    """Compute all four floor metrics."""
+    known_good_pass = 0
+    known_good_total = 0
+    known_bad_catch = 0
+    known_bad_total = 0
+
+    for entry in entries:
+        result = outcome_results.get(entry.trace_id, {})
+        if not result.get("computable", False):
+            continue
+        if entry.outcome_truth == "pass":
+            known_good_total += 1
+            if result.get("outcome_pass", False):
+                known_good_pass += 1
+        elif entry.outcome_truth == "fail":
+            known_bad_total += 1
+            if not result.get("outcome_pass", True):
+                known_bad_catch += 1
+
+    tau_tool_hit = 0
+    tau_required_total = 0
+
+    for entry in entries:
+        if entry.source != "taubench":
+            continue
+        result = outcome_results.get(entry.trace_id, {})
+        if not result.get("computable", False):
+            continue
+        if entry.trace_id not in tool_sequences:
+            continue
+        if not tau_operations:
+            continue
+        # pick best op (same logic as _best_op)
+        trace_tools = set(tool_sequences[entry.trace_id])
+        best_op = tau_operations[0]
+        best_score = 0.0
+        for op in tau_operations:
+            required = set(op.required_side_effect_tools)
+            if not required:
+                continue
+            hit = len(required & trace_tools) / len(required)
+            if hit > best_score:
+                best_score = hit
+                best_op = op
+        required_tools = set(best_op.required_side_effect_tools)
+        if not required_tools:
+            continue
+        tau_required_total += 1
+        if required_tools.issubset(trace_tools):
+            tau_tool_hit += 1
+
+    golden_match = 0
+    golden_total = len(golden_trajectories)
+    for trace_id, golden in golden_trajectories.items():
+        golden_seq = golden.get("tool_sequence", [])
+        actual_seq = tool_sequences.get(trace_id)
+        if actual_seq is not None and actual_seq == golden_seq:
+            golden_match += 1
+
+    return FloorMetrics(
+        known_good_pass_rate=_safe_div(known_good_pass, known_good_total),
+        known_bad_catch_rate=_safe_div(known_bad_catch, known_bad_total),
+        tau_required_tool_hit_rate=_safe_div(tau_tool_hit, tau_required_total),
+        golden_trajectory_match_rate=_safe_div(golden_match, golden_total) if golden_total > 0 else None,
+        known_good_total=known_good_total,
+        known_bad_total=known_bad_total,
+        tau_required_total=tau_required_total,
+        golden_total=golden_total,
+    )
+
+
 def compute_panel(
     corpus: EvalCorpus,
     taubench_dir: Path | None = None,
@@ -510,9 +614,20 @@ def compute_panel(
     if snapshot_dir is None:
         snapshot_dir = repo_root / "eval" / "corpus" / "live"
 
+    golden_path = _REPO_ROOT / "eval" / "corpus" / "golden_trajectories.json"
+    golden_trajectories: dict[str, dict[str, Any]] = {}
+    if golden_path.exists():
+        with contextlib.suppress(Exception):
+            loaded = json.loads(golden_path.read_text())
+            if isinstance(loaded, dict):
+                golden_trajectories = loaded
+
     engine_results = _run_engine_on_corpus(corpus.entries, taubench_dir, snapshot_dir, dsn)
     outcome_results = engine_results["outcome_results"]
     findings_by_trace = engine_results["findings"]
+    tool_sequences: dict[str, list[str]] = engine_results["tool_sequences"]
+    tau_envelopes_result: dict[str, Any] = engine_results["tau_envelopes"]
+    tau_operations_result: list[Any] = engine_results["tau_operations"]
 
     corpus_size = len(corpus.entries)
 
@@ -535,6 +650,16 @@ def compute_panel(
             det_name, corpus_key, corpus.entries, findings_by_trace, corpus_size
         )
 
+    # Floor metrics
+    floor = _compute_floor_metrics(
+        corpus.entries,
+        outcome_results,
+        tool_sequences,
+        tau_envelopes_result,
+        tau_operations_result,
+        golden_trajectories,
+    )
+
     # Aggregate metrics
     classes_covered = sum(1 for dm in detectors.values() if dm.fire_count > 0)
 
@@ -543,14 +668,21 @@ def compute_panel(
     severity_warning = sum(1 for f in all_findings if f.get("severity") == "warning")
     severity_info = sum(1 for f in all_findings if f.get("severity") == "info")
 
+    trace_detector_fires = {
+        tid: [f["pattern_name"] for f in findings] for tid, findings in findings_by_trace.items() if findings
+    }
+
     return MetricPanel(
         corpus_hash=corpus.corpus_hash,
         corpus_size=corpus_size,
         outcome=outcome,
         detectors=detectors,
+        floor=floor,
         classes_covered=classes_covered,
         severity_error_count=severity_error,
         severity_warning_count=severity_warning,
         severity_info_count=severity_info,
         total_findings=len(all_findings),
+        trace_detector_fires=trace_detector_fires,
+        trace_tool_sequences=tool_sequences,
     )

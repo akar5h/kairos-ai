@@ -1,0 +1,28 @@
+{
+  "03b5058d29f804365f718aafe2ae2afe": {
+    "tool_sequence": [
+      "transfer_to_human_agents"
+    ]
+  },
+  "302da9a51947ea5f8f5d6323d08a7124": {
+    "tool_sequence": [
+      "get_reservation_details"
+    ]
+  },
+  "a0863eeeb9a22a77742544c7fbc579b7": {
+    "tool_sequence": [
+      "get_reservation_details"
+    ]
+  },
+  "dd46a134b11b2b396140bdc45b843656": {
+    "tool_sequence": [
+      "get_reservation_details"
+    ]
+  },
+  "13bdcd979ce130969e506f34e8b16426": {
+    "tool_sequence": [
+      "get_reservation_details",
+      "transfer_to_human_agents"
+    ]
+  }
+}

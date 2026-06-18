@@ -264,12 +264,23 @@ export interface CreateLabelBody {
 
 // ── ClusterSummary (GET /v1/clusters) ─────────────────────────────────────────
 
+export type ClusterStatus = "open" | "resolved" | "regressed";
+
 export interface ClusterSummary {
   cluster_key: string;
+  status: ClusterStatus;
   trace_count: number;
   min_night_id: string | null;
   kinds: string[];
   sample_features: Record<string, unknown>;
+}
+
+// ── ClusterStatusUpdate (POST /v1/clusters/{key}/resolve|regress) ─────────────
+
+export interface ClusterStatusUpdate {
+  cluster_key: string;
+  status: ClusterStatus;
+  updated: boolean;
 }
 
 // ── ClusterTraceMember (GET /v1/clusters/{cluster_key}/traces) ────────────────
@@ -300,4 +311,20 @@ export interface ClusterRefreshResponse {
   status: string;
   clusters_found: number;
   traces_processed: number;
+}
+
+export interface ClusterInsight {
+  id: string;
+  cluster_key: string;
+  pattern_name: string | null;
+  description: string | null;
+  discriminator_hint: string | null;
+  root_cause: string | null;
+  confidence: number | null;
+  is_coherent: boolean | null;
+  auto_approve: boolean;
+  approved_at: string | null;
+  approved_by: string | null;
+  model_used: string | null;
+  created_at: string;
 }

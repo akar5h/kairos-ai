@@ -355,14 +355,14 @@ def compute_trace_features(
 
 @dataclass
 class DiscoveryCandidate:
-    """A single discovery candidate (anomaly or expectation_miss).
+    """A single discovery candidate (anomaly, expectation_miss, or outcome_only).
 
     Features are stored as a dict of numeric scalars + safe string tags.
     NO raw args, outputs, or user content is stored.
     """
 
     id: str
-    kind: str  # 'anomaly' | 'expectation_miss'
+    kind: str  # 'anomaly' | 'expectation_miss' | 'outcome_only'
     trace_id: str
     cluster_key: str
     features: dict[str, Any]
@@ -417,6 +417,53 @@ def _build_anomaly_candidates(
                     "rare_ngrams": f.rare_ngrams,
                     "tool_signature": f.tool_signature,
                     "dominant_feature": f.dominant_feature,
+                },
+            )
+        )
+    return candidates
+
+
+def _outcome_only_cluster_key(f: TraceFeatures) -> str:
+    """Cluster key for outcome_only candidates: tool_signature prefix + ::outcome_only."""
+    sig_prefix = f.tool_signature[:60] if f.tool_signature else "llm_only"
+    return f"{sig_prefix}::outcome_only"
+
+
+def _build_outcome_only_candidates(
+    features: list[TraceFeatures],
+    labeled_outcomes: dict[str, str],
+    already_discovered: set[str],
+) -> list[DiscoveryCandidate]:
+    """Emit outcome_only candidates for known-fail traces not already discovered.
+
+    A trace qualifies when labeled_outcomes maps its trace_id to "fail" AND it
+    did not produce an anomaly candidate (i.e., it is structurally unremarkable
+    but has a known-bad outcome — the semantic-miss gap P4 closes).
+
+    Features contain only numeric scalars and safe string tags.  No raw args.
+    """
+    candidates: list[DiscoveryCandidate] = []
+    for f in features:
+        if labeled_outcomes.get(f.trace_id) != "fail":
+            continue
+        if f.trace_id in already_discovered:
+            continue
+        cid = hashlib.sha256(f"outcome_only:{f.trace_id}".encode()).hexdigest()[:24]
+        candidates.append(
+            DiscoveryCandidate(
+                id=cid,
+                kind="outcome_only",
+                trace_id=f.trace_id,
+                cluster_key=_outcome_only_cluster_key(f),
+                features={
+                    "outcome_truth": "fail",
+                    "tool_signature": f.tool_signature,
+                    "dominant_feature": f.dominant_feature,
+                    "restart_count": f.restart_count,
+                    "struggle": f.struggle,
+                    "token_z": f.token_z,
+                    "latency_z": f.latency_z,
+                    "rare_ngram_count": f.rare_ngram_count,
                 },
             )
         )
@@ -521,6 +568,7 @@ class DiscoveryResult:
     candidates: list[DiscoveryCandidate]
     anomaly_count: int
     expectation_miss_count: int
+    outcome_only_count: int
     dropped_by_cap: int
     pg_rows_upserted: int
     json_path: Path | None
@@ -535,6 +583,7 @@ def run_discovery(
     miss_candidates: list[ExpectationMissCandidate],
     night_id: date,
     *,
+    labeled_outcomes: dict[str, str] | None = None,
     conn: Any | None = None,
     json_output_path: Path | None = None,
     ngram_rare_t: float = NGRAM_RARE_T,
@@ -547,6 +596,7 @@ def run_discovery(
       1. Compute per-trace features (restart, rework, struggle, z-scores, ngrams).
       2. Build anomaly candidates (outlier features).
       3. Fold in expectation-miss candidates from the LEARN stage.
+      3b. Fold in outcome_only candidates (known-fail, no structural anomaly).
       4. Cap + log any surplus.
       5. Emit to Postgres (if conn provided) and JSON (if path provided).
       6. Return DiscoveryResult with counts, cluster summary, and feature vectors.
@@ -555,6 +605,10 @@ def run_discovery(
         traces: All TraceEnvelopes from tonight's analysis window.
         miss_candidates: ExpectationMissCandidate list from learn_tool_expectations().
         night_id: UTC date for this run (written to discovery_queue.night_id).
+        labeled_outcomes: Optional trace_id → "pass"/"fail" map from eval_sets.
+            When provided, traces with outcome_truth="fail" that produced no
+            anomaly candidate are emitted as outcome_only candidates.  Pass None
+            (default) for backward-compatible behaviour with no outcome labels.
         conn: Optional psycopg connection (for Postgres emit).
         json_output_path: Path to write discovery_queue.json.
         ngram_rare_t: n-gram corpus frequency threshold for "rare".
@@ -580,8 +634,14 @@ def run_discovery(
     # Step 3: expectation-miss candidates.
     em_candidates = _build_expectation_miss_candidates(miss_candidates)
 
+    # Step 3b: outcome_only candidates (known-fail, no structural anomaly).
+    oo_candidates: list[DiscoveryCandidate] = []
+    if labeled_outcomes:
+        already_discovered = {c.trace_id for c in anomaly_candidates}
+        oo_candidates = _build_outcome_only_candidates(trace_features, labeled_outcomes, already_discovered)
+
     # Step 4: merge + cap.
-    all_candidates = anomaly_candidates + em_candidates
+    all_candidates = anomaly_candidates + em_candidates + oo_candidates
     dropped = 0
     if len(all_candidates) > max_candidates:
         dropped = len(all_candidates) - max_candidates
@@ -593,6 +653,7 @@ def run_discovery(
             dropped=dropped,
             anomaly_total=len(anomaly_candidates),
             em_total=len(em_candidates),
+            oo_total=len(oo_candidates),
         )
 
     # Cluster summary.
@@ -604,6 +665,7 @@ def run_discovery(
         night=str(night_id),
         anomaly_count=len(anomaly_candidates),
         em_count=len(em_candidates),
+        oo_count=len(oo_candidates),
         total_after_cap=len(all_candidates),
         dropped=dropped,
         cluster_count=len(cluster_summary),
@@ -645,11 +707,13 @@ def run_discovery(
 
     anomaly_actual = sum(1 for c in all_candidates if c.kind == "anomaly")
     em_actual = sum(1 for c in all_candidates if c.kind == "expectation_miss")
+    oo_actual = sum(1 for c in all_candidates if c.kind == "outcome_only")
 
     return DiscoveryResult(
         candidates=all_candidates,
         anomaly_count=anomaly_actual,
         expectation_miss_count=em_actual,
+        outcome_only_count=oo_actual,
         dropped_by_cap=dropped,
         pg_rows_upserted=pg_rows,
         json_path=effective_json_path if all_candidates else None,

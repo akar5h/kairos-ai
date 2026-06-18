@@ -5,7 +5,9 @@
  * All functions throw on non-2xx so callers can handle errors uniformly.
  */
 import type {
+  ClusterInsight,
   ClusterRefreshResponse,
+  ClusterStatusUpdate,
   ClusterSummary,
   ClusterTraceMember,
   CreateLabelBody,
@@ -128,6 +130,35 @@ export async function getStats(): Promise<StatsResponse> {
   return apiFetch<StatsResponse>("/v1/stats");
 }
 
+// ── Cluster lifecycle ─────────────────────────────────────────────────────────
+
+async function _clusterAction(
+  clusterKey: string,
+  action: "resolve" | "regress",
+): Promise<ClusterStatusUpdate> {
+  const res = await fetch(
+    `${BASE}/v1/clusters/${encodeURIComponent(clusterKey)}/${action}`,
+    { method: "POST", cache: "no-store" },
+  );
+  if (!res.ok) {
+    const detail = await res.text().catch(() => res.statusText);
+    throw new Error(`${res.status} ${detail}`);
+  }
+  return res.json() as Promise<ClusterStatusUpdate>;
+}
+
+export async function resolveCluster(
+  clusterKey: string,
+): Promise<ClusterStatusUpdate> {
+  return _clusterAction(clusterKey, "resolve");
+}
+
+export async function regressCluster(
+  clusterKey: string,
+): Promise<ClusterStatusUpdate> {
+  return _clusterAction(clusterKey, "regress");
+}
+
 // ── Cluster refresh ───────────────────────────────────────────────────────────
 
 export async function refreshClusters(): Promise<ClusterRefreshResponse> {
@@ -158,4 +189,25 @@ export async function createLabel(body: CreateLabelBody): Promise<LabelRow> {
     throw new Error(`${res.status} ${detail}`);
   }
   return res.json() as Promise<LabelRow>;
+}
+
+export async function getClusterInsights(clusterKey: string): Promise<ClusterInsight[]> {
+  return apiFetch<ClusterInsight[]>(
+    `/v1/clusters/${encodeURIComponent(clusterKey)}/insights`,
+  );
+}
+
+export async function approveInsight(
+  clusterKey: string,
+  insightId: string,
+): Promise<{ status: string; eval_set_id: string | null; message: string }> {
+  const res = await fetch(
+    `${BASE}/v1/clusters/${encodeURIComponent(clusterKey)}/insights/${encodeURIComponent(insightId)}/approve`,
+    { method: "POST", cache: "no-store" },
+  );
+  if (!res.ok) {
+    const detail = await res.text().catch(() => res.statusText);
+    throw new Error(`approve failed: ${detail}`);
+  }
+  return res.json();
 }

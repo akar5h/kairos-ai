@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
+from kairos.eval.eval_set import EvalSetRecord
 from kairos.eval.harness import (
     CompareResult,
     MetricDiff,
     _classify_delta,
+    _compute_cluster_gate,
+    _compute_trajectory_diff,
     _extract_metric_values,
+    _levenshtein,
     _metric_tier,
     _panels_identical,
 )
-from kairos.eval.panel import DetectorMetrics, MetricPanel, OutcomeMetrics
+from kairos.eval.panel import DetectorMetrics, FloorMetrics, MetricPanel, OutcomeMetrics
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -24,6 +30,8 @@ def _make_panel(
     d2_fire_count: int = 10,
     owner_precision: float | None = 0.8,
     classes_covered: int = 3,
+    trace_detector_fires: dict[str, list[str]] | None = None,
+    trace_tool_sequences: dict[str, list[str]] | None = None,
 ) -> MetricPanel:
     return MetricPanel(
         corpus_hash=corpus_hash,
@@ -80,11 +88,19 @@ def _make_panel(
                 fire_rate=0.01,
             ),
         },
+        floor=FloorMetrics(
+            known_good_pass_rate=None,
+            known_bad_catch_rate=None,
+            tau_required_tool_hit_rate=None,
+            golden_trajectory_match_rate=None,
+        ),
         classes_covered=classes_covered,
         severity_error_count=0,
         severity_warning_count=10,
         severity_info_count=15,
         total_findings=25,
+        trace_detector_fires=trace_detector_fires if trace_detector_fires is not None else {},
+        trace_tool_sequences=trace_tool_sequences if trace_tool_sequences is not None else {},
     )
 
 
@@ -332,3 +348,218 @@ def test_gate_improvement_credited():
     assert result.verdict == "PASS"
     # detector precision is REVIEW tier → improvement surfaces in improved_metrics
     assert "detector.unrecovered_error.precision" in result.improved_metrics
+
+
+# ── _compute_cluster_gate ─────────────────────────────────────────────────────
+
+
+def _make_eval_set(
+    cluster_key: str,
+    held_in_ids: list[str],
+    held_out_ids: list[str],
+) -> EvalSetRecord:
+    """Build a minimal EvalSetRecord fixture without DB."""
+    return EvalSetRecord(
+        eval_set_id=f"evalset-{cluster_key}",
+        cluster_key=cluster_key,
+        detector_version="HEAD",
+        frozen_at=datetime(2026, 1, 1, tzinfo=UTC),
+        held_in=[{"trace_id": tid} for tid in held_in_ids],
+        held_out=[{"trace_id": tid} for tid in held_out_ids],
+        discriminator_type="outcome_only",
+        discriminator_config={},
+    )
+
+
+def test_cluster_gate_held_out_new_fires_regressed():
+    """Held-out trace fires at after_ref but not before_ref → REGRESSED."""
+    before_panel = _make_panel(trace_detector_fires={})
+    after_panel = _make_panel(trace_detector_fires={"trace-out-1": ["struggle_ratio"]})
+    eval_set = _make_eval_set("cluster-A", held_in_ids=["trace-in-1"], held_out_ids=["trace-out-1"])
+
+    result = _compute_cluster_gate(before_panel, after_panel, [eval_set])
+
+    assert result.gate_verdict == "REGRESSED"
+    assert "cluster-A" in result.regressed_clusters
+    assert result.cluster_metrics[0].verdict == "REGRESSED"
+    assert result.cluster_metrics[0].held_out_new_fires == 1.0
+
+
+def test_cluster_gate_held_in_improves():
+    """Held-in fire rate drops before→after by more than epsilon → IMPROVED."""
+    before_panel = _make_panel(
+        trace_detector_fires={
+            "trace-in-1": ["unrecovered_error"],
+            "trace-in-2": ["struggle_ratio"],
+            "trace-in-3": ["struggle_ratio"],
+            "trace-in-4": ["struggle_ratio"],
+        }
+    )
+    after_panel = _make_panel(trace_detector_fires={})
+    eval_set = _make_eval_set(
+        "cluster-B",
+        held_in_ids=["trace-in-1", "trace-in-2", "trace-in-3", "trace-in-4"],
+        held_out_ids=["trace-out-1"],
+    )
+
+    result = _compute_cluster_gate(before_panel, after_panel, [eval_set])
+
+    assert result.gate_verdict == "PASS"
+    assert "cluster-B" in result.improved_clusters
+    cm = result.cluster_metrics[0]
+    assert cm.verdict == "IMPROVED"
+    assert cm.held_in_fire_before == 1.0
+    assert cm.held_in_fire_after == 0.0
+
+
+def test_cluster_gate_no_change():
+    """No held-out new fires and no meaningful held-in change → UNCHANGED."""
+    fires = {"trace-in-1": ["struggle_ratio"]}
+    before_panel = _make_panel(trace_detector_fires=fires)
+    after_panel = _make_panel(trace_detector_fires=fires)
+    eval_set = _make_eval_set("cluster-C", held_in_ids=["trace-in-1"], held_out_ids=["trace-out-1"])
+
+    result = _compute_cluster_gate(before_panel, after_panel, [eval_set])
+
+    assert result.gate_verdict == "PASS"
+    assert result.regressed_clusters == []
+    assert result.improved_clusters == []
+    assert result.cluster_metrics[0].verdict == "UNCHANGED"
+
+
+def test_cluster_gate_empty_eval_sets():
+    """Empty eval_sets list → PASS with no cluster metrics."""
+    before_panel = _make_panel()
+    after_panel = _make_panel()
+
+    result = _compute_cluster_gate(before_panel, after_panel, [])
+
+    assert result.gate_verdict == "PASS"
+    assert result.cluster_metrics == []
+    assert result.regressed_clusters == []
+    assert result.improved_clusters == []
+
+
+def test_compare_result_has_cluster_gate_none_by_default():
+    """CompareResult.cluster_gate defaults to None."""
+    result = CompareResult(
+        before_ref="a",
+        after_ref="b",
+        before_ref_full="a" * 40,
+        after_ref_full="b" * 40,
+        k=1,
+        corpus_hash="abc",
+        diffs=[],
+        verdict="PASS",
+    )
+    assert result.cluster_gate is None
+
+
+def test_compare_result_has_trajectory_diff_none_by_default():
+    """CompareResult.trajectory_diff defaults to None."""
+    result = CompareResult(
+        before_ref="a",
+        after_ref="b",
+        before_ref_full="a" * 40,
+        after_ref_full="b" * 40,
+        k=1,
+        corpus_hash="abc",
+        diffs=[],
+        verdict="PASS",
+    )
+    assert result.trajectory_diff is None
+
+
+# ── _levenshtein ──────────────────────────────────────────────────────────────
+
+
+def test_levenshtein_identical():
+    assert _levenshtein(["a", "b"], ["a", "b"]) == 0
+
+
+def test_levenshtein_insert():
+    assert _levenshtein(["a"], ["a", "b"]) == 1
+
+
+def test_levenshtein_replace():
+    assert _levenshtein(["a", "c"], ["a", "b"]) == 1
+
+
+def test_levenshtein_empty():
+    assert _levenshtein([], []) == 0
+    assert _levenshtein([], ["a", "b"]) == 2
+    assert _levenshtein(["a", "b"], []) == 2
+
+
+# ── _compute_trajectory_diff ──────────────────────────────────────────────────
+
+
+def test_trajectory_diff_no_change():
+    """Both panels have same sequences → changed_count=0, changed_fraction=0.0."""
+    seqs = {"t1": ["bash", "read"], "t2": ["bash", "write"]}
+    before = _make_panel(trace_tool_sequences=seqs)
+    after = _make_panel(trace_tool_sequences=seqs)
+
+    diff = _compute_trajectory_diff(before, after)
+
+    assert diff.traces_compared == 2
+    assert diff.changed_count == 0
+    assert diff.changed_fraction == 0.0
+    assert diff.mean_edit_distance == 0.0
+
+
+def test_trajectory_diff_with_changes():
+    """One of two traces differs → changed_count=1, changed_fraction=0.5."""
+    before = _make_panel(trace_tool_sequences={"t1": ["bash", "read"], "t2": ["bash", "write"]})
+    after = _make_panel(trace_tool_sequences={"t1": ["bash", "edit"], "t2": ["bash", "write"]})
+
+    diff = _compute_trajectory_diff(before, after)
+
+    assert diff.traces_compared == 2
+    assert diff.changed_count == 1
+    assert diff.changed_fraction == 0.5
+    assert diff.mean_edit_distance == 0.5  # (1 + 0) / 2
+
+
+def test_trajectory_diff_no_common():
+    """No overlapping trace_ids → changed_fraction=None."""
+    before = _make_panel(trace_tool_sequences={"t1": ["bash"]})
+    after = _make_panel(trace_tool_sequences={"t2": ["read"]})
+
+    diff = _compute_trajectory_diff(before, after)
+
+    assert diff.traces_compared == 0
+    assert diff.changed_count == 0
+    assert diff.changed_fraction is None
+    assert diff.mean_edit_distance is None
+
+
+def test_trajectory_diff_labeled_pass_tracking():
+    """Traces with no findings in before_panel are 'labeled_pass'; track their changes."""
+    # t1 has no findings → labeled_pass; t2 has findings → not labeled_pass
+    before = _make_panel(
+        trace_tool_sequences={"t1": ["bash"], "t2": ["read"]},
+        trace_detector_fires={"t2": ["struggle_ratio"]},
+    )
+    # t1's sequence changes; t2's stays the same
+    after = _make_panel(
+        trace_tool_sequences={"t1": ["edit"], "t2": ["read"]},
+        trace_detector_fires={},
+    )
+
+    diff = _compute_trajectory_diff(before, after)
+
+    assert diff.labeled_pass_changed_count == 1
+    assert diff.labeled_pass_changed_fraction == 1.0
+
+
+def test_trajectory_diff_all_empty_sequences():
+    """Empty tool sequences → edit distance 0, no changes."""
+    seqs = {"t1": [], "t2": []}
+    before = _make_panel(trace_tool_sequences=seqs)
+    after = _make_panel(trace_tool_sequences=seqs)
+
+    diff = _compute_trajectory_diff(before, after)
+
+    assert diff.changed_count == 0
+    assert diff.changed_fraction == 0.0

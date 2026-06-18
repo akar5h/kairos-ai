@@ -290,6 +290,7 @@ class TestGetClusters:
         return [
             {
                 "cluster_key": "bash|read_file::token_z",
+                "status": "open",
                 "trace_count": 12,
                 "min_night_id": "2026-06-10",
                 "kinds": ["anomaly"],
@@ -297,6 +298,7 @@ class TestGetClusters:
             },
             {
                 "cluster_key": "expectation_miss::order::submit_order",
+                "status": "resolved",
                 "trace_count": 3,
                 "min_night_id": "2026-06-11",
                 "kinds": ["expectation_miss"],
@@ -321,6 +323,21 @@ class TestGetClusters:
         assert data[0]["kinds"] == ["anomaly"]
         assert isinstance(data[0]["sample_features"], dict)
 
+    def test_response_includes_status(self, client: TestClient) -> None:
+        """GET /v1/clusters returns a 'status' field on each cluster row."""
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = lambda s: s
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.execute.return_value.fetchall.return_value = self._fake_cluster_rows()
+
+        with patch("kairos.api.read._connect", return_value=mock_conn):
+            resp = client.get("/v1/clusters")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data[0]["status"] == "open"
+        assert data[1]["status"] == "resolved"
+
     def test_empty_returns_200(self, client: TestClient) -> None:
         mock_conn = MagicMock()
         mock_conn.__enter__ = lambda s: s
@@ -344,6 +361,61 @@ class TestGetClusters:
 
         assert resp.status_code == 500
         assert "pg down" not in resp.text
+
+
+# ─── POST /v1/clusters/{cluster_key}/resolve|regress ─────────────────────────
+
+
+class TestClusterLifecycleEndpoints:
+    """Tests for POST /v1/clusters/{key}/resolve and /regress."""
+
+    def _mock_status_conn(self, status: str) -> MagicMock:
+        """Return a mock psycopg connection that returns *status* on SELECT."""
+        conn = MagicMock()
+        conn.__enter__ = lambda s: s
+        conn.__exit__ = MagicMock(return_value=False)
+        conn.execute.return_value.fetchone.return_value = {"status": status}
+        return conn
+
+    def test_resolve_returns_200_with_updated_true(self, client: TestClient) -> None:
+        with (
+            patch("kairos.api.read._dsn", return_value="postgresql://test/test"),
+            patch("kairos.api.read.resolve_cluster"),
+            patch("psycopg.connect", return_value=self._mock_status_conn("resolved")),
+        ):
+            resp = client.post("/v1/clusters/test_key/resolve")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["updated"] is True
+        assert data["cluster_key"] == "test_key"
+
+    def test_regress_returns_200_with_updated_true(self, client: TestClient) -> None:
+        with (
+            patch("kairos.api.read._dsn", return_value="postgresql://test/test"),
+            patch("kairos.api.read.regress_cluster"),
+            patch("psycopg.connect", return_value=self._mock_status_conn("regressed")),
+        ):
+            resp = client.post("/v1/clusters/test_key/regress")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["updated"] is True
+        assert data["cluster_key"] == "test_key"
+
+    def test_resolve_dsn_error_returns_500(self, client: TestClient) -> None:
+        with patch("kairos.api.read._dsn", side_effect=RuntimeError("KAIROS_PG_DSN not set")):
+            resp = client.post("/v1/clusters/any/resolve")
+
+        assert resp.status_code == 500
+        assert "KAIROS_PG_DSN" not in resp.text
+
+    def test_regress_dsn_error_returns_500(self, client: TestClient) -> None:
+        with patch("kairos.api.read._dsn", side_effect=RuntimeError("KAIROS_PG_DSN not set")):
+            resp = client.post("/v1/clusters/any/regress")
+
+        assert resp.status_code == 500
+        assert "KAIROS_PG_DSN" not in resp.text
 
 
 # ─── GET /v1/clusters/{cluster_key}/traces ────────────────────────────────────

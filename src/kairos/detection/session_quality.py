@@ -526,6 +526,45 @@ def detect_work_to_talk_ratio(
     ]
 
 
+def detect_tau_required_op_miss(
+    trace: TraceEnvelope,
+    operation: BusinessOperation | None = None,
+) -> list[Finding]:
+    """D5: fire when a tau-bench trace is missing required side-effect tools.
+
+    Required side-effect tools are the tools an agent MUST call to complete
+    the task (e.g. cancel_reservation, update_reservation_flights). If ANY
+    required tool is absent from the trace's tool_sequence, the task cannot
+    have succeeded regardless of what the agent said.
+
+    Only fires when an operation with required_side_effect_tools is provided
+    (i.e. tau-bench traces; skipped for live coding traces).
+    """
+    if operation is None:
+        return []
+    required = set(getattr(operation, "required_side_effect_tools", []))
+    if not required:
+        return []
+    actual = set(trace.tool_sequence)
+    missing = required - actual
+    if not missing:
+        return []
+    return [
+        Finding(
+            pattern_name="tau_required_op_miss",
+            tier=1,
+            trace_id=trace.trace_id,
+            confidence=1.0,
+            severity="error",
+            evidence={
+                "required_tools": sorted(required),
+                "missing_tools": sorted(missing),
+                "tool_sequence_length": len(trace.tool_sequence),
+            },
+        )
+    ]
+
+
 # ── LEARN stage ────────────────────────────────────────────────────────────────
 
 
@@ -683,7 +722,7 @@ def detect_session_quality(
     curl_t: float = CURL_T,
     wtt_t: float = WTT_T,
 ) -> list[Finding]:
-    """Run all four session-quality detectors and return aggregated findings.
+    """Run all session-quality detectors and return aggregated findings.
 
     Called once per workflow cohort from the pipeline (or per-trace if no
     operation context).  All detectors are deterministic; none calls an LLM.
@@ -694,4 +733,5 @@ def detect_session_quality(
         findings.extend(detect_struggle_ratio(trace, operation, struggle_t=struggle_t))
         findings.extend(detect_coordination_waste(trace, repeat_t=repeat_t, curl_t=curl_t))
         findings.extend(detect_work_to_talk_ratio(trace, operation, wtt_t=wtt_t))
+        findings.extend(detect_tau_required_op_miss(trace, operation))
     return findings

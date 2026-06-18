@@ -24,14 +24,18 @@ import logging
 import uuid
 from datetime import UTC, date, datetime  # noqa: TC003 — pydantic needs the runtime type
 from typing import Any
+from urllib.parse import unquote
 
 import fastapi
 import psycopg
 from psycopg.rows import dict_row
 from pydantic import BaseModel, field_validator
 
+from kairos.eval.eval_set import generate_eval_set, store_eval_set
+from kairos.loop.cluster_lifecycle import regress_cluster, resolve_cluster
 from kairos.loop.db import _dsn
 from kairos.loop.discover import run_discovery
+from kairos.loop.outcomes import load_outcome_labels
 from kairos.readers.db import fetch_envelope_from_db, list_trace_ids
 
 logger = logging.getLogger(__name__)
@@ -59,10 +63,19 @@ class ClusterSummary(BaseModel):
     """Aggregate row returned by GET /clusters."""
 
     cluster_key: str
+    status: str
     trace_count: int
     min_night_id: str | None
     kinds: list[str]
     sample_features: dict[str, Any]
+
+
+class ClusterStatusUpdate(BaseModel):
+    """Response returned by POST /v1/clusters/{cluster_key}/resolve|regress."""
+
+    cluster_key: str
+    status: str
+    updated: bool
 
 
 class ClusterTraceMember(BaseModel):
@@ -201,6 +214,35 @@ class ClusterRefreshResponse(BaseModel):
     status: str
     clusters_found: int
     traces_processed: int
+    new_clusters: int = 0
+    auto_labeled: int = 0
+    labeling_skipped: bool = False
+
+
+class ClusterInsightRow(BaseModel):
+    """One cluster_insights row returned by GET /v1/clusters/{key}/insights."""
+
+    id: str
+    cluster_key: str
+    pattern_name: str | None
+    description: str | None
+    discriminator_hint: str | None
+    root_cause: str | None
+    confidence: float | None
+    is_coherent: bool | None
+    auto_approve: bool
+    approved_at: datetime | None
+    approved_by: str | None
+    model_used: str | None
+    created_at: datetime
+
+
+class ApproveInsightResponse(BaseModel):
+    """Response from POST /v1/clusters/{key}/insights/{id}/approve."""
+
+    status: str  # "approved" | "already_approved"
+    eval_set_id: str | None
+    message: str
 
 
 class HookEventRow(BaseModel):
@@ -360,18 +402,20 @@ def get_clusters() -> list[ClusterSummary]:
 
     One row per cluster_key, ordered by trace count descending.
     Includes a sample features blob from one member of the cluster.
+    Status is consistent per cluster_key (set via UPDATE WHERE cluster_key = ?).
 
     Query: single pass over discovery_queue — no N+1.
     """
     sql = """
         SELECT
             cluster_key,
-            count(DISTINCT trace_id)            AS trace_count,
-            min(night_id)::text                 AS min_night_id,
-            array_agg(DISTINCT kind)            AS kinds,
+            status,
+            count(DISTINCT trace_id)             AS trace_count,
+            min(night_id)::text                  AS min_night_id,
+            array_agg(DISTINCT kind)             AS kinds,
             (array_agg(features ORDER BY id))[1] AS sample_features
         FROM discovery_queue
-        GROUP BY cluster_key
+        GROUP BY cluster_key, status
         ORDER BY count(DISTINCT trace_id) DESC
     """  # noqa: S608 — no user data interpolated
 
@@ -385,6 +429,7 @@ def get_clusters() -> list[ClusterSummary]:
     return [
         ClusterSummary(
             cluster_key=row["cluster_key"],
+            status=row["status"],
             trace_count=int(row["trace_count"]),
             min_night_id=row["min_night_id"],
             kinds=list(row["kinds"] or []),
@@ -392,6 +437,76 @@ def get_clusters() -> list[ClusterSummary]:
         )
         for row in rows
     ]
+
+
+@router.post("/clusters/{cluster_key}/resolve", response_model=ClusterStatusUpdate)
+def resolve_cluster_endpoint(
+    cluster_key: str = fastapi.Path(..., description="Cluster key to resolve."),
+) -> ClusterStatusUpdate:
+    """Transition a cluster from open/regressed → resolved.
+
+    Idempotent: if the cluster is already resolved, this is a no-op (still 200).
+    Returns the cluster's new status.
+    """
+    try:
+        dsn = _dsn()
+    except RuntimeError:
+        logger.exception("read.resolve_cluster dsn_error cluster_key=%s", cluster_key)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    try:
+        resolve_cluster(cluster_key, dsn)
+    except Exception:
+        logger.exception("read.resolve_cluster failed cluster_key=%s", cluster_key)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    try:
+        with psycopg.connect(dsn, row_factory=dict_row) as conn:
+            row = conn.execute(
+                "SELECT status FROM discovery_queue WHERE cluster_key = %s LIMIT 1",
+                (cluster_key,),
+            ).fetchone()
+    except Exception:
+        logger.exception("read.resolve_cluster status_fetch failed cluster_key=%s", cluster_key)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    current_status = row["status"] if row is not None else "resolved"
+    return ClusterStatusUpdate(cluster_key=cluster_key, status=current_status, updated=True)
+
+
+@router.post("/clusters/{cluster_key}/regress", response_model=ClusterStatusUpdate)
+def regress_cluster_endpoint(
+    cluster_key: str = fastapi.Path(..., description="Cluster key to regress."),
+) -> ClusterStatusUpdate:
+    """Transition a cluster from resolved → regressed.
+
+    Idempotent: if the cluster is already regressed/open, this is a no-op (still 200).
+    Returns the cluster's new status.
+    """
+    try:
+        dsn = _dsn()
+    except RuntimeError:
+        logger.exception("read.regress_cluster dsn_error cluster_key=%s", cluster_key)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    try:
+        regress_cluster(cluster_key, dsn)
+    except Exception:
+        logger.exception("read.regress_cluster failed cluster_key=%s", cluster_key)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    try:
+        with psycopg.connect(dsn, row_factory=dict_row) as conn:
+            row = conn.execute(
+                "SELECT status FROM discovery_queue WHERE cluster_key = %s LIMIT 1",
+                (cluster_key,),
+            ).fetchone()
+    except Exception:
+        logger.exception("read.regress_cluster status_fetch failed cluster_key=%s", cluster_key)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    current_status = row["status"] if row is not None else "regressed"
+    return ClusterStatusUpdate(cluster_key=cluster_key, status=current_status, updated=True)
 
 
 @router.get("/clusters/{cluster_key}/traces", response_model=list[ClusterTraceMember])
@@ -1069,6 +1184,10 @@ def get_stats() -> StatsResponse:
 @router.post("/clusters/refresh", response_model=ClusterRefreshResponse)
 def refresh_clusters() -> ClusterRefreshResponse:
     """Re-run discovery to refresh clusters from all traces in the DB."""
+    import os
+
+    from kairos.loop.cluster_diff import diff_clusters
+
     try:
         dsn = _dsn()
     except RuntimeError:
@@ -1088,21 +1207,78 @@ def refresh_clusters() -> ClusterRefreshResponse:
         raise fastapi.HTTPException(status_code=500, detail="Database error") from None
 
     try:
+        labeled_outcomes = load_outcome_labels(dsn)
+    except Exception:
+        logger.exception("read.refresh_clusters load_outcome_labels failed")
+        labeled_outcomes = {}
+
+    # Snapshot cluster keys BEFORE discovery.
+    try:
+        with psycopg.connect(dsn) as conn:
+            before_keys: set[str] = {
+                row[0] for row in conn.execute("SELECT DISTINCT cluster_key FROM discovery_queue").fetchall()
+            }
+    except Exception:
+        logger.exception("read.refresh_clusters before_snapshot failed")
+        before_keys = set()
+
+    try:
         with psycopg.connect(dsn) as conn:
             result = run_discovery(
                 traces=traces,
                 miss_candidates=[],
                 night_id=date.today(),
+                labeled_outcomes=labeled_outcomes or None,
                 conn=conn,
             )
     except Exception:
         logger.exception("read.refresh_clusters run_discovery failed")
         raise fastapi.HTTPException(status_code=500, detail="Cluster refresh failed") from None
 
+    # Snapshot AFTER discovery and compute diff.
+    try:
+        with psycopg.connect(dsn) as conn:
+            after_keys: set[str] = {
+                row[0] for row in conn.execute("SELECT DISTINCT cluster_key FROM discovery_queue").fetchall()
+            }
+    except Exception:
+        logger.exception("read.refresh_clusters after_snapshot failed")
+        after_keys = set(result.cluster_summary.keys())
+
+    diff = diff_clusters(before_keys, after_keys)
+    if diff.removed_keys:
+        logger.warning("refresh_clusters.clusters_removed keys=%s", diff.removed_keys[:10])
+
+    # Auto-label new clusters if API key is available.
+    auto_labeled = 0
+    labeling_skipped = False
+    if diff.new_keys:
+        if os.environ.get("OPENROUTER_API_KEY"):
+            try:
+                from kairos.loop.label import label_all_unlabeled
+
+                insights = label_all_unlabeled(dsn)
+                new_key_set = set(diff.new_keys)
+                auto_labeled = sum(1 for i in insights if i.cluster_key in new_key_set)
+                logger.info(
+                    "refresh_clusters.auto_labeled count=%d new_clusters=%d",
+                    auto_labeled,
+                    len(diff.new_keys),
+                )
+            except Exception:
+                logger.exception("refresh_clusters.auto_label failed")
+                labeling_skipped = True
+        else:
+            labeling_skipped = True
+            logger.info("refresh_clusters.labeling_skipped OPENROUTER_API_KEY not set")
+
     return ClusterRefreshResponse(
         status="ok",
         clusters_found=len(result.cluster_summary),
         traces_processed=len(traces),
+        new_clusters=len(diff.new_keys),
+        auto_labeled=auto_labeled,
+        labeling_skipped=labeling_skipped,
     )
 
 
@@ -1141,3 +1317,127 @@ def get_hook_events(
         )
         for row in rows
     ]
+
+
+@router.get("/eval-sets")
+def get_eval_sets() -> list[dict[str, Any]]:
+    """Return all eval sets with their MCC scores."""
+    try:
+        with psycopg.connect(_dsn(), row_factory=dict_row) as conn:
+            rows = conn.execute(
+                """
+                SELECT eval_set_id, cluster_key, discriminator_type, discriminator_config,
+                       mcc, mcc_label_count, mcc_computed_at, frozen_at,
+                       jsonb_array_length(held_in) AS held_in_count,
+                       jsonb_array_length(held_out) AS held_out_count
+                  FROM eval_sets
+                 ORDER BY frozen_at DESC
+                """
+            ).fetchall()
+    except Exception:
+        logger.exception("read.get_eval_sets failed")
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    return [
+        {
+            "eval_set_id": r["eval_set_id"],
+            "cluster_key": r["cluster_key"],
+            "discriminator_type": r["discriminator_type"],
+            "discriminator_config": r["discriminator_config"],
+            "held_in_count": r["held_in_count"],
+            "held_out_count": r["held_out_count"],
+            "mcc": r["mcc"],
+            "mcc_label_count": r["mcc_label_count"],
+            "mcc_computed_at": r["mcc_computed_at"].isoformat() if r["mcc_computed_at"] else None,
+            "frozen_at": r["frozen_at"].isoformat() if r["frozen_at"] else None,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/clusters/{key}/insights", response_model=list[ClusterInsightRow])
+def get_cluster_insights(
+    key: str = fastapi.Path(..., description="URL-encoded cluster key"),
+) -> list[ClusterInsightRow]:
+    """Return all insights for a cluster, newest first."""
+    decoded_key = unquote(key)
+    try:
+        with psycopg.connect(_dsn(), row_factory=dict_row) as conn:
+            rows = conn.execute(
+                """
+                SELECT id, cluster_key, pattern_name, description, discriminator_hint,
+                       root_cause, confidence, is_coherent, auto_approve, approved_at,
+                       approved_by, model_used, created_at
+                  FROM cluster_insights
+                 WHERE cluster_key = %s
+                 ORDER BY created_at DESC
+                """,
+                (decoded_key,),
+            ).fetchall()
+    except Exception:
+        logger.exception("read.get_cluster_insights failed key=%s", decoded_key)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    return [ClusterInsightRow(**{**row, "id": str(row["id"])}) for row in rows]
+
+
+@router.post("/clusters/{key}/insights/{insight_id}/approve", response_model=ApproveInsightResponse)
+def approve_cluster_insight(
+    key: str = fastapi.Path(..., description="URL-encoded cluster key"),
+    insight_id: str = fastapi.Path(..., description="UUID of the cluster_insights row"),
+) -> ApproveInsightResponse:
+    """Approve a cluster insight: mark it approved and generate an eval set."""
+    decoded_key = unquote(key)
+    dsn = _dsn()
+
+    try:
+        with psycopg.connect(dsn, row_factory=dict_row) as conn:
+            row = conn.execute(
+                "SELECT id, cluster_key, approved_at FROM cluster_insights WHERE id = %s",
+                (insight_id,),
+            ).fetchone()
+    except Exception:
+        logger.exception("read.approve_insight db_fetch failed insight_id=%s", insight_id)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    if row is None:
+        raise fastapi.HTTPException(status_code=404, detail="Insight not found")
+
+    if row["approved_at"] is not None:
+        return ApproveInsightResponse(
+            status="already_approved",
+            eval_set_id=None,
+            message="Insight was already approved.",
+        )
+
+    # Mark approved.
+    try:
+        with psycopg.connect(dsn, row_factory=dict_row) as conn:
+            conn.execute(
+                "UPDATE cluster_insights SET approved_at = NOW(), approved_by = 'owner' WHERE id = %s",
+                (insight_id,),
+            )
+            conn.commit()
+    except Exception:
+        logger.exception("read.approve_insight db_update failed insight_id=%s", insight_id)
+        raise fastapi.HTTPException(status_code=500, detail="Database error") from None
+
+    # Generate eval set — tolerate failure (approval is still recorded).
+    eval_set_id: str | None = None
+    message = "approved"
+    try:
+        record = generate_eval_set(decoded_key, dsn)
+        eval_set_id = store_eval_set(record, dsn)
+        message = f"approved; eval set {eval_set_id} generated"
+    except ValueError as ve:
+        message = f"approved but eval set not generated: {ve}"
+        logger.warning("read.approve_insight eval_set_skipped key=%s reason=%s", decoded_key, ve)
+    except Exception:
+        logger.exception("read.approve_insight eval_set_error key=%s", decoded_key)
+        message = "approved but eval set generation failed"
+
+    return ApproveInsightResponse(
+        status="approved",
+        eval_set_id=eval_set_id,
+        message=message,
+    )
