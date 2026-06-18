@@ -214,6 +214,9 @@ class ClusterRefreshResponse(BaseModel):
     status: str
     clusters_found: int
     traces_processed: int
+    new_clusters: int = 0
+    auto_labeled: int = 0
+    labeling_skipped: bool = False
 
 
 class ClusterInsightRow(BaseModel):
@@ -1181,6 +1184,10 @@ def get_stats() -> StatsResponse:
 @router.post("/clusters/refresh", response_model=ClusterRefreshResponse)
 def refresh_clusters() -> ClusterRefreshResponse:
     """Re-run discovery to refresh clusters from all traces in the DB."""
+    import os
+
+    from kairos.loop.cluster_diff import diff_clusters
+
     try:
         dsn = _dsn()
     except RuntimeError:
@@ -1205,6 +1212,16 @@ def refresh_clusters() -> ClusterRefreshResponse:
         logger.exception("read.refresh_clusters load_outcome_labels failed")
         labeled_outcomes = {}
 
+    # Snapshot cluster keys BEFORE discovery.
+    try:
+        with psycopg.connect(dsn) as conn:
+            before_keys: set[str] = {
+                row[0] for row in conn.execute("SELECT DISTINCT cluster_key FROM discovery_queue").fetchall()
+            }
+    except Exception:
+        logger.exception("read.refresh_clusters before_snapshot failed")
+        before_keys = set()
+
     try:
         with psycopg.connect(dsn) as conn:
             result = run_discovery(
@@ -1218,10 +1235,50 @@ def refresh_clusters() -> ClusterRefreshResponse:
         logger.exception("read.refresh_clusters run_discovery failed")
         raise fastapi.HTTPException(status_code=500, detail="Cluster refresh failed") from None
 
+    # Snapshot AFTER discovery and compute diff.
+    try:
+        with psycopg.connect(dsn) as conn:
+            after_keys: set[str] = {
+                row[0] for row in conn.execute("SELECT DISTINCT cluster_key FROM discovery_queue").fetchall()
+            }
+    except Exception:
+        logger.exception("read.refresh_clusters after_snapshot failed")
+        after_keys = set(result.cluster_summary.keys())
+
+    diff = diff_clusters(before_keys, after_keys)
+    if diff.removed_keys:
+        logger.warning("refresh_clusters.clusters_removed keys=%s", diff.removed_keys[:10])
+
+    # Auto-label new clusters if API key is available.
+    auto_labeled = 0
+    labeling_skipped = False
+    if diff.new_keys:
+        if os.environ.get("OPENROUTER_API_KEY"):
+            try:
+                from kairos.loop.label import label_all_unlabeled
+
+                insights = label_all_unlabeled(dsn)
+                new_key_set = set(diff.new_keys)
+                auto_labeled = sum(1 for i in insights if i.cluster_key in new_key_set)
+                logger.info(
+                    "refresh_clusters.auto_labeled count=%d new_clusters=%d",
+                    auto_labeled,
+                    len(diff.new_keys),
+                )
+            except Exception:
+                logger.exception("refresh_clusters.auto_label failed")
+                labeling_skipped = True
+        else:
+            labeling_skipped = True
+            logger.info("refresh_clusters.labeling_skipped OPENROUTER_API_KEY not set")
+
     return ClusterRefreshResponse(
         status="ok",
         clusters_found=len(result.cluster_summary),
         traces_processed=len(traces),
+        new_clusters=len(diff.new_keys),
+        auto_labeled=auto_labeled,
+        labeling_skipped=labeling_skipped,
     )
 
 
