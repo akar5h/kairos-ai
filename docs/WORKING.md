@@ -3,7 +3,7 @@
 > Living anchor for the open-source agent-trace platform line. Purpose: orient a fresh / small-context
 > session from ONE file. Decisions, principles, runbook, and what's next live here; deep detail lives in
 > the linked docs. Keep this current; link out, don't duplicate.
-> Last updated: 2026-06-18.
+> Last updated: 2026-06-18 (post-D5).
 
 ---
 
@@ -25,10 +25,14 @@ Repo: `github.com/akar5h/kairos-ai` (branch `main`, CI green). Local: `/Users/ak
 | **P2 — API-first platform** (read+hierarchy+search API, light console UI, cluster browser, relabel, enrich-default) | ✅ merged to main, **pushed, CI green** |
 | **P3.1–P3.4 — eval layer** (floor metrics GATE, cluster eval-sets, regression gate, issue lifecycle) | ✅ **SHIPPED, live-validated** — see `docs/honest-snapshot-3.md` |
 | **P3.5** (trajectory diff gate + meta-eval MCC) | ✅ **SHIPPED** — `7ff4465`; 1439 tests green |
-| Later | OSS carve (strip Paperclip), polish/hardening, P4 Self-Harness proposer |
+| **D5 — `tau_required_op_miss`** (required side-effect tools detector) | ✅ **SHIPPED** — `100f91c`; `known_bad_catch_rate` 0.302→**0.718** |
+| **P4 — Self-Harness proposer** (auto miss-analysis → detector proposal → eval gate) | 🔜 **NEXT** |
+| Later | OSS carve (strip Paperclip), polish/hardening |
 
-`main` is pushed to origin and CI-green. Real session data flows. P3 eval layer is live on 609-entry corpus
-(baseline: `known_bad_catch_rate=0.30`, `golden_trajectory_match_rate=1.0`, 73 cluster eval sets frozen).
+`main` is pushed to origin and CI-green. Real session data flows. P3 eval layer + D5 live on 613-entry corpus.
+
+**North-star: `known_bad_catch_rate = 0.718` (74/103). Was 0.302 before D5. Target >0.8.**
+29 traces still missed — tau-bench failures where required tools WERE called but args/sequence were wrong (harder: arg-level correctness, not tool presence). P4 Self-Harness automates the miss→detector loop that found D5.
 
 ---
 
@@ -157,17 +161,13 @@ Ports: kairos-pg 5434 · collector 4318 (NOT Kairos) · Kairos API 8000 · UI 30
 
 ## 6. Future steps (priority order)
 
-1. **P3 eval layer** (`docs/p3-eval-layer-design.md`) — phased:
-   - P3.1 minimal deterministic auto-eval into the GATE (tool-call correctness, known-good/bad floors,
-     outcome-grounded, golden-trace replay) — mostly wiring existing signals.
-   - P3.2 cluster → held-in/held-out eval-set generation.
-   - P3.3 regression-on-history gate (before/after over cluster corpus; blast-radius as GATE signal).
-   - P3.4 issue lifecycle (cluster: open→eval→resolved→regressed) on the cluster browser.
-   - P3.5 trajectory-diff gate + meta-eval (MCC). ✅ DONE
-   - P4 (later) Self-Harness-style bounded-edit proposer, gated by the above.
+1. **P4 Self-Harness proposer** — automate the miss-analysis→detector-proposal→eval-gate loop.
+   - Input: missed known-bad traces + discovery_queue features + panel.trace_detector_fires
+   - Algorithm: compute feature distribution of misses → find dominant discriminator → generate detector from template → `compare()` gate → commit/PR if PASS
+   - Deterministic-first; LLM only for naming/complex arg checks (narrow prompt, different model family)
+   - This is what makes Kairos useful at scale — without P4 it requires expert manual work to find new detectors
 2. **OSS carve** — strip/abstract Paperclip coupling (audit enumerated file:lines), README, one-command demo.
-3. **Polish / hardening** — render-smoke CI guard for the `"use client"` class; OTLP drop-on-DB-down spool
-   (currently returns 200 + drops on DB outage); UI density/affordances.
+3. **Polish / hardening** — render-smoke CI guard for `"use client"`; OTLP drop-on-DB-down spool; UI density.
 
 ---
 
