@@ -26,7 +26,7 @@ Repo: `github.com/akar5h/kairos-ai` (branch `main`, CI green). Local: `/Users/ak
 | **P3.1–P3.4 — eval layer** (floor metrics GATE, cluster eval-sets, regression gate, issue lifecycle) | ✅ **SHIPPED, live-validated** — see `docs/honest-snapshot-3.md` |
 | **P3.5** (trajectory diff gate + meta-eval MCC) | ✅ **SHIPPED** — `7ff4465`; 1439 tests green |
 | **D5 — `tau_required_op_miss`** (required side-effect tools detector) | ✅ **SHIPPED** — `100f91c`; `known_bad_catch_rate` 0.302→**0.718** |
-| **P4 — Self-Harness proposer** (auto miss-analysis → detector proposal → eval gate) | 🔜 **NEXT** |
+| **P4 — Semantic cluster labeling + new pattern discovery** | 🔜 **NEXT** (branch: `p4/semantic-cluster-labeling`) |
 | Later | OSS carve (strip Paperclip), polish/hardening |
 
 `main` is pushed to origin and CI-green. Real session data flows. P3 eval layer + D5 live on 613-entry corpus.
@@ -161,11 +161,14 @@ Ports: kairos-pg 5434 · collector 4318 (NOT Kairos) · Kairos API 8000 · UI 30
 
 ## 6. Future steps (priority order)
 
-1. **P4 Self-Harness proposer** — automate the miss-analysis→detector-proposal→eval-gate loop.
-   - Input: missed known-bad traces + discovery_queue features + panel.trace_detector_fires
-   - Algorithm: compute feature distribution of misses → find dominant discriminator → generate detector from template → `compare()` gate → commit/PR if PASS
-   - Deterministic-first; LLM only for naming/complex arg checks (narrow prompt, different model family)
-   - This is what makes Kairos useful at scale — without P4 it requires expert manual work to find new detectors
+1. **P4 — Semantic cluster labeling + new pattern discovery**
+   - Moat: surfaces failure patterns users didn't know existed (not just known errors)
+   - P4.0: fix `discover.py` to cluster ALL traces (not just detector-fired) — prerequisite
+   - P4.1: LLM reads 3-5 envelopes per outcome_only cluster → ClusterInsight (pattern_name, description, discriminator_hint, confidence, is_coherent) → stored in `cluster_insights` table (migration 0018)
+   - P4.2: human approve/reject UI → approved cluster → generate_eval_set() → enters compare() gate
+   - P4.3: new cluster surfacing — diff after each discover.py run → trigger labeling automatically
+   - LLM role: labeler only. Clustering/gating/detection stays deterministic.
+   - Plan: `~/.claude/plans/sorted-coalescing-eich.md`
 2. **OSS carve** — strip/abstract Paperclip coupling (audit enumerated file:lines), README, one-command demo.
 3. **Polish / hardening** — render-smoke CI guard for `"use client"`; OTLP drop-on-DB-down spool; UI density.
 
