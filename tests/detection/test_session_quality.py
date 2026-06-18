@@ -18,6 +18,7 @@ from kairos.detection.session_quality import (
     detect_coordination_waste,
     detect_session_quality,
     detect_struggle_ratio,
+    detect_tau_required_op_miss,
     detect_unrecovered_error,
     detect_work_to_talk_ratio,
     learn_tool_expectations,
@@ -676,3 +677,82 @@ class TestD3EmptyArgsGuard:
         trace = _make_trace("d3_empty3", steps)
         findings = detect_coordination_waste(trace, repeat_t=3, curl_t=0.99)
         assert findings == []
+
+
+# ── D5 — tau_required_op_miss ─────────────────────────────────────────────────
+
+
+def _tau_op(required: list[str]) -> BusinessOperation:
+    return BusinessOperation(
+        name="cancel_reservation",
+        description="Cancel a flight reservation",
+        required_side_effect_tools=required,
+        expected_tools=["get_reservation_details", "think"] + required,
+    )
+
+
+class TestTauRequiredOpMiss:
+    def test_tau_required_op_miss_fires(self) -> None:
+        """Trace missing required side-effect tool → one finding with correct fields."""
+        trace = _make_trace(
+            "tau1",
+            [
+                _step(0, "get_reservation_details", StepStatus.OK),
+                _step(1, "think", StepStatus.OK),
+            ],
+        )
+        op = _tau_op(required=["cancel_reservation"])
+        findings = detect_tau_required_op_miss(trace, op)
+        assert len(findings) == 1
+        f = findings[0]
+        assert f.pattern_name == "tau_required_op_miss"
+        assert f.severity == "error"
+        assert f.evidence["missing_tools"] == ["cancel_reservation"]
+
+    def test_tau_required_op_miss_no_fire_when_complete(self) -> None:
+        """Trace that called the required tool → no finding."""
+        trace = _make_trace(
+            "tau2",
+            [
+                _step(0, "get_reservation_details", StepStatus.OK),
+                _step(1, "cancel_reservation", StepStatus.OK),
+            ],
+        )
+        op = _tau_op(required=["cancel_reservation"])
+        assert detect_tau_required_op_miss(trace, op) == []
+
+    def test_tau_required_op_miss_no_op(self) -> None:
+        """operation=None → empty list (live coding traces not affected)."""
+        trace = _make_trace(
+            "tau3",
+            [
+                _step(0, "get_reservation_details", StepStatus.OK),
+            ],
+        )
+        assert detect_tau_required_op_miss(trace, None) == []
+
+    def test_tau_required_op_miss_no_required_tools(self) -> None:
+        """Operation with empty required_side_effect_tools → no finding."""
+        trace = _make_trace(
+            "tau4",
+            [
+                _step(0, "get_reservation_details", StepStatus.OK),
+            ],
+        )
+        op = _tau_op(required=[])
+        assert detect_tau_required_op_miss(trace, op) == []
+
+    def test_detect_session_quality_includes_d5(self) -> None:
+        """detect_session_quality includes D5 findings when trace misses required tool."""
+        trace = _make_trace(
+            "tau5",
+            [
+                _step(0, "get_reservation_details", StepStatus.OK),
+                _step(1, "think", StepStatus.OK),
+            ],
+        )
+        op = _tau_op(required=["cancel_reservation"])
+        findings = detect_session_quality([trace], operation=op)
+        d5_findings = [f for f in findings if f.pattern_name == "tau_required_op_miss"]
+        assert len(d5_findings) == 1
+        assert d5_findings[0].trace_id == "tau5"
